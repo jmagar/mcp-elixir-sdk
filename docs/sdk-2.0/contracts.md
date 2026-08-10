@@ -16,13 +16,14 @@ Every transport implements the existing `MCP.Transport` behavior:
 ```elixir
 @callback start_link(keyword()) :: GenServer.on_start()
 @callback send_message(pid(), map()) :: :ok | {:error, term()}
-@callback close(pid()) :: :ok
+@callback close(pid()) :: :ok | {:error, term()}
 ```
 
 The transport owns framing and delivery, not protocol semantics. It sends
 decoded maps to its owner as `{:mcp_message, map()}` and reports terminal loss
-as `{:mcp_transport_closed, reason}`. Closing is idempotent from the caller's
-perspective.
+as `{:mcp_transport_closed, reason}`. Closing an already stopped process is
+idempotent; unexpected close failures are returned rather than reported as
+success.
 
 For 2026 Streamable HTTP:
 
@@ -42,6 +43,8 @@ and DELETE and compared with the stored fingerprint before lookup/delivery.
 The supervised manager applies endpoint/per-principal caps and idle/absolute
 expiry. One endpoint may serve both eras, but one session or owner-based
 connection may never mix them.
+GET listener session expiry and retry exhaustion are reported to the owner as
+`{:mcp_legacy_sse_failed, reason}` rather than silently ending delivery.
 
 For stdio, each JSON-RPC object is one newline-delimited frame. Subscription
 messages share the same channel and are correlated by request/subscription ID.

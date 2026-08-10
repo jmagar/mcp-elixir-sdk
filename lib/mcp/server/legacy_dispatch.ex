@@ -12,6 +12,8 @@ defmodule MCP.Server.LegacyDispatch do
   alias MCP.Protocol.Messages.{Initialize, Request}
   alias MCP.Server.{Dispatch, ToolContext}
 
+  require Logger
+
   @protocol_version "2025-11-25"
   @stateless_meta_keys [
     "io.modelcontextprotocol/protocolVersion",
@@ -51,7 +53,14 @@ defmodule MCP.Server.LegacyDispatch do
 
   @spec dispatch(Request.t(), ToolContext.t(), map()) ::
           {:reply, map()} | {:input_required, map(), term()}
-  def dispatch(%Request{id: id, method: "ping"}, _ctx, _config), do: {:reply, success(id, %{})}
+  def dispatch(%Request{id: id, method: "ping", params: params}, _ctx, _config) do
+    with {:ok, params} <- generic_params_object(params),
+         {:ok, _meta} <- legacy_meta(params) do
+      {:reply, success(id, %{})}
+    else
+      {:error, reason} -> {:reply, error(id, -32_602, "Invalid params", reason)}
+    end
+  end
 
   def dispatch(
         %Request{id: id, method: "resources/subscribe", params: params},
@@ -59,6 +68,7 @@ defmodule MCP.Server.LegacyDispatch do
         config
       ) do
     with {:ok, params} <- params_object(params),
+         {:ok, _meta} <- legacy_meta(params),
          {:ok, uri} <- required_nonempty_string(params, "uri") do
       legacy_callback(
         id,
@@ -78,6 +88,7 @@ defmodule MCP.Server.LegacyDispatch do
         config
       ) do
     with {:ok, params} <- params_object(params),
+         {:ok, _meta} <- legacy_meta(params),
          {:ok, uri} <- required_nonempty_string(params, "uri") do
       legacy_callback(
         id,
@@ -93,6 +104,7 @@ defmodule MCP.Server.LegacyDispatch do
 
   def dispatch(%Request{id: id, method: "logging/setLevel", params: params}, context, config) do
     with {:ok, params} <- params_object(params),
+         {:ok, _meta} <- legacy_meta(params),
          {:ok, level} <- logging_level(params) do
       legacy_callback(
         id,
@@ -107,8 +119,16 @@ defmodule MCP.Server.LegacyDispatch do
   end
 
   def dispatch(%Request{} = request, %ToolContext{} = context, config) do
-    params = request.params || %{}
-    meta = params |> Map.get("_meta", %{}) |> Map.drop(@stateless_meta_keys)
+    with {:ok, params} <- generic_params_object(request.params),
+         {:ok, meta} <- legacy_meta(params) do
+      dispatch_adapted(request, params, meta, context, config)
+    else
+      {:error, reason} -> {:reply, error(request.id, -32_602, "Invalid params", reason)}
+    end
+  end
+
+  defp dispatch_adapted(request, params, meta, context, config) do
+    meta = Map.drop(meta, @stateless_meta_keys)
 
     adapted_params =
       if meta == %{} do
@@ -175,6 +195,16 @@ defmodule MCP.Server.LegacyDispatch do
   defp params_object(params) when is_map(params), do: {:ok, params}
   defp params_object(_params), do: {:error, "params must be an object"}
 
+  defp generic_params_object(nil), do: {:ok, %{}}
+  defp generic_params_object(params), do: params_object(params)
+
+  defp legacy_meta(params) do
+    case Map.get(params, "_meta", %{}) do
+      meta when is_map(meta) -> {:ok, meta}
+      _invalid -> {:error, "_meta must be an object"}
+    end
+  end
+
   defp required_nonempty_string(params, key) do
     case Map.fetch(params, key) do
       {:ok, value} when is_binary(value) and value != "" -> {:ok, value}
@@ -206,13 +236,24 @@ defmodule MCP.Server.LegacyDispatch do
           _invalid -> {:reply, error(id, -32_603, "Invalid handler result", nil)}
         end
       rescue
-        _exception -> {:reply, error(id, -32_603, "Handler callback failed", nil)}
+        exception ->
+          log_callback_failure(module, callback, id, :error, exception, __STACKTRACE__)
+          {:reply, error(id, -32_603, "Handler callback failed", nil)}
       catch
-        _kind, _reason -> {:reply, error(id, -32_603, "Handler callback failed", nil)}
+        kind, reason ->
+          log_callback_failure(module, callback, id, kind, reason, __STACKTRACE__)
+          {:reply, error(id, -32_603, "Handler callback failed", nil)}
       end
     else
       {:reply, error(id, -32_601, "Method not found: #{callback}", nil)}
     end
+  end
+
+  defp log_callback_failure(module, callback, id, kind, reason, stacktrace) do
+    Logger.error(
+      "MCP legacy handler callback failed module=#{inspect(module)} callback=#{callback} " <>
+        "request_id=#{inspect(id)} " <> Exception.format(kind, reason, stacktrace)
+    )
   end
 
   defp error(id, code, message, data) do

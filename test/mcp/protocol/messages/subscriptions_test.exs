@@ -54,6 +54,20 @@ defmodule MCP.Protocol.Messages.SubscriptionsTest do
     assert Jason.decode!(Jason.encode!(result)) == map
   end
 
+  test "graceful listen result requires the complete result type" do
+    meta = %{"_meta" => %{@subscription_id_key => "subscription-7"}}
+
+    assert_raise KeyError, fn -> ListenResult.from_map(meta) end
+
+    assert_raise ArgumentError, ~r/resultType must be complete/, fn ->
+      ListenResult.from_map(Map.put(meta, "resultType", "input_required"))
+    end
+
+    assert_raise ArgumentError, ~r/resultType must be complete/, fn ->
+      ListenResult.to_map(%ListenResult{meta: meta["_meta"], result_type: "other"})
+    end
+  end
+
   test "acknowledgment and result require a string or integer subscription ID" do
     for module <- [AcknowledgedParams, ListenResult] do
       assert_raise ArgumentError, fn ->

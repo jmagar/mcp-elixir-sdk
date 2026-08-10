@@ -28,6 +28,7 @@ defmodule MCP.Test.ClientReviewTransport do
      %{
        owner: Keyword.fetch!(opts, :owner),
        observer: Keyword.get(opts, :observer, self()),
+       close_error: Keyword.get(opts, :close_error),
        failures: %{}
      }}
   end
@@ -47,7 +48,9 @@ defmodule MCP.Test.ClientReviewTransport do
     {:reply, :ok, %{state | failures: Map.put(state.failures, method, reason)}}
   end
 
-  def handle_call(:close, _from, state), do: {:reply, :ok, state}
+  def handle_call(:close, _from, %{close_error: nil} = state), do: {:reply, :ok, state}
+
+  def handle_call(:close, _from, state), do: {:reply, {:error, state.close_error}, state}
 
   @impl true
   def handle_cast({:inject, message}, state) do

@@ -16,7 +16,7 @@ defmodule MCP.Protocol.Messages.Subscriptions.ListenResult do
   def from_map(map) when is_map(map) do
     %__MODULE__{
       meta: map |> Map.fetch!("_meta") |> validate_meta!(),
-      result_type: map |> Map.get("resultType", "complete") |> validate_result_type!()
+      result_type: map |> Map.fetch!("resultType") |> validate_result_type!()
     }
   end
 
@@ -39,10 +39,10 @@ defmodule MCP.Protocol.Messages.Subscriptions.ListenResult do
     raise ArgumentError, "_meta must contain a string or integer subscription ID"
   end
 
-  defp validate_result_type!(result_type) when is_binary(result_type), do: result_type
+  defp validate_result_type!("complete"), do: "complete"
 
   defp validate_result_type!(result_type) do
-    raise ArgumentError, "resultType must be a string, got: #{inspect(result_type)}"
+    raise ArgumentError, "resultType must be complete, got: #{inspect(result_type)}"
   end
 
   defimpl Jason.Encoder do

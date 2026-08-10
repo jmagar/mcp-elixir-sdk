@@ -100,11 +100,11 @@ Requires building conformance adapter scripts (see `docs/implementation-plan.md`
 1. **JSON-RPC 2.0**: All messages must be valid JSON-RPC 2.0. IDs must be unique per request, never null.
 2. **Dual protocol eras**: `2026-07-28` has no initialize/session and carries client metadata per request. `2025-11-25` uses initialize/initialized, negotiated capabilities, session affinity, and legacy server-to-client requests. Keep their lifecycle and wire shapes isolated.
 3. **Stdio framing**: Messages are newline-delimited. Must NOT contain embedded newlines.
-4. **Streamable HTTP**: POST for request/response (JSON or SSE per `Accept`); **no `Mcp-Session-Id`**. `Mcp-Method`/`Mcp-Name` routing headers (SEP-2243) enable gateway routing without body inspection.
+4. **Streamable HTTP**: POST for request/response (JSON or SSE per `Accept`). The 2026 era has **no `Mcp-Session-Id`**; the isolated 2025 era uses its negotiated session ID on POST, GET, and DELETE. `Mcp-Method`/`Mcp-Name` routing headers (SEP-2243) enable gateway routing without body inspection.
 5. **Protocol version**: prefer `2026-07-28`; clients may negotiate once down to `2025-11-25`. A connection selects one era only. Unsupported versions fail with `-32022` and the supported-version list.
 6. **Identity**: the caller principal comes from the authenticated transport pipeline (HTTP: per request from `conn` via the `handler_opts` factory; stdio: launch-static) into `ToolContext.identity` — **never** from model-controlled `params`/`arguments`.
 7. **Tool annotations are untrusted**: Unless from a trusted server.
-8. **Server→client input via MRTR (SEP-2322)**: a handler returns `InputRequiredResult` (+`requestState`); the client fulfils inputs and retries. There is no held-open server→client request path.
+8. **Server→client input**: in 2026, MRTR (SEP-2322) returns `InputRequiredResult` (+`requestState`) and the client fulfils inputs before retrying; there is no held-open request path. The 2025 compatibility era retains negotiated, correlated server-to-client requests over its session/SSE channel.
 
 ## Architecture Quick Reference
 

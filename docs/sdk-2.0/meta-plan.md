@@ -1,11 +1,12 @@
 # MCP Elixir SDK 2.0 Meta-plan and Progress Ledger
 
-**Status:** Implementation complete; final review remediated; hosted CI green
+**Status:** Implementation complete; PR review remediation verified locally;
+hosted verification pending
 **Last updated:** 2026-08-09
 **Target release:** `2.0.0`
 **Baseline commit:** `2b34b324b390f7368e5c2bb10918ceabdea75b93`
 (`2.0.0-dev.1`)
-**Published implementation head:** `431866b` on `codex/mcp-routing-headers`
+**Pull request:** [`jmagar/mcp-elixir-sdk#1`](https://github.com/jmagar/mcp-elixir-sdk/pull/1)
 
 This is the single progress tracker for the original six-slice 2.0 effort and
 the S7 compatibility correction. It records
@@ -34,15 +35,16 @@ them.
 | S2 Subscriptions | Verified | Stdio and real HTTP integrations cover acknowledgment ordering, filters, bounded delivery, cancellation, keepalive, completion, isolation, and no-resumption policy | — | Merge/release decision |
 | S3 Extensions negotiation | Verified | Capability round-trip, unknown-field preservation, invalid-key/value rejection, and per-request propagation tests pass | — | Merge/release decision |
 | S4 JSON Schema 2020-12 | Verified | Server pending scenario **8/8**; client preservation **9/9**; no network `$ref` dereference **1/1** | — | Merge/release decision |
-| S5 Client/server wiring + conformance | Verified | **367** local tests; all **120** scored server checks pass with no warnings; required client matrix **63/63** | S1-S4 | Merge/release decision |
+| S5 Client/server wiring + conformance | Verified | **439** local tests; all **120** scored server checks pass with no warnings; required client matrix **63/63** | S1-S4 | Hosted PR verification |
 | S6 Release hardening | Verified | Final Lavra review remediated; Credo/Dialyzer/audit/docs/Hex gates are clean; CI dependencies and conformance tooling are integrity-pinned | S1-S5 | Merge/release decision |
-| S7 Dual-era compatibility | Verified | 2025 server denominator **81/81**; 2026 stateless initialization **30/30**; explicit and negotiated legacy client integration; **414** local tests | S1-S6 | Merge/release decision |
+| S7 Dual-era compatibility | Verified | 2025 server denominator **81/81**; 2026 stateless initialization **30/30**; explicit and negotiated legacy client integration; **439** local tests | S1-S6 | Hosted PR verification |
 
-All six implementation slices and the final adversarial remediation are
-committed, pushed, and verified by hosted CI run
-[`31304324703`](https://github.com/jmagar/mcp-elixir-sdk/actions/runs/31304324703).
-Nothing is `Release-closed`: merge, tag, and Hex publication remain distinct
-gates.
+The implementation through commit `702586a` is pushed and verified by hosted
+CI run
+[`31345196366`](https://github.com/jmagar/mcp-elixir-sdk/actions/runs/31345196366).
+The current PR-review remediation is locally verified and still requires a
+fresh hosted run after push. Nothing is `Release-closed`: merge, tag, and Hex
+publication remain distinct gates.
 
 ## S1a retrospective ledger — standard routing headers
 

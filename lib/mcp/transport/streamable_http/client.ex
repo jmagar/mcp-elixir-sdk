@@ -38,6 +38,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   @behaviour MCP.Transport
 
   @protocol_version "2026-07-28"
+  @legacy_protocol_version "2025-11-25"
   @default_legacy_sse_retry_limit 3
   @default_legacy_sse_retry_backoff 50
   @default_legacy_sse_retry_max_backoff 1_000
@@ -80,7 +81,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   def close(pid) do
     GenServer.call(pid, :close)
   catch
-    :exit, _ -> :ok
+    :exit, {:noproc, _call} -> :ok
+    :exit, reason -> {:error, {:close_failed, reason}}
   end
 
   @doc false
@@ -194,6 +196,10 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     do_close(state)
 
     {:stop, :normal, :ok, %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}}
+  rescue
+    exception -> transport_close_failure(state, :error, exception, __STACKTRACE__)
+  catch
+    kind, reason -> transport_close_failure(state, kind, reason, __STACKTRACE__)
   end
 
   @impl GenServer
@@ -254,6 +260,14 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   def handle_info({:legacy_sse_response, body}, state) when is_binary(body) do
     {:ok, state} = parse_sse_body(state, body)
+    {:noreply, state}
+  end
+
+  def handle_info({:legacy_sse_stopped, task, reason}, %{legacy_sse_task: task} = state) do
+    Process.demonitor(state.legacy_sse_ref, [:flush])
+    state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
+    state = if reason == :session_expired, do: clear_legacy_session(state), else: state
+    send(state.owner, {:mcp_legacy_sse_failed, reason})
     {:noreply, state}
   end
 
@@ -399,7 +413,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     Logger.warning("MCP StreamableHTTP Client: HTTP #{status}: #{inspect(body)}")
 
     cond do
-      status == 404 and is_binary(state.session_id) ->
+      status == 404 and
+          (is_binary(state.session_id) or state.protocol_version == @legacy_protocol_version) ->
         {:error, :session_expired}
 
       String.contains?(get_content_type(headers), "text/event-stream") ->
@@ -633,6 +648,13 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     :ok
   end
 
+  defp transport_close_failure(state, kind, reason, stacktrace) do
+    Logger.error("MCP HTTP transport close failed " <> Exception.format(kind, reason, stacktrace))
+
+    {:stop, :normal, {:error, {:close_failed, {kind, reason}}},
+     %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}}
+  end
+
   defp bind_response_session(
          transport,
          %{"method" => "initialize"} = message,
@@ -697,18 +719,23 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp start_legacy_sse_listener(%{legacy_sse_task: task} = state) when is_pid(task), do: state
 
   defp start_legacy_sse_listener(state) do
+    transport = self()
+
     {:ok, task} =
       Task.Supervisor.start_child(state.task_supervisor, fn ->
-        legacy_sse_loop(
-          state.owner,
-          state.url,
-          state.session_id,
-          state.protocol_version,
-          state.extra_headers,
-          state.legacy_sse_retry_limit,
-          state.legacy_sse_retry_backoff,
-          state.legacy_sse_retry_max_backoff
-        )
+        reason =
+          legacy_sse_loop(
+            state.owner,
+            state.url,
+            state.session_id,
+            state.protocol_version,
+            state.extra_headers,
+            state.legacy_sse_retry_limit,
+            state.legacy_sse_retry_backoff,
+            state.legacy_sse_retry_max_backoff
+          )
+
+        send(transport, {:legacy_sse_stopped, self(), reason})
       end)
 
     %{state | legacy_sse_task: task, legacy_sse_ref: Process.monitor(task)}
@@ -732,7 +759,12 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       ] ++ extra_headers
 
     result =
-      case Req.get(url, headers: headers, into: :self, receive_timeout: :infinity) do
+      case Req.get(url,
+             headers: headers,
+             into: :self,
+             receive_timeout: :infinity,
+             retry: false
+           ) do
         {:ok, %Req.Response{status: 200} = response} ->
           consume_legacy_sse_stream(owner, response, SSE.new_parser())
 
@@ -748,10 +780,24 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
     case result do
       :session_expired ->
-        :ok
+        :session_expired
+
+      :eof ->
+        wait_legacy_retry(backoff)
+
+        legacy_sse_loop(
+          owner,
+          url,
+          session_id,
+          protocol_version,
+          extra_headers,
+          retries_left,
+          backoff,
+          max_backoff
+        )
 
       _result when retries_left <= 0 ->
-        :ok
+        {:retry_exhausted, result}
 
       _result ->
         wait_legacy_retry(backoff)

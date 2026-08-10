@@ -118,6 +118,19 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
     assert rejected.status == 403
   end
 
+  test "origin allowlists preserve the effective port" do
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        enable_json_response: true,
+        allowed_hosts: ["tower.example"],
+        allowed_origins: ["https://app.example:8443"]
+      )
+
+    assert origin_request(config, "https://app.example:8443").status == 200
+    assert origin_request(config, "https://app.example:9999").status == 403
+  end
+
   test "session capacity and idle expiry are enforced by the runtime manager" do
     config =
       MCPPlug.init(
@@ -144,7 +157,7 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
 
   test "manager shutdown terminates all owned session processes" do
     name = Module.concat(__MODULE__, "Manager#{System.unique_integer([:positive])}")
-    manager = start_supervised!({LegacySessionManager, name: name})
+    _manager = start_supervised!({LegacySessionManager, name: name})
 
     config =
       MCPPlug.init(
@@ -157,9 +170,26 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
     [{_session_id, server}] = MCPPlug.legacy_sessions(config)
     monitor_ref = Process.monitor(server)
 
-    GenServer.stop(manager)
+    stop_supervised!(LegacySessionManager)
 
     assert_receive {:DOWN, ^monitor_ref, :process, ^server, :shutdown}, 1_000
+  end
+
+  test "manager outages are surfaced instead of masquerading as no sessions" do
+    name = Module.concat(__MODULE__, "Unavailable#{System.unique_integer([:positive])}")
+    _manager = start_supervised!({LegacySessionManager, name: name})
+
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        enable_json_response: true,
+        legacy_session_manager: name
+      )
+
+    stop_supervised!(LegacySessionManager)
+
+    assert {:error, {:session_manager_unavailable, _reason}} = MCPPlug.legacy_sessions(config)
+    assert legacy_post(config, initialize_request(), nil, nil).status == 503
   end
 
   test "endpoint owner shutdown reclaims that endpoint's sessions" do
@@ -271,6 +301,16 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
         else: conn
 
     MCPPlug.call(conn, config)
+  end
+
+  defp origin_request(config, origin) do
+    :post
+    |> Plug.Test.conn("https://tower.example/mcp", Jason.encode!(initialize_request()))
+    |> Plug.Conn.put_req_header("content-type", "application/json")
+    |> Plug.Conn.put_req_header("accept", "application/json")
+    |> Plug.Conn.put_req_header("origin", origin)
+    |> Plug.Conn.put_req_header("mcp-protocol-version", @legacy_version)
+    |> MCPPlug.call(config)
   end
 
   defp legacy_session_request(config, method, session_id, principal) do

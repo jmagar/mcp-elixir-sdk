@@ -416,6 +416,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
       )
 
     assert {:ok, %{protocol_version: @legacy_version}} = Client.connect(client)
+    _ = :sys.get_state(server)
 
     assert {:ok, %{"model" => "test-model"}} =
              Connection.request_sampling(server, %{"messages" => []})

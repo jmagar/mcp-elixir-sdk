@@ -43,5 +43,5 @@ defmodule MCP.Transport do
   @doc """
   Closes the transport, releasing all resources.
   """
-  @callback close(pid :: pid()) :: :ok
+  @callback close(pid :: pid()) :: :ok | {:error, term()}
 end

@@ -19,9 +19,14 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
   end
 
   def call(%Plug.Conn{method: "GET"} = conn, opts) do
-    case Keyword.get(opts, :stream?) do
-      true -> stream(conn, opts)
-      _false -> Plug.Conn.send_resp(conn, 404, "")
+    case Keyword.get(opts, :legacy_get_status) do
+      nil ->
+        if Keyword.get(opts, :stream?),
+          do: stream(conn, opts),
+          else: Plug.Conn.send_resp(conn, 404, "")
+
+      status ->
+        Plug.Conn.send_resp(conn, status, "")
     end
   end
 

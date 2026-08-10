@@ -187,9 +187,10 @@ factory may read authenticated `conn.assigns` and return an `:identity`; never
 derive identity from raw headers or tool arguments.
 
 Set `allowed_hosts:` to the canonical Phoenix endpoint host and
-`allowed_origins:` to trusted browser origins. Loopback values are the secure
-development defaults. A legacy session fingerprints its initialization
-principal and re-resolves authentication on every POST, GET, and DELETE;
+`allowed_origins:` to trusted browser origins. Origins include their effective
+port, so a port-specific entry authorizes only that port. Loopback development
+defaults accept arbitrary loopback listener ports. A legacy session fingerprints
+its initialization principal and re-resolves authentication on every POST, GET, and DELETE;
 presenting the session ID under another principal returns 403.
 
 The same endpoint accepts both wire eras. Stateless 2026 POSTs have no session.

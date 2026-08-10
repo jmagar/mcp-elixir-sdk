@@ -83,7 +83,12 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
       {5, "resources/subscribe", %{"uri" => 42}},
       {6, "resources/unsubscribe", %{"uri" => ""}},
       {7, "logging/setLevel", %{"level" => "verbose"}},
-      {8, "logging/setLevel", %{"level" => 1}}
+      {8, "logging/setLevel", %{"level" => 1}},
+      {9, "tools/list", []},
+      {10, "tools/list", %{"_meta" => []}},
+      {11, "ping", []},
+      {12, "resources/subscribe", %{"uri" => "file:///bad", "_meta" => []}},
+      {13, "logging/setLevel", %{"level" => "info", "_meta" => []}}
     ]
 
     for {id, method, params} <- invalid do
@@ -95,8 +100,8 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     refute_receive {:unsubscribed, _, _}
     refute_receive {:log_level, _, _}
 
-    send_message(client_transport, request(9, "ping", %{}))
-    assert_receive {:mcp_message, %{"id" => 9, "result" => %{}}}, 1_000
+    send_message(client_transport, request(14, "ping", %{}))
+    assert_receive {:mcp_message, %{"id" => 14, "result" => %{}}}, 1_000
     assert %Connection{} = :sys.get_state(server)
   end
 

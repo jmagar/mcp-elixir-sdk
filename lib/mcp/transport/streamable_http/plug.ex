@@ -329,11 +329,12 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   @doc "Returns active legacy session IDs and their server connection pids."
-  @spec legacy_sessions(%__MODULE__{}) :: [{String.t(), pid()}]
+  @spec legacy_sessions(%__MODULE__{}) ::
+          [{String.t(), pid()}] | {:error, {:session_manager_unavailable, term()}}
   def legacy_sessions(%__MODULE__{} = config) do
     LegacySessionManager.list(config.legacy_session_manager, config.legacy_endpoint_id)
   catch
-    :exit, _reason -> []
+    :exit, reason -> {:error, {:session_manager_unavailable, reason}}
   end
 
   defp route_method(conn, config) do
@@ -497,6 +498,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           Map.get(message, "id")
         )
 
+      {:manager_error, reason} ->
+        legacy_session_manager_error(conn, reason)
+
       {:error, reason} when reason in [:session_limit, :identity_limit, :endpoint_unavailable] ->
         send_json_error(
           conn,
@@ -530,6 +534,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       {:error, {:factory_failed, reason}} -> legacy_identity_resolution_error(conn, reason)
       {:error, detail} -> legacy_protocol_header_error(conn, message, detail)
       {:identity_error, _detail} -> Plug.Conn.send_resp(conn, 403, "Forbidden")
+      {:manager_error, reason} -> legacy_session_manager_error(conn, reason)
       :error -> send_json_error(conn, 404, -32_000, "Session not found", session_id)
     end
   end
@@ -569,13 +574,14 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
     with :ok <- validate_legacy_protocol_header(conn),
          {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, _session} <- legacy_session(config, session_id, identity) do
-      delete_legacy_session(config, session_id)
+         {:ok, _session} <- legacy_session(config, session_id, identity),
+         :ok <- delete_legacy_session(config, session_id) do
       Plug.Conn.send_resp(conn, 200, "")
     else
       {:error, {:factory_failed, reason}} -> legacy_identity_resolution_error(conn, reason)
       {:error, detail} -> legacy_protocol_header_error(conn, %{}, detail)
       {:identity_error, _detail} -> Plug.Conn.send_resp(conn, 403, "Forbidden")
+      {:manager_error, reason} -> legacy_session_manager_error(conn, reason)
       :error -> send_json_error(conn, 404, -32_000, "Session not found", session_id)
     end
   end
@@ -606,6 +612,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     send_json_error(conn, 500, Error.internal_error_code(), "Internal error", nil)
   end
 
+  defp legacy_session_manager_error(conn, reason) do
+    Logger.error("MCP Plug: legacy session manager unavailable: #{inspect(reason)}")
+    send_json_error(conn, 503, Error.internal_error_code(), "Session manager unavailable", nil)
+  end
+
   defp legacy_session(_config, nil, _identity), do: :error
 
   defp legacy_session(config, session_id, identity) do
@@ -620,7 +631,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       :error -> :error
     end
   catch
-    :exit, _reason -> :error
+    :exit, reason -> {:manager_error, reason}
   end
 
   defp delete_legacy_session(config, session_id) do
@@ -629,6 +640,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       config.legacy_endpoint_id,
       session_id
     )
+  catch
+    :exit, reason -> {:manager_error, reason}
   end
 
   defp resolve_handler_options(handler_opts, conn) when is_function(handler_opts, 1) do
@@ -671,6 +684,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       server_opts,
       limits
     )
+  catch
+    :exit, reason -> {:manager_error, reason}
   end
 
   defp start_and_initialize_legacy(config, handler_opts, identity, message) do
@@ -808,23 +823,33 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     with :ok <- validate_legacy_protocol_header(conn),
          {:ok, identity} <- resolve_identity(config.handler_opts, conn),
          {:ok, session} <- legacy_session(config, session_id, identity) do
-      body =
-        case LegacySession.next_event(session, config.legacy_sse_timeout) do
-          {:ok, message} -> SSE.encode_message(message)
-          {:error, :timeout} -> ""
-          {:error, _reason} -> ""
-        end
+      case LegacySession.next_event(session, config.legacy_sse_timeout) do
+        {:ok, message} ->
+          send_legacy_sse(conn, SSE.encode_message(message))
 
-      conn
-      |> Plug.Conn.put_resp_content_type("text/event-stream")
-      |> Plug.Conn.put_resp_header("cache-control", "no-cache")
-      |> Plug.Conn.send_resp(200, body)
+        {:error, :timeout} ->
+          send_legacy_sse(conn, "")
+
+        {:error, :closed} ->
+          send_json_error(conn, 404, -32_000, "Session closed", session_id)
+
+        {:error, reason} ->
+          send_json_error(conn, 503, -32_603, "Session unavailable", inspect(reason))
+      end
     else
       {:error, {:factory_failed, reason}} -> legacy_identity_resolution_error(conn, reason)
       {:error, detail} -> legacy_protocol_header_error(conn, %{}, detail)
       {:identity_error, _detail} -> Plug.Conn.send_resp(conn, 403, "Forbidden")
+      {:manager_error, reason} -> legacy_session_manager_error(conn, reason)
       :error -> send_json_error(conn, 404, -32_000, "Session not found", session_id)
     end
+  end
+
+  defp send_legacy_sse(conn, body) do
+    conn
+    |> Plug.Conn.put_resp_content_type("text/event-stream")
+    |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+    |> Plug.Conn.send_resp(200, body)
   end
 
   defp send_empty_sse(conn) do
@@ -1331,23 +1356,48 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         true
 
       [value] ->
-        key = origin_key(value)
-        not is_nil(key) and key in Enum.map(allowed_origins, &origin_key/1)
+        key = origin_key(value, false)
+
+        not is_nil(key) and
+          Enum.any?(allowed_origins, fn allowed ->
+            origin_matches?(key, origin_key(allowed, true))
+          end)
 
       _multiple ->
         false
     end
   end
 
-  defp origin_key(value) do
+  defp origin_key(value, allow_loopback_wildcard?) do
     case URI.parse(value) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        "#{scheme}://#{String.downcase(host)}"
+      %URI{scheme: scheme, host: host, port: port}
+      when scheme in ["http", "https"] and is_binary(host) and is_integer(port) ->
+        host = String.downcase(host)
+
+        normalized_port =
+          if allow_loopback_wildcard? and host in @localhost_patterns and
+               not explicit_origin_port?(value) do
+            :any
+          else
+            port
+          end
+
+        {scheme, host, normalized_port}
 
       _invalid ->
         nil
     end
   end
+
+  defp origin_matches?({scheme, host, port}, {scheme, host, allowed_port}),
+    do: allowed_port == :any or port == allowed_port
+
+  defp origin_matches?(_presented, _allowed), do: false
+
+  defp explicit_origin_port?(origin) when is_binary(origin),
+    do: String.match?(origin, ~r/(?:\]|[^:]):\d+$/)
+
+  defp explicit_origin_port?(_authority), do: false
 
   defp normalize_host(value) do
     value
@@ -1374,7 +1424,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   defp validate_origin_list!(origins) do
     validate_string_list!(origins, :allowed_origins)
 
-    unless Enum.all?(origins, &(not is_nil(origin_key(&1)))) do
+    unless Enum.all?(origins, &(not is_nil(origin_key(&1, true)))) do
       raise ArgumentError, ":allowed_origins must contain only HTTP or HTTPS origins"
     end
   end

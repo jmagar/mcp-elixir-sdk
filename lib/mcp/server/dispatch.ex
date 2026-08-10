@@ -344,17 +344,21 @@ defmodule MCP.Server.Dispatch do
       try do
         apply(mod, name, ctx_args) |> finish(shape, id, config)
       rescue
-        _exception -> handler_failure(name, id, config, :raise)
+        exception -> handler_failure(name, id, config, :error, exception, __STACKTRACE__)
       catch
-        kind, _reason -> handler_failure(name, id, config, kind)
+        kind, reason -> handler_failure(name, id, config, kind, reason, __STACKTRACE__)
       end
     else
       reply(id, Error.method_not_found(Atom.to_string(name)), config)
     end
   end
 
-  defp handler_failure(name, id, config, kind) do
-    Logger.error("MCP server handler callback failed callback=#{name} kind=#{kind}")
+  defp handler_failure(name, id, config, kind, reason, stacktrace) do
+    Logger.error(
+      "MCP server handler callback failed callback=#{name} " <>
+        Exception.format(kind, reason, stacktrace)
+    )
+
     reply(id, Error.internal_error("handler callback failed"), config)
   end
 

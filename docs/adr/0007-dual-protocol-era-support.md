@@ -1,6 +1,6 @@
 # ADR-007: Support both 2025-11-25 and 2026-07-28 in the 2.0 SDK
 
-**Status:** Accepted — product-owner correction, 2026-08-09  
+**Status:** Accepted — product-owner correction, 2026-08-09
 **Supersedes:** ADR-002 sub-decisions 1 and 5, and ADR-003 decision item 5 only
 
 ## Context

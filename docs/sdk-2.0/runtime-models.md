@@ -156,7 +156,9 @@ growth rather than merely bounding the final worker queue.
 
 For 2025 HTTP, the client transport also owns a supervised GET SSE listener
 bound to the negotiated session ID. Closing stops the listener before issuing
-a best-effort DELETE.
+a best-effort DELETE. Session expiry or exhausted listener retries are surfaced
+to the owner; a terminal listener exit is never treated as continued healthy
+delivery.
 
 ## M2a — Legacy HTTP session runtime
 
@@ -168,7 +170,9 @@ sessions at idle or absolute expiry. The transport bounds pending POST callers,
 request-scoped notifications, its SSE event queue, and the single SSE waiter.
 Caller death, timeout, manager shutdown, process failure, or DELETE removes
 waiters and closes both processes. Initialize failure never publishes a session
-ID and closes the partially created runtime.
+ID and closes the partially created runtime. Manager unavailability is exposed
+as an operational error (HTTP 503 at the Plug boundary), not collapsed into an
+empty registry, successful deletion, or session-not-found response.
 
 ## M3 — Stdio transport
 

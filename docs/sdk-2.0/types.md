@@ -256,11 +256,12 @@ defstruct [:meta, result_type: "complete"]
 
 @type t :: %__MODULE__{
   meta: map(),
-  result_type: "complete" | String.t()
+  result_type: "complete"
 }
 ```
 
-The final result has no payload beyond base result fields and required metadata.
+The final result requires literal `resultType: "complete"` and has no payload
+beyond base result fields and required metadata.
 
 ### `MCP.Client.SubscriptionHandle`
 

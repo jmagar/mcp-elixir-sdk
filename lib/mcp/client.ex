@@ -286,7 +286,8 @@ defmodule MCP.Client do
   def close(client) do
     GenServer.call(client, :close)
   catch
-    :exit, _ -> :ok
+    :exit, {:noproc, _call} -> :ok
+    :exit, reason -> {:error, {:close_failed, reason}}
   end
 
   @doc "Cancels a pending request by ID (sends `notifications/cancelled`)."
@@ -405,7 +406,17 @@ defmodule MCP.Client do
         {:reply, {:ok, state.connect_result}, state}
 
       is_list(state.connect_waiters) ->
-        {:noreply, %{state | connect_waiters: [from | state.connect_waiters]}}
+        waiter_ref = make_ref()
+        timeout_ref = Process.send_after(self(), {:connect_waiter_timeout, waiter_ref}, timeout)
+
+        waiter = %{
+          from: from,
+          waiter_ref: waiter_ref,
+          timeout_ref: timeout_ref,
+          deadline: System.monotonic_time(:millisecond) + timeout
+        }
+
+        {:noreply, %{state | connect_waiters: [waiter | state.connect_waiters]}}
 
       legacy_protocol?(state) ->
         state = %{state | connect_waiters: []}
@@ -610,6 +621,11 @@ defmodule MCP.Client do
     {:noreply, %{state | status: :closed, subscriptions: %{}}}
   end
 
+  def handle_info({:mcp_legacy_sse_failed, reason}, state) do
+    Logger.warning("MCP legacy SSE listener unavailable: #{inspect(reason)}")
+    {:noreply, state}
+  end
+
   def handle_info({:mcp_subscription_transport_closed, id, reason}, state) do
     case Map.pop(state.subscriptions, id) do
       {nil, _subscriptions} ->
@@ -622,7 +638,7 @@ defmodule MCP.Client do
     end
   end
 
-  def handle_info({:DOWN, ref, :process, worker, _reason}, state)
+  def handle_info({:DOWN, ref, :process, worker, reason}, state)
       when not is_map_key(state.transport_tasks, ref) and
              not is_map_key(state.callback_tasks, ref) and
              not is_map_key(state.subscription_open_tasks, ref) do
@@ -640,14 +656,7 @@ defmodule MCP.Client do
         {:noreply, %{state | server_request_tasks: tasks}}
 
       nil ->
-        case subscription_by_monitor(state.subscriptions, ref, worker) do
-          {id, _subscription} ->
-            send_subscription_cancel(state, id, "subscription consumer closed")
-            {:noreply, %{state | subscriptions: Map.delete(state.subscriptions, id)}}
-
-          nil ->
-            {:noreply, state}
-        end
+        handle_subscription_down(state, ref, worker, reason)
     end
   end
 
@@ -658,7 +667,7 @@ defmodule MCP.Client do
         state = %{state | pending_requests: pending}
 
         if connect_operation?(operation.kind) do
-          fail_connect(from, :timeout, state)
+          continue_connect_after_timeout(from, state)
         else
           GenServer.reply(from, {:error, :timeout})
           {:noreply, state}
@@ -667,6 +676,14 @@ defmodule MCP.Client do
       {nil, _} ->
         {:noreply, state}
     end
+  end
+
+  def handle_info({:connect_waiter_timeout, waiter_ref}, state) do
+    {expired, waiting} =
+      Enum.split_with(state.connect_waiters || [], &(&1.waiter_ref == waiter_ref))
+
+    Enum.each(expired, &GenServer.reply(&1.from, {:error, :timeout}))
+    {:noreply, %{state | connect_waiters: waiting}}
   end
 
   def handle_info({:callback_timeout, ref}, state) do
@@ -720,9 +737,12 @@ defmodule MCP.Client do
 
       {operation, open_tasks} ->
         _ = Task.Supervisor.terminate_child(state.task_supervisor, operation.task_pid)
-        GenServer.stop(operation.worker, :normal)
+
+        state =
+          discard_opening_subscription(%{state | subscription_open_tasks: open_tasks}, operation)
+
         GenServer.reply(operation.from, {:error, :timeout})
-        {:noreply, %{state | subscription_open_tasks: open_tasks}}
+        {:noreply, state}
     end
   end
 
@@ -1056,13 +1076,13 @@ defmodule MCP.Client do
 
   defp complete_connect(from, result, state) do
     GenServer.reply(from, {:ok, result})
-    Enum.each(state.connect_waiters || [], &GenServer.reply(&1, {:ok, result}))
+    reply_connect_waiters(state.connect_waiters, {:ok, result})
     {:noreply, %{state | connect_waiters: nil}}
   end
 
   defp fail_connect(from, reason, state) do
     GenServer.reply(from, {:error, reason})
-    Enum.each(state.connect_waiters || [], &GenServer.reply(&1, {:error, reason}))
+    reply_connect_waiters(state.connect_waiters, {:error, reason})
 
     {:noreply,
      %{
@@ -1071,6 +1091,28 @@ defmodule MCP.Client do
          connect_result: nil,
          legacy_ready: false
      }}
+  end
+
+  defp continue_connect_after_timeout(from, state) do
+    GenServer.reply(from, {:error, :timeout})
+    now = System.monotonic_time(:millisecond)
+
+    case Enum.max_by(state.connect_waiters || [], & &1.deadline, fn -> nil end) do
+      nil ->
+        {:noreply, %{state | connect_waiters: nil, connect_result: nil, legacy_ready: false}}
+
+      waiter ->
+        cancel_timeout(waiter.timeout_ref)
+        remaining = max(waiter.deadline - now, 0)
+        waiting = List.delete(state.connect_waiters, waiter)
+        state = %{state | connect_waiters: waiting, connect_result: nil, legacy_ready: false}
+
+        if legacy_protocol?(state) do
+          send_initialize(state, waiter.from, remaining)
+        else
+          send_rpc(state, waiter.from, Methods.discover(), %{}, {:discover, false}, [], remaining)
+        end
+    end
   end
 
   defp rollback_initialize(from, reason, state) do
@@ -1431,9 +1473,21 @@ defmodule MCP.Client do
   defp safely_invoke(callback) do
     callback.()
   rescue
-    _exception -> {:error, Error.internal_error("client request handler failed")}
+    exception ->
+      Logger.error(
+        "MCP client request handler failed " <>
+          Exception.format(:error, exception, __STACKTRACE__)
+      )
+
+      {:error, Error.internal_error("client request handler failed")}
   catch
-    _kind, _reason -> {:error, Error.internal_error("client request handler failed")}
+    kind, reason ->
+      Logger.error(
+        "MCP client request handler failed " <>
+          Exception.format(kind, reason, __STACKTRACE__)
+      )
+
+      {:error, Error.internal_error("client request handler failed")}
   end
 
   defp server_request_response(id, {:ok, result}),
@@ -1516,6 +1570,13 @@ defmodule MCP.Client do
       end)
 
     timeout_ref = Process.send_after(self(), {:subscription_open_timeout, task.ref}, timeout)
+    monitor_ref = Process.monitor(worker)
+
+    subscription = %{
+      worker: worker,
+      monitor_ref: monitor_ref,
+      acknowledged?: false
+    }
 
     operation = %{
       from: from,
@@ -1528,7 +1589,8 @@ defmodule MCP.Client do
     {:noreply,
      %{
        state
-       | subscription_open_tasks: Map.put(state.subscription_open_tasks, task.ref, operation)
+       | subscription_open_tasks: Map.put(state.subscription_open_tasks, task.ref, operation),
+         subscriptions: Map.put(state.subscriptions, id, subscription)
      }}
   end
 
@@ -1539,26 +1601,17 @@ defmodule MCP.Client do
 
     case result do
       :ok ->
-        monitor_ref = Process.monitor(operation.worker)
-
-        subscription = %{
-          worker: operation.worker,
-          monitor_ref: monitor_ref,
-          acknowledged?: false
-        }
-
         handle = SubscriptionHandle.new(operation.id, operation.worker)
-        subscriptions = Map.put(state.subscriptions, operation.id, subscription)
         GenServer.reply(operation.from, {:ok, handle})
-        {:noreply, %{state | subscriptions: subscriptions}}
+        {:noreply, state}
 
       {:error, reason} ->
-        GenServer.stop(operation.worker, :normal)
+        state = discard_opening_subscription(state, operation)
         GenServer.reply(operation.from, {:error, reason})
         {:noreply, state}
 
       other ->
-        GenServer.stop(operation.worker, :normal)
+        state = discard_opening_subscription(state, operation)
         GenServer.reply(operation.from, {:error, {:invalid_transport_result, other}})
         {:noreply, state}
     end
@@ -1567,9 +1620,24 @@ defmodule MCP.Client do
   defp fail_subscription_open(ref, reason, state) do
     {operation, open_tasks} = Map.pop(state.subscription_open_tasks, ref)
     cancel_timeout(operation.timeout_ref)
-    GenServer.stop(operation.worker, :normal)
+
+    state =
+      discard_opening_subscription(%{state | subscription_open_tasks: open_tasks}, operation)
+
     GenServer.reply(operation.from, {:error, {:transport_task_exit, reason}})
-    {:noreply, %{state | subscription_open_tasks: open_tasks}}
+    {:noreply, state}
+  end
+
+  defp discard_opening_subscription(state, operation) do
+    case Map.pop(state.subscriptions, operation.id) do
+      {nil, subscriptions} ->
+        %{state | subscriptions: subscriptions}
+
+      {subscription, subscriptions} ->
+        Process.demonitor(subscription.monitor_ref, [:flush])
+        GenServer.stop(operation.worker, :normal)
+        %{state | subscriptions: subscriptions}
+    end
   end
 
   defp route_subscription_notification(id, method, params, state) do
@@ -1664,9 +1732,53 @@ defmodule MCP.Client do
 
       {subscription, subscriptions} ->
         Process.demonitor(subscription.monitor_ref, [:flush])
-        SubscriptionWorker.fail(subscription.worker, reason)
-        send_subscription_cancel(state, id, "subscription protocol error")
-        {:noreply, %{state | subscriptions: subscriptions}}
+        opening? = Enum.any?(state.subscription_open_tasks, fn {_ref, op} -> op.id == id end)
+
+        if opening? do
+          GenServer.stop(subscription.worker, :normal)
+        else
+          SubscriptionWorker.fail(subscription.worker, reason)
+          send_subscription_cancel(state, id, "subscription protocol error")
+        end
+
+        fail_opening_subscription(%{state | subscriptions: subscriptions}, id, reason)
+    end
+  end
+
+  defp fail_opening_subscription(state, id, reason) do
+    case Enum.find(state.subscription_open_tasks, fn {_ref, operation} -> operation.id == id end) do
+      nil ->
+        {:noreply, state}
+
+      {ref, operation} ->
+        cancel_timeout(operation.timeout_ref)
+        Process.demonitor(ref, [:flush])
+        _ = Task.Supervisor.terminate_child(state.task_supervisor, operation.task_pid)
+        GenServer.reply(operation.from, {:error, reason})
+
+        {:noreply,
+         %{state | subscription_open_tasks: Map.delete(state.subscription_open_tasks, ref)}}
+    end
+  end
+
+  defp opening_subscription?(state, id) do
+    Enum.any?(state.subscription_open_tasks, fn {_ref, operation} -> operation.id == id end)
+  end
+
+  defp handle_subscription_down(state, ref, worker, reason) do
+    case subscription_by_monitor(state.subscriptions, ref, worker) do
+      {id, _subscription} ->
+        state = %{state | subscriptions: Map.delete(state.subscriptions, id)}
+
+        if opening_subscription?(state, id) do
+          fail_opening_subscription(state, id, {:subscription_worker_exit, reason})
+        else
+          send_subscription_cancel(state, id, "subscription consumer closed")
+          {:noreply, state}
+        end
+
+      nil ->
+        {:noreply, state}
     end
   end
 
@@ -1980,6 +2092,13 @@ defmodule MCP.Client do
   defp schedule_timeout(id, ms), do: Process.send_after(self(), {:request_timeout, id}, ms)
   defp cancel_timeout(ref), do: Process.cancel_timer(ref)
 
+  defp reply_connect_waiters(waiters, reply) do
+    Enum.each(waiters || [], fn waiter ->
+      cancel_timeout(waiter.timeout_ref)
+      GenServer.reply(waiter.from, reply)
+    end)
+  end
+
   defp cursor_params(opts) do
     params = if cursor = Keyword.get(opts, :cursor), do: %{"cursor" => cursor}, else: %{}
     put_meta(params, Keyword.get(opts, :meta))
@@ -2259,10 +2378,33 @@ defmodule MCP.Client do
       SubscriptionWorker.fail(subscription.worker, :closed)
     end)
 
-    if state.transport_pid, do: state.transport_module.close(state.transport_pid)
-    {:stop, :normal, :ok, %{state | status: :closed, subscriptions: %{}}}
+    closed_state = %{state | status: :closed, subscriptions: %{}}
+
+    case close_transport(state) do
+      :ok -> {:stop, :normal, :ok, closed_state}
+      {:error, reason} -> close_failure(closed_state, :exit, reason, [])
+    end
+  rescue
+    exception -> close_failure(state, :error, exception, __STACKTRACE__)
   catch
-    _, _ -> {:stop, :normal, :ok, %{state | status: :closed, subscriptions: %{}}}
+    kind, reason -> close_failure(state, kind, reason, __STACKTRACE__)
+  end
+
+  defp close_failure(state, kind, reason, stacktrace) do
+    Logger.error("MCP client close failed " <> Exception.format(kind, reason, stacktrace))
+
+    {:stop, :normal, {:error, {:close_failed, {kind, reason}}},
+     %{state | status: :closed, subscriptions: %{}}}
+  end
+
+  defp close_transport(%{transport_pid: nil}), do: :ok
+
+  defp close_transport(state) do
+    case state.transport_module.close(state.transport_pid) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:transport_close_failed, reason}}
+      other -> {:error, {:invalid_transport_close_result, other}}
+    end
   end
 
   defp fail_all_operations(state, reason) do
@@ -2288,7 +2430,7 @@ defmodule MCP.Client do
       _ = Task.Supervisor.terminate_child(state.server_request_supervisor, callback.pid)
     end)
 
-    Enum.each(state.connect_waiters || [], &GenServer.reply(&1, {:error, reason}))
+    reply_connect_waiters(state.connect_waiters, {:error, reason})
 
     Enum.each(state.subscription_open_tasks, fn {_ref, operation} ->
       cancel_timeout(operation.timeout_ref)

@@ -269,6 +269,75 @@ defmodule MCP.ClientLifecycleTest do
     assert Client.status(client) == :ready
   end
 
+  test "an acknowledgment delivered before transport open returns is preserved" do
+    subscription_supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    client =
+      start_supervised!(
+        {Client,
+         transport: {MCP.Test.EagerSubscriptionTransport, []},
+         subscription_supervisor: subscription_supervisor}
+      )
+
+    assert {:ok, handle} =
+             Client.listen_subscriptions(
+               client,
+               %SubscriptionFilter{tools_list_changed: true},
+               timeout: 1_000
+             )
+
+    assert {:ok, %{"method" => "notifications/subscriptions/acknowledged"}} =
+             SubscriptionHandle.next(handle, 1_000)
+  end
+
+  test "an eager subscription protocol failure fails the open call" do
+    subscription_supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    client =
+      start_supervised!(
+        {Client,
+         transport: {MCP.Test.EagerSubscriptionTransport, invalid_message?: true},
+         subscription_supervisor: subscription_supervisor}
+      )
+
+    assert {:error, :notification_before_acknowledgment} =
+             Client.listen_subscriptions(
+               client,
+               %SubscriptionFilter{tools_list_changed: true},
+               timeout: 1_000
+             )
+
+    assert :sys.get_state(client).subscription_open_tasks == %{}
+    assert DynamicSupervisor.count_children(subscription_supervisor).active == 0
+  end
+
+  test "subscription worker exit while opening fails the caller and cancels transport work" do
+    subscription_supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    client =
+      start_supervised!(
+        {Client,
+         transport: {BlockingTransport, observer: self()},
+         subscription_supervisor: subscription_supervisor}
+      )
+
+    open =
+      Task.async(fn ->
+        Client.listen_subscriptions(
+          client,
+          %SubscriptionFilter{tools_list_changed: true},
+          timeout: 1_000
+        )
+      end)
+
+    assert_receive {:transport_send_started, %{"method" => "subscriptions/listen"}}, 1_000
+    [{_id, subscription}] = :sys.get_state(client).subscriptions |> Map.to_list()
+    GenServer.stop(subscription.worker, :normal)
+
+    assert {:error, {:subscription_worker_exit, :normal}} = Task.await(open, 1_000)
+    assert :sys.get_state(client).subscription_open_tasks == %{}
+  end
+
   test "subscription worker exit cannot crash the client after transport loss" do
     {client, transport, handle} = start_mock_subscription()
     client_ref = Process.monitor(client)

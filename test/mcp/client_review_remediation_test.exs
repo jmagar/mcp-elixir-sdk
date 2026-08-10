@@ -2,7 +2,16 @@ defmodule MCP.ClientReviewRemediationTest do
   use ExUnit.Case, async: true
 
   alias MCP.Client
-  alias MCP.Test.{ClientReviewHTTPPlug, ClientReviewTransport}
+  alias MCP.Server.Connection
+
+  alias MCP.Test.{
+    BlockingTransport,
+    ClientReviewHTTPPlug,
+    ClientReviewTransport,
+    ConnectRetryTransport,
+    StatelessHandler
+  }
+
   alias MCP.Transport.StreamableHTTP.Client, as: HTTPClient
 
   @legacy_version "2025-11-25"
@@ -27,6 +36,43 @@ defmodule MCP.ClientReviewRemediationTest do
 
     assert {:ok, ^result} = Client.connect(client)
     refute_receive {:client_review_sent, ^transport, %{"method" => "initialize"}, _opts}, 50
+  end
+
+  test "each queued connect call keeps its own timeout" do
+    client =
+      start_supervised!(
+        {Client,
+         transport: {BlockingTransport, observer: self()}, protocol_version: @legacy_version}
+      )
+
+    first = Task.async(fn -> Client.connect(client, 1_000) end)
+    assert_receive {:transport_send_started, %{"method" => "initialize"}}, 1_000
+
+    second = Task.async(fn -> Client.connect(client, 0) end)
+    assert {:error, :timeout} = Task.await(second, 500)
+
+    transport = Client.transport(client)
+    BlockingTransport.release(transport, {:error, :closed})
+    assert {:error, :closed} = Task.await(first, 1_000)
+  end
+
+  test "a longer queued connect continues after the leader times out" do
+    client =
+      start_supervised!(
+        {Client,
+         transport: {ConnectRetryTransport, observer: self()}, protocol_version: @legacy_version}
+      )
+
+    first = Task.async(fn -> Client.connect(client, 25) end)
+    assert_receive {:connect_retry_sent, 1, %{"method" => "initialize"}}, 1_000
+    second = Task.async(fn -> Client.connect(client, 1_000) end)
+
+    assert {:error, :timeout} = Task.await(first, 500)
+    assert_receive {:connect_retry_sent, 2, initialize}, 1_000
+
+    transport = Client.transport(client)
+    ConnectRetryTransport.inject(transport, initialize_result(initialize["id"]))
+    assert {:ok, %{protocol_version: @legacy_version}} = Task.await(second, 1_000)
   end
 
   test "legacy operations require a completed initialize and roots notification reports failures" do
@@ -206,6 +252,51 @@ defmodule MCP.ClientReviewRemediationTest do
     assert System.monotonic_time(:millisecond) - started < 250
     assert_receive {:client_review_delete, request}, 500
     send(request, :release_delete)
+  end
+
+  test "legacy SSE retry exhaustion is reported to the owner" do
+    %{url: url} = start_http_plug(legacy_get_status: 500)
+
+    client =
+      start_supervised!(
+        {HTTPClient,
+         owner: self(), url: url, legacy_sse_retry_limit: 0, protocol_version: @legacy_version}
+      )
+
+    assert :ok = HTTPClient.send_message(client, initialize_request(1))
+    assert_receive {:mcp_message, %{"id" => 1}}
+
+    assert_receive {:mcp_legacy_sse_failed, {:retry_exhausted, {:error, {:http_status, 500}}}},
+                   1_000
+  end
+
+  test "close APIs do not report success for the wrong process" do
+    assert {:error, {:close_failed, _reason}} = Client.close(self())
+    assert {:error, {:close_failed, _reason}} = HTTPClient.close(self())
+    assert {:error, {:close_failed, _reason}} = Connection.close(self())
+  end
+
+  test "client and server close propagate transport close failures" do
+    client =
+      start_supervised!(
+        {Client,
+         transport: {ClientReviewTransport, observer: self(), close_error: :shutdown_failed}},
+        restart: :temporary
+      )
+
+    assert {:error, {:close_failed, {:exit, {:transport_close_failed, :shutdown_failed}}}} =
+             Client.close(client)
+
+    server =
+      start_supervised!(
+        {Connection,
+         transport: {ClientReviewTransport, observer: self(), close_error: :shutdown_failed},
+         handler: {StatelessHandler, []}},
+        restart: :temporary
+      )
+
+    assert {:error, {:close_failed, {:exit, {:transport_close_failed, :shutdown_failed}}}} =
+             Connection.close(server)
   end
 
   defp start_legacy_client(opts \\ []) do

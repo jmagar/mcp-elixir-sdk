@@ -54,6 +54,7 @@ jobs:
       - run: mix deps.unlock --check-unused
       - run: git diff --check
       - run: jq empty conformance/scenarios.json
+      - run: jq empty conformance/compatibility-2025-11-25.json
 
   conformance:
     runs-on: ubuntu-latest
@@ -102,6 +103,10 @@ jobs:
           npx --no-install conformance server \
             --url http://127.0.0.1:43001/mcp \
             --requirements 2026-07-28
+
+          npx --no-install conformance server \
+            --url http://127.0.0.1:43001/mcp \
+            --requirements 2025-11-25
 
           for scenario in \
             tools_call \

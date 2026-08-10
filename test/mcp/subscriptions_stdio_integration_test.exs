@@ -64,8 +64,8 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
         %SubscriptionFilter{resource_subscriptions: ["file:///guide.md"]}
       )
 
-    assert_receive {:subscription_authorized, 1, :stdio_principal}
-    assert_receive {:subscription_authorized, 2, :stdio_principal}
+    assert_receive {:subscription_authorized, 1, :stdio_principal}, 1_000
+    assert_receive {:subscription_authorized, 2, :stdio_principal}, 1_000
 
     assert {:ok, tools_ack} = SubscriptionHandle.next(tools, 1_000)
     assert tools_ack["method"] == Methods.subscriptions_acknowledged()
@@ -109,9 +109,7 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     assert {:ok, _ack} = SubscriptionHandle.next(second, 1_000)
     assert :ok = SubscriptionHandle.close(first)
 
-    synchronize(context)
-
-    assert Registry.lookup(context.registry, {:mcp_subscriptions, :stdio_test}) |> length() == 1
+    assert :ok = await_registry_count(context, 1)
 
     assert :ok =
              SubscriptionPublisher.publish(
@@ -301,6 +299,24 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     _ = :sys.get_state(context.client_transport)
     _ = :sys.get_state(context.server_transport)
     _ = :sys.get_state(context.server)
+  end
+
+  defp await_registry_count(context, expected, deadline \\ nil) do
+    deadline = deadline || System.monotonic_time(:millisecond) + 1_000
+    synchronize(context)
+    actual = Registry.lookup(context.registry, {:mcp_subscriptions, :stdio_test}) |> length()
+
+    cond do
+      actual == expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) < deadline ->
+        :erlang.yield()
+        await_registry_count(context, expected, deadline)
+
+      true ->
+        {:error, {:registry_count, actual}}
+    end
   end
 
   defp assert_connection_start_error(opts, expected) do

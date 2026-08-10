@@ -85,7 +85,8 @@ defmodule MCP.Server.Connection do
   def close(server) do
     GenServer.call(server, :close)
   catch
-    :exit, _ -> :ok
+    :exit, {:noproc, _call} -> :ok
+    :exit, reason -> {:error, {:close_failed, reason}}
   end
 
   @doc "Gracefully closes one active subscription and emits its final result."
@@ -195,10 +196,15 @@ defmodule MCP.Server.Connection do
 
   def handle_call(:close, _from, state) do
     state = state |> fail_pending_client_requests(:closed) |> close_all_subscriptions()
-    if state.transport_pid, do: state.transport_module.close(state.transport_pid)
-    {:stop, :normal, :ok, state}
+
+    case close_transport(state) do
+      :ok -> {:stop, :normal, :ok, state}
+      {:error, reason} -> server_close_failure(state, :exit, reason, [])
+    end
+  rescue
+    exception -> server_close_failure(state, :error, exception, __STACKTRACE__)
   catch
-    _, _ -> {:stop, :normal, :ok, state}
+    kind, reason -> server_close_failure(state, kind, reason, __STACKTRACE__)
   end
 
   def handle_call({:close_subscription, request_id}, _from, state) do
@@ -269,6 +275,21 @@ defmodule MCP.Server.Connection do
 
   def handle_call({:request_client, _method, _params, _timeout}, _from, state),
     do: {:reply, {:error, :legacy_client_not_ready}, state}
+
+  defp server_close_failure(state, kind, reason, stacktrace) do
+    Logger.error("MCP server close failed " <> Exception.format(kind, reason, stacktrace))
+    {:stop, :normal, {:error, {:close_failed, {kind, reason}}}, state}
+  end
+
+  defp close_transport(%{transport_pid: nil}), do: :ok
+
+  defp close_transport(state) do
+    case state.transport_module.close(state.transport_pid) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:transport_close_failed, reason}}
+      other -> {:error, {:invalid_transport_close_result, other}}
+    end
+  end
 
   @impl GenServer
   def handle_info({:mcp_message, message}, state),

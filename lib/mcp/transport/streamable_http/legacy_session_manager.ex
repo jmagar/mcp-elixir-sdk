@@ -38,8 +38,6 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   @doc false
   def delete(manager, endpoint_id, session_id) do
     GenServer.call(manager, {:delete, endpoint_id, session_id})
-  catch
-    :exit, _reason -> :ok
   end
 
   @doc false
