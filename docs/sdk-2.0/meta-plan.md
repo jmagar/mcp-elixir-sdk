@@ -1,8 +1,8 @@
 # MCP Elixir SDK 2.0 Meta-plan and Progress Ledger
 
-**Status:** Implementation complete; PR review remediation verified locally;
-hosted verification pending
-**Last updated:** 2026-08-09
+**Status:** Implementation merged; PR review remediation and post-merge hosted
+verification passed; release publication pending
+**Last updated:** 2026-08-10
 **Target release:** `2.0.0`
 **Baseline commit:** `2b34b324b390f7368e5c2bb10918ceabdea75b93`
 (`2.0.0-dev.1`)
@@ -35,16 +35,15 @@ them.
 | S2 Subscriptions | Verified | Stdio and real HTTP integrations cover acknowledgment ordering, filters, bounded delivery, cancellation, keepalive, completion, isolation, and no-resumption policy | — | Merge/release decision |
 | S3 Extensions negotiation | Verified | Capability round-trip, unknown-field preservation, invalid-key/value rejection, and per-request propagation tests pass | — | Merge/release decision |
 | S4 JSON Schema 2020-12 | Verified | Server pending scenario **8/8**; client preservation **9/9**; no network `$ref` dereference **1/1** | — | Merge/release decision |
-| S5 Client/server wiring + conformance | Verified | **439** local tests; all **120** scored server checks pass with no warnings; required client matrix **63/63** | S1-S4 | Hosted PR verification |
+| S5 Client/server wiring + conformance | Verified | **439** local tests; all **120** scored server checks pass with no warnings; required client matrix **63/63** | S1-S4 | Tag/Hex release decision |
 | S6 Release hardening | Verified | Final Lavra review remediated; Credo/Dialyzer/audit/docs/Hex gates are clean; CI dependencies and conformance tooling are integrity-pinned | S1-S5 | Merge/release decision |
-| S7 Dual-era compatibility | Verified | 2025 server denominator **81/81**; 2026 stateless initialization **30/30**; explicit and negotiated legacy client integration; **439** local tests | S1-S6 | Hosted PR verification |
+| S7 Dual-era compatibility | Verified | 2025 server denominator **81/81**; 2026 stateless initialization **30/30**; explicit and negotiated legacy client integration; **439** local tests | S1-S6 | Tag/Hex release decision |
 
-The implementation through commit `702586a` is pushed and verified by hosted
-CI run
-[`31345196366`](https://github.com/jmagar/mcp-elixir-sdk/actions/runs/31345196366).
-The current PR-review remediation is locally verified and still requires a
-fresh hosted run after push. Nothing is `Release-closed`: merge, tag, and Hex
-publication remain distinct gates.
+PR #1 was merged to `main` as commit `519835e`. The merge result is verified by
+hosted CI run
+[`31360537441`](https://github.com/jmagar/mcp-elixir-sdk/actions/runs/31360537441):
+all three supported Elixir/OTP test jobs, quality checks, and dual-era
+conformance passed. Tagging and Hex publication remain distinct release gates.
 
 ## S1a retrospective ledger — standard routing headers
 
