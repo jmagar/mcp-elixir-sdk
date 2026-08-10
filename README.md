@@ -4,7 +4,7 @@ An OTP-native Elixir client and server SDK for the Model Context Protocol. The
 unreleased 2.0 line supports stateful `2025-06-18` and `2025-11-25` plus
 stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 
-> `2.0.0-dev.2` is a prerelease. Its handler API is a breaking cutover from
+> `2.0.0-rc.1` is a release candidate. Its handler API is a breaking cutover from
 > 1.x, while its wire protocol remains compatible with `2025-11-25` peers.
 
 ## What 2.0 provides
@@ -32,9 +32,10 @@ implementation tracks the pinned official schema revision documented in
 
 ## Installation
 
-No production installation coordinate is currently advertised. This branch is
-unreleased; use the immutable release-candidate coordinate produced by the
-release gate, not a development branch or one of the stale prerelease commits.
+No production installation coordinate is currently advertised. The package
+metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
+exist until the branch-finishing and publication workflows complete. Until
+then, use only the exact verified release commit reported with the candidate.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
 

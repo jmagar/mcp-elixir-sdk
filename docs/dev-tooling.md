@@ -101,8 +101,8 @@ was run from the built Hex archive on `devbox` as user `jmagar`, Linux
 `--init`. The host has no native Mix installation.
 
 The first run exposed that `/proc/<pid>/task/<pid>/children` alone did not find
-a descendant that created its own process group. `MCP.Transport.Stdio.Process`
-now cross-checks the complete `/proc/*/status` parent table before shutdown.
+a descendant that created its own process group. The internal stdio process
+owner now cross-checks the complete `/proc/*/status` parent table before shutdown.
 After rebuilding the archive, the probe reported:
 
 ```text

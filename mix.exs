@@ -1,8 +1,8 @@
 defmodule MCPElixirSDK.MixProject do
   use Mix.Project
 
-  @version "2.0.0-dev.2"
-  @source_url "https://github.com/JohnSmall/mcp-elixir-sdk"
+  @version "2.0.0-rc.1"
+  @source_url "https://github.com/jmagar/mcp-elixir-sdk"
 
   def project do
     [
@@ -45,6 +45,8 @@ defmodule MCPElixirSDK.MixProject do
           "https://modelcontextprotocol.io/specification/2026-07-28",
         "MCP 2025-11-25 Specification" =>
           "https://modelcontextprotocol.io/specification/2025-11-25",
+        "MCP 2025-06-18 Specification" =>
+          "https://modelcontextprotocol.io/specification/2025-06-18",
         "Examples" => "#{@source_url}#server-handler"
       },
       files:
