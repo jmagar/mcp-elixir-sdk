@@ -31,6 +31,8 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   end
 
   @doc false
+  @spec lookup(GenServer.server(), term(), String.t(), term()) ::
+          {:ok, LegacySession.session()} | {:error, :identity_mismatch} | :error
   def lookup(manager, endpoint_id, session_id, identity) do
     GenServer.call(manager, {:lookup, endpoint_id, session_id, identity})
   end

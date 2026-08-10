@@ -596,7 +596,12 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     end
   end
 
-  defp validate_session_protocol(%{protocol_version: version}, version), do: :ok
+  defp validate_session_protocol(
+         %{server: server, transport: transport, protocol_version: version},
+         version
+       )
+       when is_pid(server) and is_pid(transport),
+       do: :ok
 
   defp validate_session_protocol(%{protocol_version: expected}, presented),
     do: {:error, "session protocol mismatch: expected #{expected}, got #{presented}"}

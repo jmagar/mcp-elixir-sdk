@@ -17,7 +17,11 @@ defmodule MCP.Transport.StreamableHTTP.LegacySession do
             event_waiter: nil,
             closed?: false
 
-  @type session :: %{required(:server) => pid(), required(:transport) => pid()}
+  @type session :: %{
+          required(:server) => pid(),
+          required(:transport) => pid(),
+          optional(:protocol_version) => String.t()
+        }
 
   @spec start(module(), keyword(), keyword()) :: {:ok, session()} | {:error, term()}
   def start(handler_module, handler_opts, server_opts) do

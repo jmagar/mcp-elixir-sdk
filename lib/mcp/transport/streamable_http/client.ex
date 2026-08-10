@@ -474,8 +474,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  defp decode_json_body(body), do: body
-
   defp deliver_sse_error_response(state, status, body) when is_binary(body) do
     {events, _parser} = SSE.feed(SSE.new_parser(), body)
 
@@ -495,9 +493,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       error -> deliver_json_response(state, error)
     end
   end
-
-  defp deliver_sse_error_response(_state, status, body),
-    do: {:error, {:http_error, status, body}}
 
   defp build_headers(state, message, opts) do
     with {:ok, custom_headers} <-

@@ -134,9 +134,7 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
   defp sanitized_location(nil), do: nil
 
   defp sanitized_location(location) do
-    case URI.parse(location) do
-      %URI{} = uri -> URI.to_string(%{uri | userinfo: nil, query: nil, fragment: nil})
-      _other -> nil
-    end
+    uri = URI.parse(location)
+    URI.to_string(%{uri | userinfo: nil, query: nil, fragment: nil})
   end
 end
