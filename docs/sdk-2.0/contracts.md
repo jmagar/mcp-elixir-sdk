@@ -35,7 +35,8 @@ For 2026 Streamable HTTP:
   exists.
 - Only `subscriptions/listen` owns a long-lived notification response stream.
 
-For 2025 Streamable HTTP, initialize mints `Mcp-Session-Id`; later POST and GET
+For `2025-06-18` and `2025-11-25` Streamable HTTP, initialize mints
+`Mcp-Session-Id`; later POST and GET
 requests require it, GET carries queued server messages as SSE, and DELETE
 closes the session. Handler configuration and the identity binding are created
 at initialize; the identity factory is then re-evaluated on every POST, GET,
@@ -149,6 +150,12 @@ stdio launch opts  -> fixed identity      -> ToolContext.identity -> handler
   every session-bound HTTP request must authenticate as the same principal or
   fail with 403 before dispatch.
 - Stdio/in-process may resolve a launch-static identity once.
+- HTTP clients reject redirects, retries, unsafe endpoint URLs, oversized
+  finite bodies, oversized SSE events, and receive/request deadline overruns
+  with structured transport errors before decoding.
+- Stdio clients reject oversized or malformed/non-JSON-RPC stdout, keep stderr
+  outside the protocol channel, and apply the configured environment and
+  process-tree shutdown policy.
 - `params`, tool `arguments`, `_meta`, and routing headers are never identity
   sources.
 - `MCP.Server.Dispatch` only accepts a preconstructed `ToolContext`; it does not

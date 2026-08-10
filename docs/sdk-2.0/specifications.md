@@ -1,7 +1,7 @@
 # MCP Elixir SDK 2.0 Specifications
 
 **Status:** Active engineering specification
-**Target:** MCP core `2026-07-28` and `2025-11-25`, client and server
+**Target:** MCP core `2026-07-28`, `2025-11-25`, and `2025-06-18`, client and server
 **Baseline:** `2.0.0-dev.1` at `2b34b32`
 **Progress source:** [meta-plan.md](meta-plan.md)
 
@@ -19,7 +19,7 @@ the meta-plan.
 
 The 2.0 release targets the complete MCP `2026-07-28` **core** specification on
 both client and server sides and full wire compatibility with the
-`2025-11-25` core. It excludes the authorization profile and the
+`2025-11-25` and `2025-06-18` core. It excludes the authorization profile and the
 extension-track implementations themselves. The core extensions-negotiation
 surface remains in scope because clients and servers must be able to advertise
 extension identifiers and settings even when this SDK does not implement those
@@ -67,9 +67,9 @@ Every slice preserves these invariants:
 
 ## S7 — Dual protocol-era compatibility
 
-- Clients MUST prefer `2026-07-28` and make at most one fallback to
-  `2025-11-25` when discovery is unavailable or the server advertises it.
-- Explicit `protocol_version: "2025-11-25"` MUST initialize directly.
+- Clients MUST prefer `2026-07-28` and use bounded fallback to `2025-11-25`
+  and then `2025-06-18` only for explicit version/lifecycle incompatibility.
+- Explicit selection of either legacy revision MUST initialize directly.
 - A server connection/session MUST select exactly one protocol era and reject
   mixed-era traffic.
 - Legacy HTTP MUST implement initialize/initialized, `Mcp-Session-Id`, POST,

@@ -2,7 +2,7 @@
 
 **Status:** Normative target shapes with current gaps identified
 **Wire source:** MCP `2026-07-28` schema pinned at `5f5440b`, plus the
-`2025-11-25` core compatibility schema
+`2025-11-25` and `2025-06-18` core compatibility schemas
 **Contracts:** [contracts.md](contracts.md)
 
 This document owns protocol and public-domain type shapes. It does not own OTP
@@ -21,7 +21,7 @@ and explicit conversion functions or `Jason.Encoder` implementations.
 @type json_object :: %{required(String.t()) => json_value()}
 @type request_id :: String.t() | integer()
 @type cursor :: String.t() | nil
-@type protocol_version :: "2026-07-28" | "2025-11-25"
+@type protocol_version :: "2026-07-28" | "2025-11-25" | "2025-06-18"
 @type protocol_mode :: :stateless | :legacy
 @type extra_fields :: %{optional(String.t()) => json_value()}
 ```

@@ -81,6 +81,9 @@ defmodule MCPElixirSDK.MixProject do
         ],
         "docs/adr/0007-dual-protocol-era-support.md": [
           title: "ADR-007 Dual Protocol Support"
+        ],
+        "docs/adr/0008-tri-version-secure-transports.md": [
+          title: "ADR-008 Tri-Version Secure Transports"
         ]
       ],
       groups_for_extras: [
@@ -100,7 +103,8 @@ defmodule MCPElixirSDK.MixProject do
           "docs/adr/0004-immutable-handler-launch-configuration.md",
           "docs/adr/0005-consumer-owned-subscription-supervision.md",
           "docs/adr/0006-no-client-result-cache-in-2.0.md",
-          "docs/adr/0007-dual-protocol-era-support.md"
+          "docs/adr/0007-dual-protocol-era-support.md",
+          "docs/adr/0008-tri-version-secure-transports.md"
         ],
         Reference: ["CHANGELOG.md", "LICENSE", "usage-rules.md"]
       ],
@@ -129,8 +133,11 @@ defmodule MCPElixirSDK.MixProject do
         Transport: [
           MCP.Transport,
           MCP.Transport.Stdio,
+          MCP.Transport.Stdio.Process,
+          MCP.Transport.Stdio.SecurityPolicy,
           MCP.Transport.SSE,
           MCP.Transport.StreamableHTTP.Client,
+          MCP.Transport.StreamableHTTP.ResponseReader,
           MCP.Transport.StreamableHTTP.SecurityPolicy,
           MCP.Transport.StreamableHTTP.LegacySessionManager,
           MCP.Transport.StreamableHTTP.Plug

@@ -1,16 +1,17 @@
 # MCP Elixir SDK
 
 An OTP-native Elixir client and server SDK for the Model Context Protocol. The
-2.0 line supports both the stateful `2025-11-25` and stateless `2026-07-28`
-protocol revisions over stdio/in-process and Streamable HTTP transports.
+unreleased 2.0 line supports stateful `2025-06-18` and `2025-11-25` plus
+stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 
 > `2.0.0-dev.2` is a prerelease. Its handler API is a breaking cutover from
 > 1.x, while its wire protocol remains compatible with `2025-11-25` peers.
 
 ## What 2.0 provides
 
-- Dual protocol selection: clients prefer `2026-07-28` and perform one bounded
-  fallback to the `2025-11-25` initialize handshake when the peer requires it.
+- Tri-version selection: clients prefer `2026-07-28`, then perform bounded
+  fallback through `2025-11-25` and `2025-06-18` only for lifecycle/version
+  incompatibility signals.
 - Version-isolated lifecycles: 2026 requests use `server/discover` and
   per-request metadata; 2025 requests use initialize/initialized and a session.
 - OTP ownership: clients and stdio connections are GenServers; long-lived
@@ -22,6 +23,8 @@ protocol revisions over stdio/in-process and Streamable HTTP transports.
 - Lossless JSON Schema 2020-12 maps and full JSON structured-content values.
 - Bounded request deadlines, isolated resolver/notification callbacks, and no
   client-side result cache.
+- Configurable HTTP and stdio security policies with gateway-hardened presets,
+  bounded bodies/frames, redirects disabled, and process-tree cleanup.
 
 The authoritative design package is in [`docs/sdk-2.0`](docs/sdk-2.0). The
 implementation tracks the pinned official schema revision documented in
@@ -29,18 +32,9 @@ implementation tracks the pinned official schema revision documented in
 
 ## Installation
 
-Until 2.0 is released, pin an immutable Git commit. The development branch is
-mutable and is not suitable for reproducible builds:
-
-```elixir
-def deps do
-  [
-    {:mcp_elixir_sdk,
-     github: "jmagar/mcp-elixir-sdk",
-     ref: "3fa6dce07fdf3e1e471d0e742100a34a3b3488cb"}
-  ]
-end
-```
+No production installation coordinate is currently advertised. This branch is
+unreleased; use the immutable release-candidate coordinate produced by the
+release gate, not a development branch or one of the stale prerelease commits.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
 
@@ -67,10 +61,10 @@ Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
 :ok = MCP.Client.close(client)
 ```
 
-`connect/2` prefers `server/discover`. If the peer reports only `2025-11-25`
-support (or does not implement discovery), it initializes a legacy session and
-sends `notifications/initialized`. Pass `protocol_version: "2025-11-25"` to
-start directly in that mode.
+`connect/2` prefers `server/discover`. If the peer requires a legacy lifecycle,
+it tries `2025-11-25` and then `2025-06-18`, initializes a session, and sends
+`notifications/initialized`. Pass either legacy version through
+`protocol_version:` to start directly in that mode.
 Each operation has one end-to-end deadline covering transport work, schema
 refresh, and any MRTR resolver invocation. Cache hints are returned to the
 caller but results are never cached by the SDK.

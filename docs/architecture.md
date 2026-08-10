@@ -1,15 +1,16 @@
 # Architecture
 
-MCP Elixir SDK 2.0 is an OTP-native dual-era implementation of MCP
-`2025-11-25` and `2026-07-28`. Stateless 2026 dispatch remains sessionless;
-legacy 2025 traffic uses an isolated initialize/session adapter. There is no
+MCP Elixir SDK 2.0 is an OTP-native tri-version implementation of MCP
+`2025-06-18`, `2025-11-25`, and `2026-07-28`. Stateless 2026 dispatch remains
+sessionless; each legacy revision uses an explicit initialize/session adapter. There is no
 client-side result cache or mutable per-request handler configuration.
 
 ## Protocol selection
 
-Clients prefer `2026-07-28` discovery and make one bounded fallback to the
-`2025-11-25` initialize handshake when discovery is unavailable or the server
-advertises only the legacy revision. Servers choose a mode on the first valid
+Clients prefer `2026-07-28` discovery and use a bounded ordered fallback to
+`2025-11-25` and then `2025-06-18` only for version/lifecycle incompatibility.
+Authentication, TLS, malformed-response, overflow, and timeout failures never
+advance fallback. Servers choose a mode on the first valid
 request. A connection never changes modes.
 
 The 2026 path validates per-request metadata and routes directly to stateless
@@ -103,6 +104,11 @@ requests and long-lived subscriptions. It is not a protocol session: no
 initialize state or negotiated identity exists. Stdio identity is fixed at
 launch.
 
+`MCP.Transport.Stdio.SecurityPolicy` bounds newline frames and stderr capture,
+controls environment inheritance, and fails closed on malformed or non-JSON-RPC
+stdout. The client subprocess owner launches absolute executable plus argv
+without a shell and terminates its process group and discovered Linux descendants.
+
 ### Streamable HTTP
 
 `MCP.Transport.StreamableHTTP.Plug` builds immutable server config at mount.
@@ -117,7 +123,9 @@ subscriptions retain only their individual response stream.
 `MCP.Transport.StreamableHTTP.Client` emits `MCP-Protocol-Version`,
 `Mcp-Method`, method-appropriate `Mcp-Name`, and validated `Mcp-Param-*`
 headers. SSE response parsing supports interleaved notifications, final
-results, comments, and chunk boundaries.
+results, comments, and chunk boundaries. `SecurityPolicy.gateway/0` validates
+the endpoint, permits plaintext only on loopback, disables redirects/retries and
+compression, and applies finite connect, receive, request, body, and SSE limits.
 
 ## Subscriptions
 
