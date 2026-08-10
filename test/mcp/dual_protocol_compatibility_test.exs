@@ -284,6 +284,12 @@ defmodule MCP.DualProtocolCompatibilityTest do
       assert Enum.any?(tools, &(&1["name"] == "whoami"))
       assert :ok = Client.close(client)
       assert MCPPlug.legacy_sessions(config) == []
+
+      # Stop this iteration's listener and client before the next one starts.
+      # Leaving them supervised would keep every previous server bound to its
+      # ephemeral port for the rest of the test and mask per-iteration cleanup.
+      stop_supervised!({:legacy_compat_client, version})
+      stop_supervised!({:legacy_compat_bandit, version})
     end
   end
 

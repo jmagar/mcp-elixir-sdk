@@ -250,6 +250,12 @@ defmodule MCP.ClientReviewRemediationTest do
 
     close = Task.async(fn -> HTTPClient.close(client) end)
     assert_receive {:client_review_delete, request}, 500
+
+    # Without this the test passes under the old best-effort behaviour too: it
+    # would only prove close eventually returns :ok, not that it waited for the
+    # DELETE it issued.
+    refute Task.yield(close, 50)
+
     send(request, :release_delete)
     assert :ok = Task.await(close, 1_000)
   end

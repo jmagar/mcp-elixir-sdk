@@ -40,6 +40,15 @@ case mode do
 
     Process.sleep(:infinity)
 
+  "frame_burst_exit" ->
+    # Writes a burst and exits immediately, so the close notification races the
+    # frames still buffered behind a frame-turn boundary.
+    IO.binwrite(
+      Enum.map_join(1..5, "", fn id ->
+        ~s({"jsonrpc":"2.0","id":#{id},"result":{"ok":true}}\n)
+      end)
+    )
+
   "chunked_stderr" ->
     for chunk <- ["abc", "def", "ghi"] do
       IO.binwrite(:stderr, chunk)
@@ -48,4 +57,11 @@ case mode do
 
     IO.puts(~s({"jsonrpc":"2.0","id":1,"result":{"ok":true}}))
     Process.sleep(:infinity)
+
+  other ->
+    # Without this clause an unknown or missing mode exits with a CaseClauseError
+    # and the parent only observes a closed stdout, so the calling test fails
+    # with an unrelated timeout instead of naming the cause.
+    IO.puts(:stderr, "adversarial_stdio_server: unknown mode #{inspect(other)}")
+    System.halt(2)
 end

@@ -1,10 +1,16 @@
 defmodule MCP.Transport.StdioSecurityTest do
   use ExUnit.Case, async: false
 
-  if :os.type() != {:unix, :linux}, do: @moduletag(skip: "Linux-only process-tree tests")
-
   alias MCP.Transport.Stdio
+  alias MCP.Transport.Stdio.Process, as: StdioProcess
   alias MCP.Transport.Stdio.SecurityPolicy
+
+  # Only the tests that spawn a subprocess or inspect the process tree are
+  # platform-bound. Skipping the whole module would silently drop the
+  # SecurityPolicy and framing coverage on non-Linux runners.
+  @linux_only if :os.type() == {:unix, :linux},
+                do: [],
+                else: [skip: "Linux-only process-tree test"]
 
   @fixture Path.expand("../../support/adversarial_stdio_server.exs", __DIR__)
   @late_fixture Path.expand("../../support/late_descendant_stdio.sh", __DIR__)
@@ -49,6 +55,7 @@ defmodule MCP.Transport.StdioSecurityTest do
              SecurityPolicy.new(surprise: true)
   end
 
+  @tag @linux_only
   test "oversized incomplete stdout fails closed" do
     transport = start_transport("oversized", max_frame_bytes: 64, shutdown_timeout: 100)
 
@@ -58,6 +65,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute stays_true?(fn -> Process.alive?(transport) end, 3_000)
   end
 
+  @tag @linux_only
   test "malformed and valid non-object JSON fail closed" do
     for {mode, expected} <- [
           {"malformed", :malformed_json},
@@ -70,6 +78,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     end
   end
 
+  @tag @linux_only
   test "captured stderr is bounded and never parsed as protocol stdout" do
     _transport =
       start_transport("stderr_then_valid", stderr: :capture, max_stderr_bytes: 8)
@@ -80,6 +89,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute_receive {:mcp_message, "ssssssss"}
   end
 
+  @tag @linux_only
   test "close terminates a spawned descendant in the process group" do
     transport = start_transport("descendant")
     assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
@@ -89,6 +99,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute stays_true?(fn -> os_process_alive?(child_pid) end, 2_000)
   end
 
+  @tag @linux_only
   test "protocol violation terminates the hostile parent and descendant" do
     _transport = start_transport("malformed_descendant", shutdown_timeout: 5_000)
     assert_receive {:mcp_message, %{"result" => %{"parent" => parent, "child" => child}}}, 5_000
@@ -96,6 +107,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute stays_true?(fn -> os_process_alive?(parent) or os_process_alive?(child) end, 7_000)
   end
 
+  @tag @linux_only
   test "close kills a descendant spawned during termination" do
     pid_file =
       Path.join(System.tmp_dir!(), "mcp-late-descendant-#{System.unique_integer([:positive])}")
@@ -112,15 +124,28 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
   end
 
+  @tag @linux_only
   test "frame turns yield without loss or reordering" do
-    transport = start_transport("frame_burst", max_frames_per_turn: 2)
+    _transport = start_transport("frame_burst", max_frames_per_turn: 2)
 
+    # Every frame must survive the turn boundary in order. Asserting on the
+    # transport's residual buffer instead would couple this to how the OS
+    # bundles the fixture's single write into port messages.
     first_turn = for _ <- 1..2, do: receive_message()
-    assert :sys.get_state(transport).buffer != ""
     remaining = for _ <- 1..3, do: receive_message()
     assert Enum.map(first_turn ++ remaining, &get_in(&1, ["id"])) == [1, 2, 3, 4, 5]
   end
 
+  @tag @linux_only
+  test "frames buffered at a turn boundary survive a subprocess that exits immediately" do
+    _transport = start_transport("frame_burst_exit", max_frames_per_turn: 2)
+
+    ids = for _ <- 1..5, do: get_in(receive_message(), ["id"])
+    assert ids == [1, 2, 3, 4, 5]
+    assert_receive {:mcp_transport_closed, _reason}, 5_000
+  end
+
+  @tag @linux_only
   test "stderr capture limit applies across chunks" do
     _transport = start_transport("chunked_stderr", stderr: :capture, max_stderr_bytes: 7)
 
@@ -146,21 +171,9 @@ defmodule MCP.Transport.StdioSecurityTest do
     start_supervised!(child_spec)
   end
 
-  defp os_process_alive?(pid) do
-    case File.read("/proc/#{pid}/stat") do
-      {:ok, stat} ->
-        case :binary.matches(stat, ") ") |> List.last() do
-          {offset, 2} -> binary_part(stat, offset + 2, 1) != "Z"
-          nil -> true
-        end
-
-      {:error, :enoent} ->
-        false
-
-      {:error, _reason} ->
-        true
-    end
-  end
+  # Liveness is asserted through the same helper cleanup uses, so the test can
+  # never disagree with the implementation about what "still running" means.
+  defp os_process_alive?(pid), do: StdioProcess.os_process_alive?(pid)
 
   defp receive_message do
     receive do
