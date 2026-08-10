@@ -654,8 +654,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp session_headers(%{session_id: nil}), do: []
   defp session_headers(%{session_id: session_id}), do: [{"mcp-session-id", session_id}]
 
-  defp terminate_legacy_session(%{session_id: nil}), do: :ok
-
   defp terminate_legacy_session(state) do
     headers = [
       {"mcp-protocol-version", state.protocol_version},
