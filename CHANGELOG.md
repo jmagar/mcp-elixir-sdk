@@ -35,6 +35,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The request deadline now covers transport send, schema refresh, and MRTR
   resolver work. Callback failures are isolated to their request.
 
+### Fixed
+
+- SSE parsing recognises `\r\n\r\n` event delimiters. CRLF-terminated streams
+  previously yielded no events and were eventually rejected as oversized.
+- Stdout frames buffered at a frame-turn boundary are delivered when the
+  subprocess exits instead of being dropped by the close notification.
+- Stdio descendant cleanup captures each process's parent and start time from a
+  single `/proc/<pid>/stat` read, so a PID recycled during the scan cannot be
+  signalled as a descendant.
+- Closing a legacy Streamable HTTP session waits for the session DELETE that the
+  security policy already bounds, instead of failing with `:close_failed` after
+  an implicit five-second call timeout.
+- A JSON-RPC error other than `-32022` returned to `initialize` reaches the
+  caller unchanged rather than being reported as an invalid initialize result.
+- `http://localhost/...` endpoints validate as loopback under the default
+  Streamable HTTP security policy, matching the documented example.
+
 ### Removed (original 2.0 cutover; legacy removals superseded above)
 
 - The original cutover removed initialize/session handling, legacy resource
