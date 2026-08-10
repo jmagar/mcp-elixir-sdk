@@ -3,6 +3,7 @@ defmodule MCP.Protocol.RevisionTest do
 
   alias MCP.Protocol.Legacy.{V2025_06_18, V2025_11_25}
   alias MCP.Protocol.Revision
+  alias MCP.Test.MockTransport
 
   @client_info %{name: "client", version: "1.0.0"}
 
@@ -35,5 +36,13 @@ defmodule MCP.Protocol.RevisionTest do
 
   test "modern revision is registered without a legacy adapter" do
     assert {:ok, :stateless} = Revision.fetch("2026-07-28")
+  end
+
+  test "client startup rejects an unsupported configured revision" do
+    assert {:error, {:unsupported_protocol_version, "bogus"}} =
+             GenServer.start(MCP.Client,
+               transport: {MockTransport, []},
+               protocol_version: "bogus"
+             )
   end
 end

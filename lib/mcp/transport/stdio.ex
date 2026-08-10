@@ -6,9 +6,9 @@ defmodule MCP.Transport.Stdio do
 
   ## Client mode
 
-  Launches a subprocess via an Erlang Port. Messages are written as
+  Delegates subprocess supervision to an internal process wrapper. Messages are written as
   JSON + newline to the subprocess's stdin, and read as newline-delimited
-  JSON from stdout. Stderr goes to the parent process's stderr.
+  JSON from stdout. Stderr is disabled by default and can be bounded and captured by policy.
 
   ## Server mode
 
@@ -18,12 +18,13 @@ defmodule MCP.Transport.Stdio do
   ## Options
 
     * `:owner` (required) — pid to receive `{:mcp_message, map}` and
-      `{:mcp_transport_closed, reason}` messages
+      `{:mcp_transport_closed, reason}` and optional `{:mcp_transport_stderr, data}` messages
     * `:command` — path to executable (client mode). When provided, a
       subprocess is spawned.
     * `:args` — arguments for the command (default: `[]`)
     * `:env` — environment variables as `[{String.t(), String.t()}]`
     * `:mode` — `:client` (default when `:command` given) or `:server`
+    * `:security_policy` — a `SecurityPolicy` or keyword options controlling bounds and cleanup
   """
 
   use GenServer
@@ -64,7 +65,8 @@ defmodule MCP.Transport.Stdio do
   def close(pid) do
     GenServer.call(pid, :close)
   catch
-    :exit, _ -> :ok
+    :exit, {:noproc, _call} -> :ok
+    :exit, reason -> {:error, {:close_failed, reason}}
   end
 
   # --- GenServer callbacks ---
@@ -74,6 +76,14 @@ defmodule MCP.Transport.Stdio do
     owner = Keyword.fetch!(opts, :owner)
     mode = determine_mode(opts)
 
+    if mode == :server and Keyword.has_key?(opts, :security_policy) do
+      {:stop, {:invalid_security_policy, :server_mode_does_not_apply_client_policy}}
+    else
+      init_with_policy(owner, mode, opts)
+    end
+  end
+
+  defp init_with_policy(owner, mode, opts) do
     case security_policy(opts) do
       {:ok, security_policy} ->
         state = %__MODULE__{owner: owner, mode: mode, security_policy: security_policy}
@@ -261,7 +271,7 @@ defmodule MCP.Transport.Stdio do
       {:ok, messages, remaining, more?} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
 
-        if more?, do: send(self(), :drain_stdout)
+        if more?, do: Process.send_after(self(), :drain_stdout, 10)
         {:noreply, %{state | buffer: remaining}}
 
       {:error, reason, messages} ->
@@ -322,7 +332,7 @@ defmodule MCP.Transport.Stdio do
 
   defp consume_stderr(%{security_policy: %{stderr: :capture}} = state, data) do
     remaining = max(state.security_policy.max_stderr_bytes - state.stderr_bytes, 0)
-    captured = binary_part(data, 0, min(byte_size(data), remaining))
+    captured = utf8_prefix(data, remaining)
     if captured != "", do: send(state.owner, {:mcp_transport_stderr, captured})
 
     total = state.stderr_bytes + byte_size(data)
@@ -340,4 +350,15 @@ defmodule MCP.Transport.Stdio do
   end
 
   defp consume_stderr(state, _data), do: state
+
+  defp utf8_prefix(data, limit) when byte_size(data) <= limit, do: data
+
+  defp utf8_prefix(data, limit),
+    do: data |> String.codepoints() |> Enum.reduce_while("", &append_utf8(&1, &2, limit))
+
+  defp append_utf8(codepoint, acc, limit) do
+    if byte_size(acc) + byte_size(codepoint) <= limit,
+      do: {:cont, acc <> codepoint},
+      else: {:halt, acc}
+  end
 end

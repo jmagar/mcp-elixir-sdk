@@ -78,7 +78,8 @@ Every slice preserves these invariants:
   and reclaimed by idle/absolute expiry. Failed initialize MUST NOT publish or
   retain a session.
 - A current HTTP client MUST treat a conforming HTTP 400 unsupported-version
-  JSON-RPC response as eligible for its single fallback, and MUST perform one
+  JSON-RPC response as eligible for the next fallback revision, MUST attempt each
+  remaining legacy revision at most once, and MUST perform one
   bounded reinitialization after an expired-session HTTP 404.
 - Legacy server/client surfaces MUST cover ping, roots, sampling, elicitation,
   resource subscriptions, logging, progress, and list-change notifications.

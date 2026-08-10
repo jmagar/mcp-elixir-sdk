@@ -2,7 +2,7 @@ mode = List.first(System.argv())
 
 case mode do
   "oversized" ->
-    IO.binwrite(String.duplicate("x", 65))
+    :ok = :file.write(:standard_io, String.duplicate("x", 65))
     Process.sleep(:infinity)
 
   "malformed" ->
@@ -32,9 +32,11 @@ case mode do
     Process.sleep(:infinity)
 
   "frame_burst" ->
-    for id <- 1..5 do
-      IO.puts(~s({"jsonrpc":"2.0","id":#{id},"result":{"ok":true}}))
-    end
+    IO.binwrite(
+      Enum.map_join(1..5, "", fn id ->
+        ~s({"jsonrpc":"2.0","id":#{id},"result":{"ok":true}}\n)
+      end)
+    )
 
     Process.sleep(:infinity)
 

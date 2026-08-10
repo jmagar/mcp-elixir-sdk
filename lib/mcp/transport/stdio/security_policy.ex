@@ -8,7 +8,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
             malformed_output: :close,
             stderr: :disable,
             max_stderr_bytes: 64_000,
-            environment: :replace,
+            environment: :inherit,
             shutdown_timeout: 5_000
 
   @type t :: %__MODULE__{
@@ -38,7 +38,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   ]
 
   @spec default() :: t()
-  def default, do: %__MODULE__{environment: :inherit}
+  def default, do: %__MODULE__{}
 
   @spec gateway() :: t()
   def gateway, do: %__MODULE__{environment: :replace}

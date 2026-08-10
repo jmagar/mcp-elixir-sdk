@@ -218,12 +218,9 @@ configuration. Phoenix does not reach into private transport state.
 
 ## 7. Req compatibility
 
-Phoenix's `~> 0.5` Req requirement and the SDK's `~> 0.7` requirement overlap at Req 0.7;
-this is not an inherent solver conflict. Integration will nevertheless resolve and compile
-against Phoenix's real lock because adding the SDK is expected to upgrade Req from 0.5.16.
-
-The SDK retains `~> 0.7` unless implementation discovers a reason to broaden it. Any
-broadening requires an SDK test lane at the lowest and highest supported Req releases.
+The SDK supports Req `>= 0.5.0 and < 0.8.0`, allowing Phoenix's Req 0.5 lock to resolve.
+Integration compiles against Phoenix's real lock and exercises the lowest and highest
+supported Req releases.
 
 ## 8. Verification and conformance
 
@@ -231,7 +228,7 @@ broadening requires an SDK test lane at the lowest and highest supported Req rel
 
 Every claimed revision receives:
 
-- official server conformance for the exact frozen requirements profile;
+- official server conformance where the pinned harness exposes an exact requirements profile;
 - every applicable official client scenario;
 - documented exclusions with an ownership/non-applicability rationale;
 - HTTP and stdio tool-only interoperability tests;
@@ -240,7 +237,9 @@ Every claimed revision receives:
 
 The machine-readable ledgers record the pinned harness version, exact commands, scenario
 IDs, pass/fail/warning totals, exclusions, and artifact locations. Internal integration
-coverage remains separately labeled and cannot substitute for an official denominator.
+coverage remains separately labeled and cannot substitute for an official denominator. The
+pinned harness has no 2025-06-18 profile, so that absence and the SDK-owned June matrix are
+recorded explicitly.
 
 ### 8.2 Security tests
 
@@ -299,4 +298,3 @@ no release coordinate is created before production evidence exists.
 - Req 0.7 request, streaming, redirect, and retry options:
   <https://hexdocs.pm/req/Req.html>
 - Phoenix gateway contract: `../phoenix/docs/mcp-gateway/SPEC.md`
-

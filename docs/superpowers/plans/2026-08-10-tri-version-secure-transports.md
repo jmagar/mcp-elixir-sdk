@@ -6,7 +6,7 @@
 
 **Architecture:** A protocol revision registry selects modern or revision-specific legacy adapters without scattering version conditionals. HTTP and stdio each receive a validated policy struct with secure defaults; the transport implementations consume only validated policies and return structured failures. Conformance ledgers and Phoenix integration prove the public claims before version metadata changes.
 
-**Tech Stack:** Elixir 1.17+, OTP, Req 0.7, erlexec 2.3, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
+**Tech Stack:** Elixir 1.17+, OTP, Req 0.5 through 0.7, erlexec 2.3, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
 
 ## Global Constraints
 
@@ -58,7 +58,7 @@ Existing orchestration modules remain responsible for orchestration only:
 
 **Interfaces:**
 - Produces: `MCP.Protocol.Revision.supported/0 :: [String.t(), ...]`
-- Produces: `MCP.Protocol.Revision.fetch/1 :: {:ok, module()} | {:error, {:unsupported_protocol_version, String.t()}}`
+- Produces: `MCP.Protocol.Revision.fetch/1 :: {:ok, :stateless | module()} | {:error, {:unsupported_protocol_version, String.t()}}`
 - Produces: legacy adapter callbacks `version/0`, `initialize_params/2`, `validate_initialize_result/1`, `http_session?/0`, and `project_capabilities/1`.
 
 - [ ] **Step 1: Write registry and adapter contract tests**
@@ -373,8 +373,7 @@ git commit -m "feat(stdio): enforce bounded secure subprocess policies"
 Run:
 
 ```bash
-npx --no-install conformance list --client --requirements 2025-06-18
-npx --no-install conformance list --server --requirements 2025-06-18
+# The pinned harness has no official 2025-06-18 requirements profile; record that absence.
 npx --no-install conformance list --client --requirements 2025-11-25
 npx --no-install conformance list --server --requirements 2025-11-25
 npx --no-install conformance list --client --requirements 2026-07-28
@@ -389,7 +388,7 @@ Reject unknown environment values. Ensure the client adapter runs initialize/too
 
 - [ ] **Step 3: Run every applicable server requirement set**
 
-Start the checked-in server adapter and run `conformance server --requirements REVISION` for all three revisions. Save output artifacts under a temporary ignored directory and copy only summarized evidence into the ledgers.
+Run official server profiles where the pinned harness exposes them. For 2025-06-18, record the absent official denominator and run the SDK-owned lifecycle/transport matrix.
 
 - [ ] **Step 4: Run every applicable non-authorization client scenario**
 
@@ -591,7 +590,7 @@ Report the exact release commit, package archive, SDK gate, Phoenix gate, confor
 
 - [ ] `git status --short` is clean in SDK and Phoenix worktrees.
 - [ ] `mix precommit` passes from the SDK release commit.
-- [ ] All three official server conformance requirement sets pass.
+- [ ] Every available official server profile passes; the absent June denominator and SDK-owned June evidence are recorded.
 - [ ] Every applicable official client scenario is recorded or explicitly excluded.
 - [ ] Phoenix compiles and its full suite passes with the exact SDK ref and resolved Req lock.
 - [ ] HTTP redirect, size, SSE, and deadline adversarial tests pass.

@@ -133,8 +133,6 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
     end
   end
 
-  defp loopback?("localhost"), do: true
-
   defp loopback?(host) do
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, {127, _, _, _}} -> true

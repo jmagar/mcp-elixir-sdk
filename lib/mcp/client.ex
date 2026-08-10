@@ -331,11 +331,14 @@ defmodule MCP.Client do
   @impl GenServer
   def init(opts) do
     tool_schema_limit = Keyword.get(opts, :tool_schema_limit, 1_024)
+    protocol_version = Keyword.get(opts, :protocol_version, @protocol_version)
 
-    if is_integer(tool_schema_limit) and tool_schema_limit >= 0 do
+    with true <- is_integer(tool_schema_limit) and tool_schema_limit >= 0,
+         {:ok, _revision} <- Revision.fetch(protocol_version) do
       init_with_schema_limit(opts, tool_schema_limit)
     else
-      {:stop, {:invalid_tool_schema_limit, tool_schema_limit}}
+      false -> {:stop, {:invalid_tool_schema_limit, tool_schema_limit}}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
@@ -623,6 +626,11 @@ defmodule MCP.Client do
     end)
 
     {:noreply, %{state | status: :closed, subscriptions: %{}}}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, state) do
+    Logger.warning("MCP upstream stderr: #{String.trim_trailing(data)}")
+    {:noreply, state}
   end
 
   def handle_info({:mcp_legacy_sse_failed, reason}, state) do
@@ -1191,19 +1199,24 @@ defmodule MCP.Client do
 
   defp recover_expired_session(operation, state) do
     remaining = operation.deadline - System.monotonic_time(:millisecond)
-    reset_transport_session(state)
     state = %{state | legacy_ready: false}
 
-    if remaining > 0 do
-      original =
-        operation
-        |> Map.drop([:timeout_ref, :transport_ref, :transport_pid])
-        |> Map.put(:recovery_attempted, true)
+    case reset_transport_session(state) do
+      :ok when remaining > 0 ->
+        original =
+          operation
+          |> Map.drop([:timeout_ref, :transport_ref, :transport_pid])
+          |> Map.put(:recovery_attempted, true)
 
-      send_initialize(state, operation.from, remaining, {:reinitialize, original})
-    else
-      GenServer.reply(operation.from, {:error, :timeout})
-      {:noreply, state}
+        send_initialize(state, operation.from, remaining, {:reinitialize, original})
+
+      :ok ->
+        GenServer.reply(operation.from, {:error, :timeout})
+        {:noreply, state}
+
+      {:error, reason} ->
+        GenServer.reply(operation.from, {:error, {:session_reset_failed, reason}})
+        {:noreply, state}
     end
   end
 
@@ -1214,7 +1227,7 @@ defmodule MCP.Client do
       :ok
     end
   catch
-    :exit, _reason -> :ok
+    :exit, reason -> {:error, {:transport_exit, reason}}
   end
 
   defp connect_operation?({:discover, _retried?}), do: true

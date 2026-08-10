@@ -12,7 +12,7 @@ defmodule MCP.Transport.Stdio.Process do
   def write(process, data), do: GenServer.call(process, {:write, IO.iodata_to_binary(data)})
 
   @spec close(pid(), timeout()) :: :ok | {:error, term()}
-  def close(process, timeout), do: GenServer.call(process, :close, timeout + 2_000)
+  def close(process, timeout), do: GenServer.call(process, :close, timeout + 4_000)
 
   @impl GenServer
   def init(opts) do
@@ -91,7 +91,11 @@ defmodule MCP.Transport.Stdio.Process do
 
   defp validate_command(_command, _args, _env), do: {:error, :invalid_command}
 
-  defp valid_env?({key, value}), do: is_binary(key) and is_binary(value)
+  defp valid_env?({key, value}) do
+    is_binary(key) and is_binary(value) and not String.contains?(key, ["=", <<0>>]) and
+      not String.contains?(value, <<0>>)
+  end
+
   defp valid_env?(_other), do: false
 
   defp process_options(policy, env) do
@@ -117,45 +121,33 @@ defmodule MCP.Transport.Stdio.Process do
   defp environment(:inherit, env), do: env
 
   defp normalize_exit(:normal), do: :normal
-  defp normalize_exit({:status, status}), do: {:exit_status, :exec.status(status)}
+  defp normalize_exit({:exit_status, status}), do: {:exit_status, :exec.status(status)}
   defp normalize_exit(reason), do: reason
 
   defp descendants(root_pid) do
-    direct_children(root_pid)
-    |> Enum.flat_map(fn child -> [child | descendants(child)] end)
+    process_table = process_table()
+
+    descendants_from(root_pid, process_table)
     |> Enum.uniq()
+    |> Enum.map(&{&1, process_start_time(&1)})
   end
 
-  defp direct_children(pid) do
-    path = "/proc/#{pid}/task/#{pid}/children"
-
-    task_children =
-      case File.read(path) do
-        {:ok, contents} -> contents |> String.split() |> Enum.flat_map(&parse_child_pid/1)
-        {:error, _reason} -> []
-      end
-
-    (task_children ++ process_table_children(pid))
-    |> Enum.uniq()
+  defp descendants_from(pid, process_table) do
+    process_table
+    |> Map.get(pid, [])
+    |> Enum.flat_map(fn child -> [child | descendants_from(child, process_table)] end)
   end
 
-  defp parse_child_pid(value) do
-    case Integer.parse(value) do
-      {child, ""} -> [child]
-      _invalid -> []
-    end
-  end
-
-  defp process_table_children(parent_pid) do
+  defp process_table do
     "/proc/[0-9]*/status"
     |> Path.wildcard()
-    |> Enum.flat_map(fn path ->
+    |> Enum.reduce(%{}, fn path, table ->
       with {:ok, status} <- File.read(path),
            {pid, ""} <- status_field_integer(status, "Pid:"),
-           {^parent_pid, ""} <- status_field_integer(status, "PPid:") do
-        [pid]
+           {parent_pid, ""} <- status_field_integer(status, "PPid:") do
+        Map.update(table, parent_pid, [pid], &[pid | &1])
       else
-        _unavailable -> []
+        _unavailable -> table
       end
     end)
   end
@@ -171,7 +163,13 @@ defmodule MCP.Transport.Stdio.Process do
     end)
   end
 
-  defp ensure_descendants_stopped({:error, _reason} = error, _descendants, _timeout), do: error
+  defp ensure_descendants_stopped({:error, reason}, descendants, timeout) do
+    case ensure_descendants_stopped(:ok, descendants, timeout) do
+      :ok -> {:error, reason}
+      {:error, cleanup_reason} -> {:error, {reason, cleanup_reason}}
+    end
+  end
+
   defp ensure_descendants_stopped(:ok, [], _timeout), do: :ok
 
   defp ensure_descendants_stopped(:ok, descendants, timeout) do
@@ -190,42 +188,66 @@ defmodule MCP.Transport.Stdio.Process do
     end
   end
 
-  defp signal_alive(pids, signal) do
+  defp signal_alive(identities, signal) do
     flag = if signal == :sigterm, do: "-TERM", else: "-KILL"
 
-    Enum.each(pids, fn pid ->
-      if process_alive?(pid) do
+    Enum.each(identities, fn {pid, _start_time} = identity ->
+      if process_alive?(identity) do
         _ = System.cmd("/bin/kill", [flag, "--", Integer.to_string(pid)], stderr_to_stdout: true)
       end
     end)
   end
 
-  defp wait_until_stopped(pids, timeout) do
+  defp wait_until_stopped(identities, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    wait_until_stopped(pids, deadline, Enum.any?(pids, &process_alive?/1))
+    wait_until_stopped(identities, deadline, Enum.any?(identities, &process_alive?/1))
   end
 
   defp wait_until_stopped(_pids, _deadline, false), do: true
 
-  defp wait_until_stopped(pids, deadline, true) do
+  defp wait_until_stopped(identities, deadline, true) do
     if System.monotonic_time(:millisecond) >= deadline do
       false
     else
       Process.sleep(20)
-      wait_until_stopped(pids, deadline, Enum.any?(pids, &process_alive?/1))
+      wait_until_stopped(identities, deadline, Enum.any?(identities, &process_alive?/1))
     end
   end
 
-  defp process_alive?(pid) do
+  defp process_alive?({pid, expected_start_time}) do
     case File.read("/proc/#{pid}/stat") do
       {:ok, stat} ->
-        case String.split(stat, " ", parts: 4) do
-          [_pid, _name, "Z", _rest] -> false
-          _running -> true
-        end
+        not zombie_stat?(stat) and process_start_time(stat) == expected_start_time
 
       {:error, _reason} ->
         false
+    end
+  end
+
+  defp zombie_stat?(stat) do
+    case :binary.matches(stat, ") ") |> List.last() do
+      {offset, 2} -> binary_part(stat, offset + 2, 1) == "Z"
+      nil -> false
+    end
+  end
+
+  defp process_start_time(pid) when is_integer(pid) do
+    case File.read("/proc/#{pid}/stat") do
+      {:ok, stat} -> process_start_time(stat)
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp process_start_time(stat) do
+    case :binary.matches(stat, ") ") |> List.last() do
+      {offset, 2} ->
+        stat
+        |> binary_part(offset + 2, byte_size(stat) - offset - 2)
+        |> String.split()
+        |> Enum.at(19)
+
+      nil ->
+        nil
     end
   end
 end

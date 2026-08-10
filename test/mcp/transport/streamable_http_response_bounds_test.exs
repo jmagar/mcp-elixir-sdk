@@ -44,7 +44,7 @@ defmodule MCP.Test.BoundedResponsePlug do
 
     conn
     |> Plug.Conn.put_resp_content_type(content_type)
-    |> Plug.Conn.send_resp(200, body)
+    |> Plug.Conn.send_resp(Keyword.get(opts, :status, 200), body)
   end
 end
 
@@ -131,6 +131,16 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
              Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
   end
 
+  test "non-success POST SSE also enforces the event bound" do
+    oversized = "data: " <> String.duplicate("x", 80) <> "\n\n"
+    url = start_response_server(oversized, status: 400)
+    {:ok, policy} = SecurityPolicy.new(max_response_bytes: 1_000, max_sse_event_bytes: 32)
+    client = start_supervised!({Client, owner: self(), url: url, security_policy: policy})
+
+    assert {:error, :event_too_large} =
+             Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+  end
+
   test "an absolute request deadline stops a peer that continuously drips chunks" do
     bandit =
       start_supervised!(
@@ -148,10 +158,13 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
              ResponseReader.request([url: "http://127.0.0.1:#{port}/mcp"], policy)
   end
 
-  defp start_response_server(body) do
+  defp start_response_server(body, opts \\ []) do
     bandit =
       start_supervised!(
-        {Bandit, plug: {MCP.Test.BoundedResponsePlug, body: body}, ip: {127, 0, 0, 1}, port: 0},
+        {Bandit,
+         plug: {MCP.Test.BoundedResponsePlug, Keyword.put(opts, :body, body)},
+         ip: {127, 0, 0, 1},
+         port: 0},
         id: {MCP.Test.BoundedResponsePlug, make_ref()}
       )
 

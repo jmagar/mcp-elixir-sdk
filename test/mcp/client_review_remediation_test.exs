@@ -13,6 +13,7 @@ defmodule MCP.ClientReviewRemediationTest do
   }
 
   alias MCP.Transport.StreamableHTTP.Client, as: HTTPClient
+  alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
   @legacy_version "2025-11-25"
 
@@ -267,6 +268,40 @@ defmodule MCP.ClientReviewRemediationTest do
 
     assert_receive {:mcp_legacy_sse_failed, {:retry_exhausted, {:error, {:http_status, 500}}}},
                    1_000
+  end
+
+  test "legacy GET SSE enforces the configured event bound" do
+    body = "data: " <> String.duplicate("x", 80) <> "\n\n"
+    %{url: url} = start_http_plug(stream?: true, stream_body: body)
+    {:ok, policy} = SecurityPolicy.new(max_sse_event_bytes: 32)
+
+    client =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: policy, legacy_sse_retry_limit: 0}
+      )
+
+    assert :ok = HTTPClient.send_message(client, initialize_request(1))
+    assert_receive {:mcp_message, %{"id" => 1}}
+
+    assert_receive {:mcp_legacy_sse_failed, {:retry_exhausted, {:error, :event_too_large}}},
+                   5_000
+  end
+
+  test "subscription POST SSE enforces the configured event bound" do
+    body = "data: " <> String.duplicate("x", 80) <> "\n\n"
+    %{url: url} = start_http_plug(subscription_body: body)
+    {:ok, policy} = SecurityPolicy.new(max_sse_event_bytes: 32)
+    client = start_supervised!({HTTPClient, owner: self(), url: url, security_policy: policy})
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 9,
+      "method" => "subscriptions/listen",
+      "params" => %{}
+    }
+
+    assert :ok = HTTPClient.open_subscription(client, message)
+    assert_receive {:mcp_subscription_transport_closed, 9, {:error, :event_too_large}}, 5_000
   end
 
   test "close APIs do not report success for the wrong process" do

@@ -590,9 +590,13 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   defp validate_legacy_protocol_header(conn) do
     case first_header(conn, "mcp-protocol-version") do
-      version when version in ["2025-11-25", "2025-06-18"] -> {:ok, version}
-      nil -> {:error, "missing MCP-Protocol-Version"}
-      version -> {:error, "unsupported MCP-Protocol-Version: #{inspect(version)}"}
+      nil ->
+        {:error, "missing MCP-Protocol-Version"}
+
+      version ->
+        if version in LegacyDispatch.protocol_versions(),
+          do: {:ok, version},
+          else: {:error, "unsupported MCP-Protocol-Version: #{inspect(version)}"}
     end
   end
 

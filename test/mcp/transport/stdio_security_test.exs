@@ -1,10 +1,13 @@
 defmodule MCP.Transport.StdioSecurityTest do
   use ExUnit.Case, async: false
 
+  if :os.type() != {:unix, :linux}, do: @moduletag(skip: "Linux-only process-tree tests")
+
   alias MCP.Transport.Stdio
   alias MCP.Transport.Stdio.SecurityPolicy
 
   @fixture Path.expand("../../support/adversarial_stdio_server.exs", __DIR__)
+  @late_fixture Path.expand("../../support/late_descendant_stdio.sh", __DIR__)
 
   test "gateway defaults bound frames, close malformed output, and isolate diagnostics" do
     policy = SecurityPolicy.gateway()
@@ -15,6 +18,12 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert policy.stderr == :disable
     assert policy.environment == :replace
     assert policy.shutdown_timeout == 5_000
+  end
+
+  test "default policy inherits while gateway policy replaces the parent environment" do
+    assert SecurityPolicy.default().environment == :inherit
+    assert SecurityPolicy.gateway().environment == :replace
+    assert %{SecurityPolicy.default() | environment: :replace} == SecurityPolicy.gateway()
   end
 
   test "policy rejects invalid values" do
@@ -34,7 +43,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert_receive {:mcp_transport_closed, {:protocol_violation, {:frame_too_large, 64}}},
                    5_000
 
-    refute eventually(fn -> Process.alive?(transport) end, 3_000)
+    refute stays_true?(fn -> Process.alive?(transport) end, 3_000)
   end
 
   test "malformed and valid non-object JSON fail closed" do
@@ -65,49 +74,61 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert os_process_alive?(child_pid)
 
     assert :ok = Stdio.close(transport)
-    refute eventually(fn -> os_process_alive?(child_pid) end, 2_000)
+    refute stays_true?(fn -> os_process_alive?(child_pid) end, 2_000)
   end
 
   test "protocol violation terminates the hostile parent and descendant" do
     _transport = start_transport("malformed_descendant", shutdown_timeout: 5_000)
     assert_receive {:mcp_message, %{"result" => %{"parent" => parent, "child" => child}}}, 5_000
     assert_receive {:mcp_transport_closed, {:protocol_violation, {:malformed_json, _}}}, 5_000
-    refute eventually(fn -> os_process_alive?(parent) or os_process_alive?(child) end, 7_000)
+    refute stays_true?(fn -> os_process_alive?(parent) or os_process_alive?(child) end, 7_000)
+  end
+
+  test "close kills a descendant spawned during termination" do
+    pid_file =
+      Path.join(System.tmp_dir!(), "mcp-late-descendant-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(pid_file) end)
+
+    transport =
+      start_command_transport("/bin/sh", [@late_fixture, pid_file], shutdown_timeout: 500)
+
+    assert_receive {:mcp_message, %{"result" => %{"ready" => true}}}, 5_000
+    assert :ok = Stdio.close(transport)
+    assert {:ok, pid_text} = File.read(pid_file)
+    child_pid = pid_text |> String.trim() |> String.to_integer()
+    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
   end
 
   test "frame turns yield without loss or reordering" do
-    _transport = start_transport("frame_burst", max_frames_per_turn: 2)
+    transport = start_transport("frame_burst", max_frames_per_turn: 2)
 
-    assert Enum.map(for(_ <- 1..5, do: receive_message()), &get_in(&1, ["id"])) == [1, 2, 3, 4, 5]
+    first_turn = for _ <- 1..2, do: receive_message()
+    assert :sys.get_state(transport).buffer != ""
+    remaining = for _ <- 1..3, do: receive_message()
+    assert Enum.map(first_turn ++ remaining, &get_in(&1, ["id"])) == [1, 2, 3, 4, 5]
   end
 
   test "stderr capture limit applies across chunks" do
     _transport = start_transport("chunked_stderr", stderr: :capture, max_stderr_bytes: 7)
 
-    chunks =
-      for _ <- 1..3, reduce: "" do
-        acc ->
-          receive do
-            {:mcp_transport_stderr, chunk} -> acc <> chunk
-            {:mcp_message, _message} -> acc
-          after
-            1_000 -> acc
-          end
-      end
-
-    assert byte_size(chunks) <= 7
-    assert_receive {:mcp_message, %{"id" => 1}}, 5_000
+    {stderr, message} = collect_stderr_until_message("")
+    assert stderr == "abcdefg"
+    assert message["id"] == 1
+    refute_receive {:mcp_transport_stderr, _}, 100
   end
 
   defp start_transport(mode, policy_opts \\ []) do
+    start_command_transport(System.find_executable("elixir"), [@fixture, mode], policy_opts)
+  end
+
+  defp start_command_transport(command, args, policy_opts) do
     child_spec =
       Supervisor.child_spec(
         {MCP.Transport.Stdio,
-         owner: self(),
-         command: System.find_executable("elixir"),
-         args: [@fixture, mode],
-         security_policy: policy_opts},
-        id: {MCP.Transport.Stdio, make_ref()}
+         owner: self(), command: command, args: args, security_policy: policy_opts},
+        id: {MCP.Transport.Stdio, make_ref()},
+        restart: :temporary
       )
 
     start_supervised!(child_spec)
@@ -116,9 +137,9 @@ defmodule MCP.Transport.StdioSecurityTest do
   defp os_process_alive?(pid) do
     case File.read("/proc/#{pid}/stat") do
       {:ok, stat} ->
-        case String.split(stat, " ") do
-          [_pid, _name, "Z" | _rest] -> false
-          _running -> true
+        case :binary.matches(stat, ") ") |> List.last() do
+          {offset, 2} -> binary_part(stat, offset + 2, 1) != "Z"
+          nil -> true
         end
 
       {:error, :enoent} ->
@@ -137,21 +158,30 @@ defmodule MCP.Transport.StdioSecurityTest do
     end
   end
 
-  defp eventually(fun, timeout) do
+  defp stays_true?(fun, timeout) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    eventually_until(fun, deadline)
+    stays_true_until?(fun, deadline)
   end
 
-  defp eventually_until(fun, deadline) do
+  defp stays_true_until?(fun, deadline) do
     if fun.() do
       if System.monotonic_time(:millisecond) < deadline do
         Process.sleep(20)
-        eventually_until(fun, deadline)
+        stays_true_until?(fun, deadline)
       else
         true
       end
     else
       false
+    end
+  end
+
+  defp collect_stderr_until_message(acc) do
+    receive do
+      {:mcp_transport_stderr, chunk} -> collect_stderr_until_message(acc <> chunk)
+      {:mcp_message, message} -> {acc, message}
+    after
+      5_000 -> flunk("timed out waiting for stdio output")
     end
   end
 end

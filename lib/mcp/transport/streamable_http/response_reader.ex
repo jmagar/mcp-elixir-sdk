@@ -52,6 +52,12 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
 
   @spec consume(Req.Response.t(), pos_integer(), timeout()) ::
           {:ok, binary()} | {:error, term()}
+  @doc """
+  Consumes an asynchronous Req response from the calling process mailbox.
+
+  Call this from an isolated request process: messages that do not belong to
+  the response are ignored while the response is being drained.
+  """
   def consume(response, limit, receive_timeout)
       when is_integer(limit) and limit > 0 and
              (is_integer(receive_timeout) or receive_timeout == :infinity) do
