@@ -229,10 +229,10 @@ defmodule MCP.Transport.SSE do
 
   defp extract_bounded_events(buffer, events, limit) do
     case match_event_delimiter(buffer) do
-      {separator, _size} when separator > limit ->
+      {position, _size} when position > limit ->
         {:error, :event_too_large}
 
-      {_separator, _size} = match ->
+      {_position, _size} = match ->
         {:ok, event_text, rest} = split_event(buffer, match)
 
         events =
@@ -255,8 +255,10 @@ defmodule MCP.Transport.SSE do
 
   defp split_event(_buffer, :nomatch), do: :incomplete
 
-  defp split_event(buffer, {separator, size}) do
-    <<event_text::binary-size(^separator), _delimiter::binary-size(^size), rest::binary>> = buffer
+  # `:binary.match/2` returns {Position, Length}: the position is the byte size
+  # of the event text, and the length is the delimiter's own size.
+  defp split_event(buffer, {position, size}) do
+    <<event_text::binary-size(^position), _delimiter::binary-size(^size), rest::binary>> = buffer
     {:ok, event_text, rest}
   end
 

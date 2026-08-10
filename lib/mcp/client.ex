@@ -1160,11 +1160,28 @@ defmodule MCP.Client do
         state = %{state | connect_waiters: waiting, connect_result: nil, legacy_ready: false}
 
         if legacy_protocol?(state) do
-          send_initialize(state, waiter.from, remaining)
+          resume_initialize(state, waiter.from, remaining, now + remaining)
         else
           send_rpc(state, waiter.from, Methods.discover(), %{}, {:discover, false}, [], remaining)
         end
     end
+  end
+
+  # The ladder lives in the expired operation's kind, so handing the attempt to a
+  # waiter would otherwise restart it as a plain initialize and stop advancing on
+  # the next -32022. Rebuild what is left from the registry.
+  defp resume_initialize(state, from, remaining, deadline) do
+    case remaining_legacy_revisions(state.protocol_version) do
+      [] -> send_initialize(state, from, remaining)
+      rest -> send_initialize(state, from, remaining, {:initialize_fallback, rest, deadline})
+    end
+  end
+
+  defp remaining_legacy_revisions(protocol_version) do
+    Revision.supported()
+    |> Enum.filter(&Revision.legacy?/1)
+    |> Enum.drop_while(&(&1 != protocol_version))
+    |> Enum.drop(1)
   end
 
   defp rollback_initialize(from, reason, state) do

@@ -34,7 +34,13 @@ end
     security_policy: MCP.Transport.Stdio.SecurityPolicy.gateway()
   )
 
+# One budget for the whole wait: a steady trickle of unrelated messages must not
+# keep restarting the timeout.
+pid_deadline = System.monotonic_time(:millisecond) + 5_000
+
 await_descendant_pid = fn await_descendant_pid ->
+  remaining = max(pid_deadline - System.monotonic_time(:millisecond), 0)
+
   receive do
     {:mcp_message, %{"result" => %{"pid" => pid}}} ->
       pid
@@ -43,7 +49,7 @@ await_descendant_pid = fn await_descendant_pid ->
       IO.puts("ignoring unexpected stdio message: #{inspect(other)}")
       await_descendant_pid.(await_descendant_pid)
   after
-    5_000 -> raise "stdio fixture did not report its descendant PID"
+    remaining -> raise "stdio fixture did not report its descendant PID"
   end
 end
 

@@ -46,7 +46,8 @@ defmodule MCP.Transport.Stdio do
     :reader_pid,
     buffer: "",
     stderr_bytes: 0,
-    stderr_limit_reported?: false
+    stderr_limit_reported?: false,
+    closing_reason: :none
   ]
 
   # --- Public API (Transport behaviour) ---
@@ -63,7 +64,11 @@ defmodule MCP.Transport.Stdio do
 
   @impl MCP.Transport
   def close(pid) do
-    GenServer.call(pid, :close)
+    # Every inner shutdown path is bounded: StdioProcess.close/2 waits at most
+    # shutdown_timeout + 4_000 ms, and the descendant sweep has its own budget.
+    # A shorter call timeout here would report {:close_failed, :timeout} to the
+    # caller while process-tree cleanup was still running correctly.
+    GenServer.call(pid, :close, :infinity)
   catch
     :exit, {:noproc, _call} -> :ok
     :exit, reason -> {:error, {:close_failed, reason}}
@@ -124,12 +129,12 @@ defmodule MCP.Transport.Stdio do
 
   def handle_info({:stdio_process, process, :closed, reason}, %{process: process} = state) do
     # A subprocess that writes a burst and exits leaves the tail of that burst
-    # buffered behind a frame-turn boundary. The close notification is already
-    # queued ahead of the self-scheduled drain, so the remaining frames must be
-    # flushed here or they are lost.
-    state = flush_buffered_frames(state)
-    send(state.owner, {:mcp_transport_closed, reason})
-    {:stop, :normal, %{state | process: nil}}
+    # buffered behind a frame-turn boundary, and this notification is already
+    # queued ahead of the self-scheduled drain. Rather than flushing the whole
+    # buffer here — which would deliver an unbounded number of frames in one
+    # turn — the close is deferred until the remaining frames have drained under
+    # the usual per-turn limit.
+    finish_or_defer_close(%{state | process: nil}, reason)
   end
 
   def handle_info(:drain_stdout, state) do
@@ -275,12 +280,22 @@ defmodule MCP.Transport.Stdio do
     case consume_frames(combined, state.security_policy, 0, []) do
       {:ok, messages, remaining, more?} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
+        state = %{state | buffer: remaining}
 
-        # Queued immediately: the message lands behind everything already in the
-        # mailbox, which preserves the frame-turn yield without adding latency
-        # or letting a queued close notification overtake the pending drain.
-        if more?, do: send(self(), :drain_stdout)
-        {:noreply, %{state | buffer: remaining}}
+        cond do
+          # Queued immediately: the message lands behind everything already in
+          # the mailbox, which preserves the frame-turn yield without adding
+          # latency or letting a queued close notification overtake the drain.
+          more? ->
+            send(self(), :drain_stdout)
+            {:noreply, state}
+
+          state.closing_reason != :none ->
+            emit_close(state, state.closing_reason)
+
+          true ->
+            {:noreply, state}
+        end
 
       {:error, reason, messages} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
@@ -301,24 +316,16 @@ defmodule MCP.Transport.Stdio do
     end
   end
 
-  defp flush_buffered_frames(%{buffer: ""} = state), do: state
+  defp finish_or_defer_close(%{buffer: ""} = state, reason), do: emit_close(state, reason)
 
-  defp flush_buffered_frames(state) do
-    case consume_frames(state.buffer, state.security_policy, 0, []) do
-      {:ok, messages, remaining, more?} ->
-        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
-        state = %{state | buffer: remaining}
-        if more?, do: flush_buffered_frames(state), else: state
+  defp finish_or_defer_close(state, reason) do
+    send(self(), :drain_stdout)
+    {:noreply, %{state | closing_reason: reason}}
+  end
 
-      {:error, reason, messages} ->
-        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
-
-        Logger.warning(
-          "MCP Stdio: discarding unparsable buffered output on close: #{inspect(reason)}"
-        )
-
-        %{state | buffer: ""}
-    end
+  defp emit_close(state, reason) do
+    send(state.owner, {:mcp_transport_closed, reason})
+    {:stop, :normal, %{state | closing_reason: :none}}
   end
 
   defp consume_frames(buffer, policy, count, messages)

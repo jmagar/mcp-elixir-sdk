@@ -271,11 +271,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  def handle_info({:legacy_sse_response, body}, state) when is_binary(body) do
-    {:ok, state} = parse_sse_body(state, body)
-    {:noreply, state}
-  end
-
   def handle_info({:legacy_sse_stopped, task, reason}, %{legacy_sse_task: task} = state) do
     Process.demonitor(state.legacy_sse_ref, [:flush])
     state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
@@ -304,13 +299,11 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   def handle_info({:EXIT, owner, _reason}, %{owner: owner} = state) do
-    do_close(state)
-    {:stop, :normal, state}
+    {:stop, :normal, close_and_clear(state)}
   end
 
   def handle_info({:DOWN, ref, :process, owner, _reason}, %{owner: owner, owner_ref: ref} = state) do
-    do_close(state)
-    {:stop, :normal, state}
+    {:stop, :normal, close_and_clear(state)}
   end
 
   def handle_info({:DOWN, ref, :process, task, reason}, state) do
@@ -669,6 +662,13 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
+  # terminate/2 also calls do_close/2, so the stop tuple must carry a state with
+  # no session left or the same session is DELETEd twice.
+  defp close_and_clear(state) do
+    do_close(state)
+    %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}
+  end
+
   defp do_close(state, session_cleanup \\ :asynchronous) do
     if state.legacy_sse_task do
       Process.demonitor(state.legacy_sse_ref, [:flush])
@@ -891,11 +891,12 @@ defmodule MCP.Transport.StreamableHTTP.Client do
          _session_id,
          _protocol_version,
          _headers,
-         0,
+         retries,
          _backoff,
          _max,
          _policy
-       ),
+       )
+       when retries <= 0,
        do: {:retry_exhausted, :eof}
 
   # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
@@ -1052,7 +1053,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           case ResponseReader.consume(
                  response,
                  security_policy.max_response_bytes,
-                 security_policy.receive_timeout
+                 security_policy.receive_timeout,
+                 security_policy.request_timeout
                ) do
             {:ok, body} -> {:error, {:http_error, status, body}}
             {:error, reason} -> {:error, reason}

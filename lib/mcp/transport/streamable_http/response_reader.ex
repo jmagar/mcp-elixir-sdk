@@ -38,7 +38,14 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
       {:ok, %Req.Response{} = response} ->
         with :ok <- validate_content_length(response, policy.max_response_bytes),
              {:ok, body} <-
-               consume(response, policy.max_response_bytes, policy.receive_timeout, deadline) do
+               consume_messages(
+                 response,
+                 policy.max_response_bytes,
+                 policy.receive_timeout,
+                 deadline,
+                 0,
+                 []
+               ) do
           {:ok, %{response | body: body}, body}
         end
 
@@ -50,22 +57,23 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
     end
   end
 
-  @spec consume(Req.Response.t(), pos_integer(), timeout()) ::
+  @spec consume(Req.Response.t(), pos_integer(), timeout(), timeout()) ::
           {:ok, binary()} | {:error, term()}
   @doc """
   Consumes an asynchronous Req response from the calling process mailbox.
 
   Call this from an isolated request process: messages that do not belong to
   the response are ignored while the response is being drained.
-  """
-  def consume(response, limit, receive_timeout)
-      when is_integer(limit) and limit > 0 and
-             (is_integer(receive_timeout) or receive_timeout == :infinity) do
-    consume(response, limit, receive_timeout, :infinity)
-  end
 
-  defp consume(response, limit, receive_timeout, deadline) do
-    consume_messages(response, limit, receive_timeout, deadline, 0, [])
+  `receive_timeout` bounds the gap between chunks; `request_timeout` bounds the
+  whole drain. Without the latter, a peer that drips one byte inside every
+  receive window keeps the drain alive until `limit` bytes have arrived.
+  """
+  def consume(response, limit, receive_timeout, request_timeout \\ :infinity)
+      when is_integer(limit) and limit > 0 and
+             (is_integer(receive_timeout) or receive_timeout == :infinity) and
+             (is_integer(request_timeout) or request_timeout == :infinity) do
+    consume_messages(response, limit, receive_timeout, deadline(request_timeout), 0, [])
   end
 
   defp consume_messages(response, limit, receive_timeout, deadline, size, chunks) do
