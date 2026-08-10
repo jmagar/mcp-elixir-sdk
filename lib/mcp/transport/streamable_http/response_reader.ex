@@ -20,7 +20,12 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
         raw: true,
         compressed: false,
         connect_options: [timeout: policy.connect_timeout],
-        receive_timeout: policy.receive_timeout,
+        # `into: :self` returns as soon as the response headers arrive, and that
+        # phase is bounded by the adapter's receive timeout rather than by the
+        # deadline enforced below over the body. Finch's own `:request_timeout`
+        # is HTTP/1-only and documented as best effort, so the header wait is
+        # bounded here by clamping the per-chunk timeout to the overall budget.
+        receive_timeout: min_timeout(policy.receive_timeout, policy.request_timeout),
         request_timeout: policy.request_timeout,
         into: :self
       )
@@ -133,6 +138,10 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
         {:error, reason}
     end
   end
+
+  defp min_timeout(:infinity, other), do: other
+  defp min_timeout(timeout, :infinity), do: timeout
+  defp min_timeout(timeout, other), do: min(timeout, other)
 
   defp deadline(:infinity), do: :infinity
   defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
