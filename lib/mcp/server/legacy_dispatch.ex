@@ -38,7 +38,7 @@ defmodule MCP.Server.LegacyDispatch do
       result =
         Initialize.Result.to_map(%Initialize.Result{
           protocol_version: adapter.version(),
-          capabilities: legacy_capabilities(config),
+          capabilities: adapter.project_capabilities(legacy_capabilities(config)),
           server_info: config.server_info,
           instructions: config.instructions
         })

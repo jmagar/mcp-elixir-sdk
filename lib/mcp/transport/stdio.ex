@@ -264,8 +264,21 @@ defmodule MCP.Transport.Stdio do
         if more?, do: send(self(), :drain_stdout)
         {:noreply, %{state | buffer: remaining}}
 
-      {:error, reason} ->
+      {:error, reason, messages} ->
+        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
         send(state.owner, {:mcp_transport_closed, {:protocol_violation, reason}})
+        close_result = do_close(state)
+
+        if match?({:error, _}, close_result) do
+          {:error, cleanup_reason} = close_result
+
+          Logger.error(
+            "MCP Stdio cleanup failed after protocol violation: #{inspect(cleanup_reason)}"
+          )
+
+          send(state.owner, {:mcp_transport_cleanup_failed, cleanup_reason})
+        end
+
         {:stop, :normal, state}
     end
   end
@@ -278,18 +291,18 @@ defmodule MCP.Transport.Stdio do
   defp consume_frames(buffer, policy, count, messages) do
     case :binary.match(buffer, "\n") do
       {line_size, 1} when line_size > policy.max_frame_bytes ->
-        {:error, {:frame_too_large, policy.max_frame_bytes}}
+        {:error, {:frame_too_large, policy.max_frame_bytes}, Enum.reverse(messages)}
 
       {line_size, 1} ->
-        <<line::binary-size(line_size), _newline, rest::binary>> = buffer
+        <<line::binary-size(^line_size), _newline, rest::binary>> = buffer
 
         case decode_protocol_line(line) do
           {:ok, decoded} -> consume_frames(rest, policy, count + 1, [decoded | messages])
-          {:error, reason} -> {:error, reason}
+          {:error, reason} -> {:error, reason, Enum.reverse(messages)}
         end
 
       :nomatch when byte_size(buffer) > policy.max_frame_bytes ->
-        {:error, {:frame_too_large, policy.max_frame_bytes}}
+        {:error, {:frame_too_large, policy.max_frame_bytes}, Enum.reverse(messages)}
 
       :nomatch ->
         {:ok, Enum.reverse(messages), buffer, false}

@@ -15,7 +15,7 @@ defmodule MCP.Protocol.Legacy.V2025_06_18 do
     %{
       "protocolVersion" => @version,
       "clientInfo" => wire_map(client_info),
-      "capabilities" => wire_map(capabilities)
+      "capabilities" => project_capabilities(capabilities)
     }
   end
 
@@ -32,7 +32,14 @@ defmodule MCP.Protocol.Legacy.V2025_06_18 do
   def http_session?, do: true
 
   @impl true
-  def project_capabilities(capabilities), do: capabilities
+  def project_capabilities(capabilities) do
+    projected = capabilities |> wire_map() |> Map.delete("tasks")
+
+    case Map.fetch(projected, "elicitation") do
+      {:ok, elicitation} -> Map.put(projected, "elicitation", Map.delete(elicitation, "url"))
+      :error -> projected
+    end
+  end
 
   defp wire_map(value), do: value |> Jason.encode!() |> Jason.decode!()
 end

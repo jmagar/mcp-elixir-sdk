@@ -19,9 +19,39 @@ defmodule MCP.Test.RedirectPolicyPlug do
   end
 end
 
-defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
-  use ExUnit.Case, async: true
+defmodule MCP.Test.BoundedResponsePlug do
+  @behaviour Plug
+  @impl Plug
+  def init(opts), do: opts
 
+  @impl Plug
+  def call(conn, chunks: chunks) do
+    conn = Plug.Conn.send_chunked(conn, 200)
+
+    Enum.reduce_while(chunks, conn, fn {delay, chunk}, current ->
+      Process.sleep(delay)
+
+      case Plug.Conn.chunk(current, chunk) do
+        {:ok, next} -> {:cont, next}
+        {:error, _reason} -> {:halt, current}
+      end
+    end)
+  end
+
+  def call(conn, opts) do
+    body = Keyword.fetch!(opts, :body)
+    content_type = Keyword.get(opts, :content_type, "text/event-stream")
+
+    conn
+    |> Plug.Conn.put_resp_content_type(content_type)
+    |> Plug.Conn.send_resp(200, body)
+  end
+end
+
+defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
+  use ExUnit.Case, async: false
+
+  alias MCP.Transport.StreamableHTTP.Client
   alias MCP.Transport.StreamableHTTP.ResponseReader
   alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
@@ -47,8 +77,9 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
                )
 
       refute sanitized =~ "location-secret"
-      refute_receive {:redirect_target_reached, _headers}, 10
     end
+
+    refute_receive {:redirect_target_reached, _headers}, 250
   end
 
   test "finite consumption cancels as soon as a chunk crosses the byte limit" do
@@ -74,6 +105,58 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
 
     assert {:error, :receive_timeout} = ResponseReader.consume(response, 5, 1)
     assert_receive {:cancelled, ^ref}
+  end
+
+  test "finite POST SSE enforces the event bound before JSON delivery" do
+    oversized =
+      "data: " <>
+        Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "result" => String.duplicate("x", 80)}) <>
+        "\n\n"
+
+    url = start_response_server(oversized)
+    {:ok, policy} = SecurityPolicy.new(max_response_bytes: 1_000, max_sse_event_bytes: 32)
+    client = start_supervised!({Client, owner: self(), url: url, security_policy: policy})
+
+    assert {:error, :event_too_large} =
+             Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+
+    refute_receive {:mcp_message, _}
+  end
+
+  test "finite POST SSE reports malformed JSON instead of silently timing out" do
+    url = start_response_server("data: not-json\n\n")
+    client = start_supervised!({Client, owner: self(), url: url})
+
+    assert {:error, {:invalid_sse_json, %Jason.DecodeError{}}} =
+             Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+  end
+
+  test "an absolute request deadline stops a peer that continuously drips chunks" do
+    bandit =
+      start_supervised!(
+        {Bandit,
+         plug: {MCP.Test.BoundedResponsePlug, chunks: List.duplicate({30, "x"}, 10)},
+         ip: {127, 0, 0, 1},
+         port: 0},
+        id: {MCP.Test.BoundedResponsePlug, make_ref()}
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
+    {:ok, policy} = SecurityPolicy.new(receive_timeout: 50, request_timeout: 100)
+
+    assert {:error, :request_timeout} =
+             ResponseReader.request([url: "http://127.0.0.1:#{port}/mcp"], policy)
+  end
+
+  defp start_response_server(body) do
+    bandit =
+      start_supervised!(
+        {Bandit, plug: {MCP.Test.BoundedResponsePlug, body: body}, ip: {127, 0, 0, 1}, port: 0},
+        id: {MCP.Test.BoundedResponsePlug, make_ref()}
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
+    "http://127.0.0.1:#{port}/mcp"
   end
 
   defp async_response do

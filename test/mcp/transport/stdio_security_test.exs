@@ -1,5 +1,5 @@
 defmodule MCP.Transport.StdioSecurityTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias MCP.Transport.Stdio
   alias MCP.Transport.Stdio.SecurityPolicy
@@ -68,6 +68,37 @@ defmodule MCP.Transport.StdioSecurityTest do
     refute eventually(fn -> os_process_alive?(child_pid) end, 2_000)
   end
 
+  test "protocol violation terminates the hostile parent and descendant" do
+    _transport = start_transport("malformed_descendant", shutdown_timeout: 5_000)
+    assert_receive {:mcp_message, %{"result" => %{"parent" => parent, "child" => child}}}, 5_000
+    assert_receive {:mcp_transport_closed, {:protocol_violation, {:malformed_json, _}}}, 5_000
+    refute eventually(fn -> os_process_alive?(parent) or os_process_alive?(child) end, 7_000)
+  end
+
+  test "frame turns yield without loss or reordering" do
+    _transport = start_transport("frame_burst", max_frames_per_turn: 2)
+
+    assert Enum.map(for(_ <- 1..5, do: receive_message()), &get_in(&1, ["id"])) == [1, 2, 3, 4, 5]
+  end
+
+  test "stderr capture limit applies across chunks" do
+    _transport = start_transport("chunked_stderr", stderr: :capture, max_stderr_bytes: 7)
+
+    chunks =
+      for _ <- 1..3, reduce: "" do
+        acc ->
+          receive do
+            {:mcp_transport_stderr, chunk} -> acc <> chunk
+            {:mcp_message, _message} -> acc
+          after
+            1_000 -> acc
+          end
+      end
+
+    assert byte_size(chunks) <= 7
+    assert_receive {:mcp_message, %{"id" => 1}}, 5_000
+  end
+
   defp start_transport(mode, policy_opts \\ []) do
     child_spec =
       Supervisor.child_spec(
@@ -83,9 +114,26 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   defp os_process_alive?(pid) do
-    case System.cmd("/bin/kill", ["-0", Integer.to_string(pid)], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      {_output, _status} -> false
+    case File.read("/proc/#{pid}/stat") do
+      {:ok, stat} ->
+        case String.split(stat, " ") do
+          [_pid, _name, "Z" | _rest] -> false
+          _running -> true
+        end
+
+      {:error, :enoent} ->
+        false
+
+      {:error, _reason} ->
+        true
+    end
+  end
+
+  defp receive_message do
+    receive do
+      {:mcp_message, message} -> message
+    after
+      5_000 -> flunk("timed out waiting for stdio frame")
     end
   end
 

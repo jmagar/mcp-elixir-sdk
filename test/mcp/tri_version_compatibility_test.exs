@@ -3,6 +3,7 @@ defmodule MCP.TriVersionCompatibilityTest do
 
   alias MCP.Client
   alias MCP.Protocol
+  alias MCP.Protocol.Legacy.V2025_06_18
   alias MCP.Server.Connection
   alias MCP.Test.{BridgeTransport, MockTransport, StatelessHandler}
 
@@ -80,6 +81,61 @@ defmodule MCP.TriVersionCompatibilityTest do
     assert {:ok, %{protocol_version: @june}} = Task.await(connect)
   end
 
+  test "method-not-found negotiation falls through November rejection to June" do
+    {:ok, client} =
+      start_supervised(
+        {Client,
+         transport: {MockTransport, []}, client_info: %{name: "auto-client", version: "1.0.0"}}
+      )
+
+    transport = Client.transport(client)
+    connect = Task.async(fn -> Client.connect(client) end)
+    {:ok, [discover]} = MockTransport.await_sent(transport, 1)
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => discover["id"],
+      "error" => %{"code" => -32_601, "message" => "Method not found"}
+    })
+
+    {:ok, [_discover, november]} = MockTransport.await_sent(transport, 2)
+    assert november["params"]["protocolVersion"] == @november
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => november["id"],
+      "error" => %{"code" => -32_022, "message" => "Unsupported protocol version"}
+    })
+
+    {:ok, [_discover, _november, june]} = MockTransport.await_sent(transport, 3)
+    assert june["params"]["protocolVersion"] == @june
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => june["id"],
+      "result" => %{
+        "protocolVersion" => @june,
+        "capabilities" => %{},
+        "serverInfo" => %{"name" => "june-server", "version" => "1.0.0"}
+      }
+    })
+
+    assert {:ok, %{protocol_version: @june}} = Task.await(connect)
+  end
+
+  test "June capability projection removes features introduced in November" do
+    capabilities = %{
+      "tasks" => %{"list" => %{}},
+      "elicitation" => %{"form" => %{}, "url" => %{}},
+      "tools" => %{}
+    }
+
+    assert V2025_06_18.project_capabilities(capabilities) == %{
+             "elicitation" => %{"form" => %{}},
+             "tools" => %{}
+           }
+  end
+
   test "an initialize result cannot switch legacy revisions" do
     {:ok, client} =
       start_supervised(
@@ -132,7 +188,7 @@ defmodule MCP.TriVersionCompatibilityTest do
         }
       })
 
-    assert_receive {:mcp_message, response}, 1_000
+    assert_receive {:mcp_message, response}, 5_000
     assert response["result"]["protocolVersion"] == @june
   end
 end

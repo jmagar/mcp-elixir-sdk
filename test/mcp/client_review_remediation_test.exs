@@ -240,18 +240,17 @@ defmodule MCP.ClientReviewRemediationTest do
     send(stream_request, :release_stream)
   end
 
-  test "close returns locally while session DELETE proceeds best effort" do
+  test "explicit close waits for bounded session DELETE completion" do
     %{url: url} = start_http_plug()
     client = start_supervised!({HTTPClient, owner: self(), url: url})
 
     assert :ok = HTTPClient.send_message(client, initialize_request(1))
     assert_receive {:mcp_message, %{"id" => 1}}
 
-    started = System.monotonic_time(:millisecond)
-    assert :ok = HTTPClient.close(client)
-    assert System.monotonic_time(:millisecond) - started < 250
+    close = Task.async(fn -> HTTPClient.close(client) end)
     assert_receive {:client_review_delete, request}, 500
     send(request, :release_delete)
+    assert :ok = Task.await(close, 1_000)
   end
 
   test "legacy SSE retry exhaustion is reported to the owner" do

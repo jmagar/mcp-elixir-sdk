@@ -9,6 +9,7 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
           | {:error, term()}
   def request(options, %SecurityPolicy{} = policy) when is_list(options) do
     stream? = Keyword.get(options, :stream, false)
+    deadline = deadline(policy.request_timeout)
 
     options =
       options
@@ -37,9 +38,12 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
       {:ok, %Req.Response{} = response} ->
         with :ok <- validate_content_length(response, policy.max_response_bytes),
              {:ok, body} <-
-               consume(response, policy.max_response_bytes, policy.receive_timeout) do
+               consume(response, policy.max_response_bytes, policy.receive_timeout, deadline) do
           {:ok, %{response | body: body}, body}
         end
+
+      {:error, %Req.TransportError{reason: :timeout}} ->
+        {:error, :request_timeout}
 
       {:error, reason} ->
         {:error, reason}
@@ -51,30 +55,42 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
   def consume(response, limit, receive_timeout)
       when is_integer(limit) and limit > 0 and
              (is_integer(receive_timeout) or receive_timeout == :infinity) do
-    consume_messages(response, limit, receive_timeout, 0, [])
+    consume(response, limit, receive_timeout, :infinity)
   end
 
-  defp consume_messages(response, limit, receive_timeout, size, chunks) do
-    receive do
-      message ->
-        case Req.parse_message(response, message) do
-          {:ok, parsed} ->
-            consume_chunks(response, parsed, limit, receive_timeout, size, chunks)
+  defp consume(response, limit, receive_timeout, deadline) do
+    consume_messages(response, limit, receive_timeout, deadline, 0, [])
+  end
 
-          {:error, reason} ->
-            {:error, reason}
+  defp consume_messages(response, limit, receive_timeout, deadline, size, chunks) do
+    timeout = next_timeout(receive_timeout, deadline)
 
-          :unknown ->
-            consume_messages(response, limit, receive_timeout, size, chunks)
-        end
-    after
-      receive_timeout ->
-        _ = Req.cancel_async_response(response)
-        {:error, :receive_timeout}
+    if timeout == 0 do
+      _ = Req.cancel_async_response(response)
+      {:error, :request_timeout}
+    else
+      receive do
+        message ->
+          case Req.parse_message(response, message) do
+            {:ok, parsed} ->
+              consume_chunks(response, parsed, limit, receive_timeout, deadline, size, chunks)
+
+            {:error, reason} ->
+              _ = Req.cancel_async_response(response)
+              {:error, reason}
+
+            :unknown ->
+              consume_messages(response, limit, receive_timeout, deadline, size, chunks)
+          end
+      after
+        timeout ->
+          _ = Req.cancel_async_response(response)
+          {:error, timeout_reason(receive_timeout, deadline)}
+      end
     end
   end
 
-  defp consume_chunks(response, parsed, limit, receive_timeout, size, chunks) do
+  defp consume_chunks(response, parsed, limit, receive_timeout, deadline, size, chunks) do
     Enum.reduce_while(parsed, {:continue, size, chunks}, fn
       {:data, chunk}, {:continue, current_size, current_chunks} ->
         next_size = current_size + byte_size(chunk)
@@ -94,7 +110,7 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
     end)
     |> case do
       {:continue, next_size, next_chunks} ->
-        consume_messages(response, limit, receive_timeout, next_size, next_chunks)
+        consume_messages(response, limit, receive_timeout, deadline, next_size, next_chunks)
 
       {:done, final_chunks} ->
         {:ok, final_chunks |> Enum.reverse() |> IO.iodata_to_binary()}
@@ -102,6 +118,26 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+  defp next_timeout(:infinity, :infinity), do: :infinity
+  defp next_timeout(timeout, :infinity), do: timeout
+
+  defp next_timeout(:infinity, deadline),
+    do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp next_timeout(timeout, deadline),
+    do: min(timeout, max(deadline - System.monotonic_time(:millisecond), 0))
+
+  defp timeout_reason(_receive_timeout, :infinity), do: :receive_timeout
+  defp timeout_reason(:infinity, _deadline), do: :request_timeout
+
+  defp timeout_reason(receive_timeout, deadline) do
+    if deadline - System.monotonic_time(:millisecond) <= receive_timeout,
+      do: :request_timeout,
+      else: :receive_timeout
   end
 
   defp validate_content_length(response, limit) do

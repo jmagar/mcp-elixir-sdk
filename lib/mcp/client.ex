@@ -867,7 +867,13 @@ defmodule MCP.Client do
 
     if remaining > 0 do
       state = select_protocol(state, "2025-11-25")
-      send_initialize(state, operation.from, remaining)
+
+      send_initialize(
+        state,
+        operation.from,
+        remaining,
+        {:initialize_fallback, ["2025-06-18"], deadline}
+      )
     else
       GenServer.reply(operation.from, {:error, :timeout})
       {:noreply, state}
@@ -922,6 +928,31 @@ defmodule MCP.Client do
 
   defp finish_response_with_operation(response, operation, state),
     do: finish_response(response, operation.from, operation.kind, state)
+
+  defp finish_response(
+         %Response{error: %Error{code: -32_022}},
+         from,
+         {:initialize_fallback, [version | rest], deadline},
+         state
+       ) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      state = select_protocol(state, version)
+      send_initialize(state, from, remaining, {:initialize_fallback, rest, deadline})
+    else
+      GenServer.reply(from, {:error, :timeout})
+      {:noreply, state}
+    end
+  end
+
+  defp finish_response(
+         %Response{result: result},
+         from,
+         {:initialize_fallback, _rest, _deadline},
+         state
+       ),
+       do: finish_response(%Response{result: result}, from, :initialize, state)
 
   # server/discover result → capability probe reply.
   defp finish_response(%Response{error: error}, from, {:discover, _retried?}, state)

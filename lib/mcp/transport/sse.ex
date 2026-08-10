@@ -231,7 +231,7 @@ defmodule MCP.Transport.SSE do
   defp extract_bounded_events(buffer, events, limit) do
     case :binary.match(buffer, "\n\n") do
       {separator, 2} when separator <= limit ->
-        <<event_text::binary-size(separator), _separator::binary-size(2), rest::binary>> = buffer
+        <<event_text::binary-size(^separator), _separator::binary-size(2), rest::binary>> = buffer
 
         events =
           case decode_event(event_text) do
