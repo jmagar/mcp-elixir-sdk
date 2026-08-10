@@ -212,9 +212,8 @@ defmodule MCP.Transport.SSE do
   defp apply_field(_unknown, _value, acc), do: acc
 
   defp extract_events(buffer, events) do
-    # Events are separated by blank lines (\n\n)
-    case String.split(buffer, "\n\n", parts: 2) do
-      [event_text, rest] ->
+    case split_event(buffer) do
+      {:ok, event_text, rest} ->
         case decode_event(event_text) do
           {:ok, event} ->
             extract_events(rest, events ++ [event])
@@ -223,15 +222,18 @@ defmodule MCP.Transport.SSE do
             extract_events(rest, events)
         end
 
-      [_incomplete] ->
+      :incomplete ->
         {events, buffer}
     end
   end
 
   defp extract_bounded_events(buffer, events, limit) do
-    case :binary.match(buffer, "\n\n") do
-      {separator, 2} when separator <= limit ->
-        <<event_text::binary-size(^separator), _separator::binary-size(2), rest::binary>> = buffer
+    case match_event_delimiter(buffer) do
+      {separator, _size} when separator > limit ->
+        {:error, :event_too_large}
+
+      {_separator, _size} = match ->
+        {:ok, event_text, rest} = split_event(buffer, match)
 
         events =
           case decode_event(event_text) do
@@ -241,9 +243,6 @@ defmodule MCP.Transport.SSE do
 
         extract_bounded_events(rest, events, limit)
 
-      {separator, 2} when separator > limit ->
-        {:error, :event_too_large}
-
       :nomatch when byte_size(buffer) > limit ->
         {:error, :event_too_large}
 
@@ -251,4 +250,18 @@ defmodule MCP.Transport.SSE do
         {:ok, Enum.reverse(events), buffer}
     end
   end
+
+  defp split_event(buffer), do: split_event(buffer, match_event_delimiter(buffer))
+
+  defp split_event(_buffer, :nomatch), do: :incomplete
+
+  defp split_event(buffer, {separator, size}) do
+    <<event_text::binary-size(^separator), _delimiter::binary-size(^size), rest::binary>> = buffer
+    {:ok, event_text, rest}
+  end
+
+  # Events are separated by a blank line. Compliant producers may terminate
+  # lines with either LF or CRLF, so both delimiters must be recognised — and
+  # the delimiter length preserved — or a CRLF stream never yields an event.
+  defp match_event_delimiter(buffer), do: :binary.match(buffer, ["\r\n\r\n", "\n\n"])
 end

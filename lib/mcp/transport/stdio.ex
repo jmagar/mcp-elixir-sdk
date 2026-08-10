@@ -123,6 +123,11 @@ defmodule MCP.Transport.Stdio do
   end
 
   def handle_info({:stdio_process, process, :closed, reason}, %{process: process} = state) do
+    # A subprocess that writes a burst and exits leaves the tail of that burst
+    # buffered behind a frame-turn boundary. The close notification is already
+    # queued ahead of the self-scheduled drain, so the remaining frames must be
+    # flushed here or they are lost.
+    state = flush_buffered_frames(state)
     send(state.owner, {:mcp_transport_closed, reason})
     {:stop, :normal, %{state | process: nil}}
   end
@@ -271,7 +276,10 @@ defmodule MCP.Transport.Stdio do
       {:ok, messages, remaining, more?} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
 
-        if more?, do: Process.send_after(self(), :drain_stdout, 10)
+        # Queued immediately: the message lands behind everything already in the
+        # mailbox, which preserves the frame-turn yield without adding latency
+        # or letting a queued close notification overtake the pending drain.
+        if more?, do: send(self(), :drain_stdout)
         {:noreply, %{state | buffer: remaining}}
 
       {:error, reason, messages} ->
@@ -290,6 +298,26 @@ defmodule MCP.Transport.Stdio do
         end
 
         {:stop, :normal, state}
+    end
+  end
+
+  defp flush_buffered_frames(%{buffer: ""} = state), do: state
+
+  defp flush_buffered_frames(state) do
+    case consume_frames(state.buffer, state.security_policy, 0, []) do
+      {:ok, messages, remaining, more?} ->
+        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
+        state = %{state | buffer: remaining}
+        if more?, do: flush_buffered_frames(state), else: state
+
+      {:error, reason, messages} ->
+        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
+
+        Logger.warning(
+          "MCP Stdio: discarding unparsable buffered output on close: #{inspect(reason)}"
+        )
+
+        %{state | buffer: ""}
     end
   end
 

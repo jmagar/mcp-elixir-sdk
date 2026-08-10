@@ -32,6 +32,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   require Logger
 
+  alias MCP.Protocol.Revision
   alias MCP.Protocol.ToolRouting
   alias MCP.Transport.SSE
   alias MCP.Transport.StreamableHTTP.ResponseReader
@@ -39,7 +40,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @behaviour MCP.Transport
 
-  @protocol_version "2026-07-28"
+  @protocol_version Revision.preferred()
   @default_legacy_sse_retry_limit 3
   @default_legacy_sse_retry_backoff 50
   @default_legacy_sse_retry_max_backoff 1_000
@@ -82,7 +83,12 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl MCP.Transport
   def close(pid) do
-    GenServer.call(pid, :close)
+    # Close performs the legacy session DELETE synchronously, and that request is
+    # already bounded by the policy's `request_timeout` (60s by default). A
+    # shorter call timeout here would report `{:close_failed, :timeout}` to the
+    # caller while the transport was still shutting down correctly, so the call
+    # waits for the cleanup it asked for.
+    GenServer.call(pid, :close, :infinity)
   catch
     :exit, {:noproc, _call} -> :ok
     :exit, reason -> {:error, {:close_failed, reason}}

@@ -138,6 +138,35 @@ defmodule MCP.Transport.SSETest do
       assert {:error, :event_too_large} = SSE.feed(parser, "data: 123\n\n")
     end
 
+    test "accepts CRLF-terminated events within the configured limit" do
+      parser = SSE.new_parser(max_event_bytes: 64)
+      body = "event: message\r\ndata: one\r\n\r\nevent: message\r\ndata: two\r\n\r\n"
+
+      assert {:ok, events, parser} = SSE.feed(parser, body)
+      assert Enum.map(events, & &1.data) == ["one", "two"]
+      assert parser.buffer == ""
+    end
+
+    test "bounds a CRLF-terminated event by its own length, not the whole buffer" do
+      parser = SSE.new_parser(max_event_bytes: 8)
+      assert {:error, :event_too_large} = SSE.feed(parser, "data: 123456789\r\n\r\n")
+    end
+
+    test "reassembles a CRLF delimiter split across chunks" do
+      parser = SSE.new_parser(max_event_bytes: 64)
+
+      assert {:ok, [], parser} = SSE.feed(parser, "data: split\r\n")
+      assert {:ok, [event], _parser} = SSE.feed(parser, "\r\ndata: next")
+      assert event.data == "split"
+    end
+
+    test "the unbounded parser also splits CRLF-terminated events" do
+      parser = SSE.new_parser()
+
+      {events, _parser} = SSE.feed(parser, "event: message\r\ndata: hello\r\n\r\n")
+      assert [%{event: "message", data: "hello"}] = events
+    end
+
     test "parses complete events" do
       parser = SSE.new_parser()
       data = "event: message\ndata: hello\n\nevent: message\ndata: world\n\n"

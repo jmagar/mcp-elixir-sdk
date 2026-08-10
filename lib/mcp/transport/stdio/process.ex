@@ -125,42 +125,48 @@ defmodule MCP.Transport.Stdio.Process do
   defp normalize_exit(reason), do: reason
 
   defp descendants(root_pid) do
-    process_table = process_table()
+    %{children: children, start_times: start_times} = process_table()
 
-    descendants_from(root_pid, process_table)
+    root_pid
+    |> descendants_from(children)
     |> Enum.uniq()
-    |> Enum.map(&{&1, process_start_time(&1)})
+    |> Enum.map(&{&1, Map.get(start_times, &1)})
   end
 
-  defp descendants_from(pid, process_table) do
-    process_table
+  defp descendants_from(pid, children) do
+    children
     |> Map.get(pid, [])
-    |> Enum.flat_map(fn child -> [child | descendants_from(child, process_table)] end)
+    |> Enum.flat_map(fn child -> [child | descendants_from(child, children)] end)
   end
 
+  # Parenthood and start-time identity are taken from the same `/proc/<pid>/stat`
+  # read. Collecting the identity in a second pass would let a PID recycled
+  # between the two reads inherit a descendant's place in the tree, and cleanup
+  # would then signal an unrelated process.
   defp process_table do
-    "/proc/[0-9]*/status"
+    "/proc/[0-9]*/stat"
     |> Path.wildcard()
-    |> Enum.reduce(%{}, fn path, table ->
-      with {:ok, status} <- File.read(path),
-           {pid, ""} <- status_field_integer(status, "Pid:"),
-           {parent_pid, ""} <- status_field_integer(status, "PPid:") do
-        Map.update(table, parent_pid, [pid], &[pid | &1])
-      else
-        _unavailable -> table
+    |> Enum.reduce(%{children: %{}, start_times: %{}}, fn path, table ->
+      case File.read(path) do
+        {:ok, stat} -> put_process_identity(table, stat)
+        {:error, _unavailable} -> table
       end
     end)
   end
 
-  defp status_field_integer(status, field) do
-    status
-    |> String.split("\n")
-    |> Enum.find_value(:error, fn line ->
-      case String.split(line, ~r/\s+/, trim: true) do
-        [^field, value] -> Integer.parse(value)
-        _other -> nil
-      end
-    end)
+  defp put_process_identity(table, stat) do
+    with {pid, _rest} <- Integer.parse(stat),
+         fields when is_list(fields) <- stat_fields(stat),
+         parent_field when is_binary(parent_field) <- Enum.at(fields, 1),
+         {parent_pid, ""} <- Integer.parse(parent_field) do
+      %{
+        table
+        | children: Map.update(table.children, parent_pid, [pid], &[pid | &1]),
+          start_times: Map.put(table.start_times, pid, Enum.at(fields, 19))
+      }
+    else
+      _unparsable -> table
+    end
   end
 
   defp ensure_descendants_stopped({:error, reason}, descendants, timeout) do
@@ -216,35 +222,48 @@ defmodule MCP.Transport.Stdio.Process do
 
   defp process_alive?({pid, expected_start_time}) do
     case File.read("/proc/#{pid}/stat") do
-      {:ok, stat} ->
-        not zombie_stat?(stat) and process_start_time(stat) == expected_start_time
-
-      {:error, _reason} ->
-        false
+      {:ok, stat} -> alive_identity?(stat_fields(stat), expected_start_time)
+      {:error, _reason} -> false
     end
   end
 
-  defp zombie_stat?(stat) do
-    case :binary.matches(stat, ") ") |> List.last() do
-      {offset, 2} -> binary_part(stat, offset + 2, 1) == "Z"
-      nil -> false
-    end
-  end
+  defp alive_identity?([state | _rest] = fields, expected_start_time),
+    do: state != "Z" and Enum.at(fields, 19) == expected_start_time
 
-  defp process_start_time(pid) when is_integer(pid) do
+  defp alive_identity?(_fields, _expected_start_time), do: false
+
+  @doc """
+  Reports whether an OS process is still running, treating an unreaped zombie
+  as stopped.
+
+  Exposed so cleanup probes assert liveness the same way cleanup does, rather
+  than reimplementing `/proc` parsing.
+  """
+  @spec os_process_alive?(pos_integer()) :: boolean()
+  def os_process_alive?(pid) when is_integer(pid) do
     case File.read("/proc/#{pid}/stat") do
-      {:ok, stat} -> process_start_time(stat)
-      {:error, _reason} -> nil
+      {:ok, stat} -> running_stat?(stat)
+      {:error, _reason} -> false
     end
   end
 
-  defp process_start_time(stat) do
+  defp running_stat?(stat) do
+    case stat_fields(stat) do
+      [state | _rest] -> state != "Z"
+      _unparsable -> false
+    end
+  end
+
+  # `/proc/<pid>/stat` field 2 is the parenthesised executable name and may
+  # itself contain spaces and parentheses, so the fields after it are only
+  # addressable from the final ") " in the line. The returned list starts at
+  # field 3 (state), which puts ppid at index 1 and starttime at index 19.
+  defp stat_fields(stat) do
     case :binary.matches(stat, ") ") |> List.last() do
       {offset, 2} ->
         stat
         |> binary_part(offset + 2, byte_size(stat) - offset - 2)
         |> String.split()
-        |> Enum.at(19)
 
       nil ->
         nil
