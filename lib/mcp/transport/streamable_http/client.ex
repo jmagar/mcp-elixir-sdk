@@ -34,6 +34,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   alias MCP.Protocol.ToolRouting
   alias MCP.Transport.SSE
+  alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
   @behaviour MCP.Transport
 
@@ -47,6 +48,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     :owner,
     :owner_ref,
     :url,
+    :endpoint,
+    :security_policy,
     :protocol_version,
     :session_id,
     :extra_headers,
@@ -113,33 +116,36 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     url = Keyword.fetch!(opts, :url)
     protocol_version = Keyword.get(opts, :protocol_version, @protocol_version)
     extra_headers = Keyword.get(opts, :headers, [])
-    {:ok, task_supervisor} = Task.Supervisor.start_link()
 
-    case reserved_extra_header(extra_headers) do
-      nil ->
-        state = %__MODULE__{
-          owner: owner,
-          owner_ref: Process.monitor(owner),
-          url: url,
-          protocol_version: protocol_version,
-          extra_headers: extra_headers,
-          task_supervisor: task_supervisor,
-          legacy_sse_retry_limit:
-            Keyword.get(opts, :legacy_sse_retry_limit, @default_legacy_sse_retry_limit),
-          legacy_sse_retry_backoff:
-            Keyword.get(opts, :legacy_sse_retry_backoff, @default_legacy_sse_retry_backoff),
-          legacy_sse_retry_max_backoff:
-            Keyword.get(
-              opts,
-              :legacy_sse_retry_max_backoff,
-              @default_legacy_sse_retry_max_backoff
-            )
-        }
+    with {:ok, security_policy} <- security_policy(opts),
+         {:ok, endpoint} <- SecurityPolicy.validate_url(security_policy, url),
+         nil <- reserved_extra_header(extra_headers),
+         {:ok, task_supervisor} <- Task.Supervisor.start_link() do
+      state = %__MODULE__{
+        owner: owner,
+        owner_ref: Process.monitor(owner),
+        url: url,
+        endpoint: endpoint,
+        security_policy: security_policy,
+        protocol_version: protocol_version,
+        extra_headers: extra_headers,
+        task_supervisor: task_supervisor,
+        legacy_sse_retry_limit:
+          Keyword.get(opts, :legacy_sse_retry_limit, @default_legacy_sse_retry_limit),
+        legacy_sse_retry_backoff:
+          Keyword.get(opts, :legacy_sse_retry_backoff, @default_legacy_sse_retry_backoff),
+        legacy_sse_retry_max_backoff:
+          Keyword.get(
+            opts,
+            :legacy_sse_retry_max_backoff,
+            @default_legacy_sse_retry_max_backoff
+          )
+      }
 
-        {:ok, state}
-
-      name ->
-        {:stop, {:reserved_extra_header, name}}
+      {:ok, state}
+    else
+      name when is_binary(name) -> {:stop, {:reserved_extra_header, name}}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
@@ -339,6 +345,15 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   # --- Private helpers ---
+
+  defp security_policy(opts) do
+    case Keyword.get(opts, :security_policy) do
+      nil -> {:ok, SecurityPolicy.default()}
+      %SecurityPolicy{} = policy -> {:ok, policy}
+      policy_opts when is_list(policy_opts) -> SecurityPolicy.new(policy_opts)
+      invalid -> {:error, {:invalid_security_policy, invalid}}
+    end
+  end
 
   defp start_post_task(state, from, message, headers) do
     transport = self()

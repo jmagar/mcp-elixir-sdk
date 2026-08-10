@@ -131,6 +131,7 @@ defmodule MCPElixirSDK.MixProject do
           MCP.Transport.Stdio,
           MCP.Transport.SSE,
           MCP.Transport.StreamableHTTP.Client,
+          MCP.Transport.StreamableHTTP.SecurityPolicy,
           MCP.Transport.StreamableHTTP.LegacySessionManager,
           MCP.Transport.StreamableHTTP.Plug
         ]
