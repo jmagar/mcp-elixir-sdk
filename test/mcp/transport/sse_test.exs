@@ -126,6 +126,18 @@ defmodule MCP.Transport.SSETest do
   end
 
   describe "stream parser" do
+    test "rejects an incomplete event before its buffer exceeds the configured limit" do
+      parser = SSE.new_parser(max_event_bytes: 8)
+
+      assert {:ok, [], parser} = SSE.feed(parser, "data: 1")
+      assert {:error, :event_too_large} = SSE.feed(parser, "23")
+    end
+
+    test "rejects a complete event larger than the configured limit" do
+      parser = SSE.new_parser(max_event_bytes: 8)
+      assert {:error, :event_too_large} = SSE.feed(parser, "data: 123\n\n")
+    end
+
     test "parses complete events" do
       parser = SSE.new_parser()
       data = "event: message\ndata: hello\n\nevent: message\ndata: world\n\n"

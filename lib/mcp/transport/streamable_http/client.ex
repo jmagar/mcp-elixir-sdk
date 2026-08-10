@@ -34,12 +34,12 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   alias MCP.Protocol.ToolRouting
   alias MCP.Transport.SSE
+  alias MCP.Transport.StreamableHTTP.ResponseReader
   alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
   @behaviour MCP.Transport
 
   @protocol_version "2026-07-28"
-  @legacy_protocol_version "2025-11-25"
   @default_legacy_sse_retry_limit 3
   @default_legacy_sse_retry_backoff 50
   @default_legacy_sse_retry_max_backoff 1_000
@@ -389,8 +389,11 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp post(transport, state, message, headers) do
     body = Jason.encode!(message)
 
-    case Req.post(state.url, body: body, headers: headers, receive_timeout: 60_000) do
-      {:ok, %Req.Response{status: status, headers: resp_headers, body: resp_body}}
+    case ResponseReader.request(
+           [method: :post, url: state.url, body: body, headers: headers],
+           state.security_policy
+         ) do
+      {:ok, %Req.Response{status: status, headers: resp_headers}, resp_body}
       when status in [200, 201] ->
         bind_response_session(transport, message, state.protocol_version, resp_headers)
         content_type = get_content_type(resp_headers)
@@ -410,11 +413,11 @@ defmodule MCP.Transport.StreamableHTTP.Client do
             {:ok, state}
         end
 
-      {:ok, %Req.Response{status: 202}} ->
+      {:ok, %Req.Response{status: 202}, _body} ->
         # Accepted (notification/response acknowledged)
         {:ok, state}
 
-      {:ok, %Req.Response{status: status, headers: resp_headers, body: resp_body}} ->
+      {:ok, %Req.Response{status: status, headers: resp_headers}, resp_body} ->
         handle_non_success_response(state, status, resp_headers, resp_body)
 
       {:error, reason} ->
@@ -429,7 +432,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
     cond do
       status == 404 and
-          (is_binary(state.session_id) or state.protocol_version == @legacy_protocol_version) ->
+          (is_binary(state.session_id) or state.protocol_version != @protocol_version) ->
         {:error, :session_expired}
 
       String.contains?(get_content_type(headers), "text/event-stream") ->
@@ -455,12 +458,23 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp json_rpc_error_response?(_body), do: false
 
   defp deliver_json_error_response(state, status, body) do
-    if json_rpc_error_response?(body) do
-      deliver_json_response(state, body)
+    decoded_body = decode_json_body(body)
+
+    if json_rpc_error_response?(decoded_body) do
+      deliver_json_response(state, decoded_body)
     else
-      {:error, {:http_error, status, body}}
+      {:error, {:http_error, status, decoded_body}}
     end
   end
+
+  defp decode_json_body(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> decoded
+      {:error, _reason} -> body
+    end
+  end
+
+  defp decode_json_body(body), do: body
 
   defp deliver_sse_error_response(state, status, body) when is_binary(body) do
     {events, _parser} = SSE.feed(SSE.new_parser(), body)
@@ -697,11 +711,14 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       {"mcp-session-id", state.session_id}
     ]
 
-    case Req.delete(state.url, headers: headers, receive_timeout: 10_000) do
-      {:ok, %Req.Response{status: status}} when status in [200, 202, 204, 404] ->
+    case ResponseReader.request(
+           [method: :delete, url: state.url, headers: headers],
+           state.security_policy
+         ) do
+      {:ok, %Req.Response{status: status}, _body} when status in [200, 202, 204, 404] ->
         :ok
 
-      {:ok, %Req.Response{status: status}} ->
+      {:ok, %Req.Response{status: status}, _body} ->
         Logger.debug("MCP session DELETE returned HTTP #{status}")
 
       {:error, reason} ->
@@ -715,7 +732,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     cleanup = %{
       url: state.url,
       protocol_version: state.protocol_version,
-      session_id: state.session_id
+      session_id: state.session_id,
+      security_policy: state.security_policy
     }
 
     {:ok, _pid} = Task.start(fn -> terminate_legacy_session(cleanup) end)
@@ -747,7 +765,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
             state.extra_headers,
             state.legacy_sse_retry_limit,
             state.legacy_sse_retry_backoff,
-            state.legacy_sse_retry_max_backoff
+            state.legacy_sse_retry_max_backoff,
+            state.security_policy
           )
 
         send(transport, {:legacy_sse_stopped, self(), reason})
@@ -764,7 +783,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
          extra_headers,
          retries_left,
          backoff,
-         max_backoff
+         max_backoff,
+         security_policy
        ) do
     headers =
       [
@@ -774,19 +794,24 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       ] ++ extra_headers
 
     result =
-      case Req.get(url,
-             headers: headers,
-             into: :self,
-             receive_timeout: :infinity,
-             retry: false
+      case ResponseReader.request(
+             [method: :get, url: url, headers: headers, stream: true],
+             security_policy
            ) do
-        {:ok, %Req.Response{status: 200} = response} ->
-          consume_legacy_sse_stream(owner, response, SSE.new_parser())
+        {:stream, %Req.Response{status: 200} = response} ->
+          consume_legacy_sse_stream(
+            owner,
+            response,
+            SSE.new_parser(max_event_bytes: security_policy.max_sse_event_bytes),
+            security_policy.receive_timeout
+          )
 
-        {:ok, %Req.Response{status: 404}} ->
+        {:stream, %Req.Response{status: 404} = response} ->
+          _ = Req.cancel_async_response(response)
           :session_expired
 
-        {:ok, %Req.Response{status: status}} ->
+        {:stream, %Req.Response{status: status} = response} ->
+          _ = Req.cancel_async_response(response)
           {:error, {:http_status, status}}
 
         {:error, reason} ->
@@ -808,7 +833,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           extra_headers,
           retries_left,
           backoff,
-          max_backoff
+          max_backoff,
+          security_policy
         )
 
       _result when retries_left <= 0 ->
@@ -825,28 +851,44 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           extra_headers,
           retries_left - 1,
           min(backoff * 2, max_backoff),
-          max_backoff
+          max_backoff,
+          security_policy
         )
     end
   end
 
-  defp consume_legacy_sse_stream(owner, response, parser) do
+  defp consume_legacy_sse_stream(owner, response, parser, receive_timeout) do
     receive do
       message ->
         case Req.parse_message(response, message) do
-          {:ok, chunks} -> consume_legacy_sse_chunks(owner, response, parser, chunks)
-          {:error, reason} -> {:error, reason}
-          :unknown -> consume_legacy_sse_stream(owner, response, parser)
+          {:ok, chunks} ->
+            consume_legacy_sse_chunks(owner, response, parser, chunks, receive_timeout)
+
+          {:error, reason} ->
+            {:error, reason}
+
+          :unknown ->
+            consume_legacy_sse_stream(owner, response, parser, receive_timeout)
         end
+    after
+      receive_timeout ->
+        _ = Req.cancel_async_response(response)
+        {:error, :receive_timeout}
     end
   end
 
-  defp consume_legacy_sse_chunks(owner, response, parser, chunks) do
+  defp consume_legacy_sse_chunks(owner, response, parser, chunks, receive_timeout) do
     Enum.reduce_while(chunks, {:continue, parser}, fn
       {:data, data}, {:continue, current_parser} ->
-        {events, next_parser} = SSE.feed(current_parser, data)
-        deliver_legacy_sse_events(owner, events)
-        {:cont, {:continue, next_parser}}
+        case SSE.feed(current_parser, data) do
+          {:ok, events, next_parser} ->
+            deliver_legacy_sse_events(owner, events)
+            {:cont, {:continue, next_parser}}
+
+          {:error, reason} ->
+            _ = Req.cancel_async_response(response)
+            {:halt, {:error, reason}}
+        end
 
       :done, {:continue, current_parser} ->
         {:halt, {:done, current_parser}}
@@ -855,8 +897,14 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         {:cont, accumulator}
     end)
     |> case do
-      {:continue, next_parser} -> consume_legacy_sse_stream(owner, response, next_parser)
-      {:done, _parser} -> :eof
+      {:continue, next_parser} ->
+        consume_legacy_sse_stream(owner, response, next_parser, receive_timeout)
+
+      {:done, _parser} ->
+        :eof
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -883,7 +931,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
     {:ok, task} =
       Task.Supervisor.start_child(state.task_supervisor, fn ->
-        run_subscription_stream(transport, id, url, message, headers)
+        run_subscription_stream(transport, id, url, message, headers, state.security_policy)
       end)
 
     monitor_ref = Process.monitor(task)
@@ -892,23 +940,35 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     {:reply, :ok, %{state | subscriptions: subscriptions}}
   end
 
-  defp run_subscription_stream(transport, id, url, message, headers) do
+  defp run_subscription_stream(transport, id, url, message, headers, security_policy) do
     result =
-      case Req.post(url,
-             body: Jason.encode!(message),
-             headers: headers,
-             into: :self,
-             receive_timeout: :infinity
+      case ResponseReader.request(
+             [
+               method: :post,
+               url: url,
+               body: Jason.encode!(message),
+               headers: headers,
+               stream: true
+             ],
+             security_policy
            ) do
-        {:ok, %Req.Response{status: 200} = response} ->
+        {:stream, %Req.Response{status: 200} = response} ->
           if String.contains?(get_content_type(response.headers), "text/event-stream") do
-            consume_subscription_stream(transport, id, response, SSE.new_parser())
+            consume_subscription_stream(
+              transport,
+              id,
+              response,
+              SSE.new_parser(max_event_bytes: security_policy.max_sse_event_bytes),
+              security_policy.receive_timeout
+            )
           else
+            _ = Req.cancel_async_response(response)
             {:error, {:unexpected_content_type, get_content_type(response.headers)}}
           end
 
-        {:ok, %Req.Response{status: status, body: body}} ->
-          {:error, {:http_error, status, body}}
+        {:stream, %Req.Response{status: status} = response} ->
+          _ = Req.cancel_async_response(response)
+          {:error, {:http_error, status, ""}}
 
         {:error, reason} ->
           {:error, reason}
@@ -923,7 +983,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       )
   end
 
-  defp consume_subscription_stream(transport, id, response, parser) do
+  defp consume_subscription_stream(transport, id, response, parser, receive_timeout) do
     receive do
       {:cancel_subscription_stream, requested_id} when requested_id in [id, :all] ->
         _ = Req.cancel_async_response(response)
@@ -931,21 +991,42 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
       message ->
         case Req.parse_message(response, message) do
-          {:ok, chunks} -> consume_subscription_chunks(transport, id, response, parser, chunks)
-          {:error, reason} -> {:error, reason}
-          :unknown -> consume_subscription_stream(transport, id, response, parser)
+          {:ok, chunks} ->
+            consume_subscription_chunks(
+              transport,
+              id,
+              response,
+              parser,
+              chunks,
+              receive_timeout
+            )
+
+          {:error, reason} ->
+            {:error, reason}
+
+          :unknown ->
+            consume_subscription_stream(transport, id, response, parser, receive_timeout)
         end
+    after
+      receive_timeout ->
+        _ = Req.cancel_async_response(response)
+        {:error, :receive_timeout}
     end
   end
 
-  defp consume_subscription_chunks(transport, id, response, parser, chunks) do
+  defp consume_subscription_chunks(transport, id, response, parser, chunks, receive_timeout) do
     Enum.reduce_while(chunks, {:continue, parser}, fn
       {:data, data}, {:continue, current_parser} ->
-        {events, next_parser} = SSE.feed(current_parser, data)
+        case SSE.feed(current_parser, data) do
+          {:ok, events, next_parser} ->
+            case deliver_subscription_events(transport, id, events) do
+              :ok -> {:cont, {:continue, next_parser}}
+              {:error, reason} -> {:halt, {:error, reason}}
+            end
 
-        case deliver_subscription_events(transport, id, events) do
-          :ok -> {:cont, {:continue, next_parser}}
-          {:error, reason} -> {:halt, {:error, reason}}
+          {:error, reason} ->
+            _ = Req.cancel_async_response(response)
+            {:halt, {:error, reason}}
         end
 
       :done, {:continue, current_parser} ->
@@ -956,7 +1037,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end)
     |> case do
       {:continue, next_parser} ->
-        consume_subscription_stream(transport, id, response, next_parser)
+        consume_subscription_stream(transport, id, response, next_parser, receive_timeout)
 
       {:done, _parser} ->
         :eof

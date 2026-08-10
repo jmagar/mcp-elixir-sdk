@@ -28,6 +28,8 @@ defmodule MCP.Transport.SSE do
           optional(:retry) => non_neg_integer()
         }
 
+  @type parser :: %{buffer: binary(), max_event_bytes: pos_integer()}
+
   @doc """
   Encodes an SSE event map into a string suitable for streaming.
 
@@ -114,8 +116,19 @@ defmodule MCP.Transport.SSE do
       {events, parser} = MCP.Transport.SSE.feed(parser, chunk1)
       {events, parser} = MCP.Transport.SSE.feed(parser, chunk2)
   """
-  @spec new_parser() :: binary()
-  def new_parser, do: ""
+  @spec new_parser(keyword()) :: binary() | parser()
+  def new_parser(opts \\ [])
+  def new_parser([]), do: ""
+
+  def new_parser(opts) when is_list(opts) do
+    max_event_bytes = Keyword.fetch!(opts, :max_event_bytes)
+
+    if is_integer(max_event_bytes) and max_event_bytes > 0 do
+      %{buffer: "", max_event_bytes: max_event_bytes}
+    else
+      raise ArgumentError, ":max_event_bytes must be a positive integer"
+    end
+  end
 
   @doc """
   Feeds data to a stream parser and returns any complete events.
@@ -127,6 +140,17 @@ defmodule MCP.Transport.SSE do
   def feed(buffer, data) when is_binary(buffer) and is_binary(data) do
     combined = buffer <> data
     extract_events(combined, [])
+  end
+
+  @spec feed(parser(), binary()) ::
+          {:ok, [event()], parser()} | {:error, :event_too_large}
+  def feed(%{buffer: buffer, max_event_bytes: limit} = parser, data) when is_binary(data) do
+    combined = buffer <> data
+
+    case extract_bounded_events(combined, [], limit) do
+      {:ok, events, remainder} -> {:ok, events, %{parser | buffer: remainder}}
+      {:error, :event_too_large} = error -> error
+    end
   end
 
   # --- Private helpers ---
@@ -201,6 +225,30 @@ defmodule MCP.Transport.SSE do
 
       [_incomplete] ->
         {events, buffer}
+    end
+  end
+
+  defp extract_bounded_events(buffer, events, limit) do
+    case :binary.match(buffer, "\n\n") do
+      {separator, 2} when separator <= limit ->
+        <<event_text::binary-size(separator), _separator::binary-size(2), rest::binary>> = buffer
+
+        events =
+          case decode_event(event_text) do
+            {:ok, event} -> [event | events]
+            {:error, _reason} -> events
+          end
+
+        extract_bounded_events(rest, events, limit)
+
+      {separator, 2} when separator > limit ->
+        {:error, :event_too_large}
+
+      :nomatch when byte_size(buffer) > limit ->
+        {:error, :event_too_large}
+
+      :nomatch ->
+        {:ok, Enum.reverse(events), buffer}
     end
   end
 end
