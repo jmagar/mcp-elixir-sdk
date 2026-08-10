@@ -78,7 +78,11 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl MCP.Transport
   def send_message(pid, message, opts) when is_map(message) and is_list(opts) do
-    GenServer.call(pid, {:send_message, message, opts}, 60_000)
+    # The reply comes from the POST task, which `ResponseReader` bounds by the
+    # policy's `request_timeout`. A fixed cap here would silently truncate any
+    # policy configured above it: the caller would exit at the cap and its
+    # monitor would tear down a request still inside its own budget.
+    GenServer.call(pid, {:send_message, message, opts}, :infinity)
   end
 
   @impl MCP.Transport
