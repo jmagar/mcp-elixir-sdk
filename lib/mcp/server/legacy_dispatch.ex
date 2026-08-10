@@ -9,8 +9,8 @@ defmodule MCP.Server.LegacyDispatch do
   """
 
   alias MCP.Protocol.Capabilities.{LoggingCapabilities, ResourceCapabilities}
-  alias MCP.Protocol.Revision
   alias MCP.Protocol.Messages.{Initialize, Request}
+  alias MCP.Protocol.Revision
   alias MCP.Server.{Dispatch, ToolContext}
 
   require Logger

@@ -1,6 +1,7 @@
 defmodule MCP.Transport.StdioSecurityTest do
   use ExUnit.Case, async: true
 
+  alias MCP.Transport.Stdio
   alias MCP.Transport.Stdio.SecurityPolicy
 
   @fixture Path.expand("../../support/adversarial_stdio_server.exs", __DIR__)
@@ -63,7 +64,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
     assert os_process_alive?(child_pid)
 
-    assert :ok = MCP.Transport.Stdio.close(transport)
+    assert :ok = Stdio.close(transport)
     refute eventually(fn -> os_process_alive?(child_pid) end, 2_000)
   end
 

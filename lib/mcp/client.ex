@@ -72,6 +72,8 @@ defmodule MCP.Client do
   @protocol_version "2026-07-28"
   @subscription_ack_method "notifications/subscriptions/acknowledged"
 
+  # Client state is intentionally explicit so lifecycle ownership remains inspectable.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :transport_module,
     :transport_pid,

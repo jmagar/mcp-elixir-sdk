@@ -74,15 +74,17 @@ defmodule MCP.Transport.Stdio do
     owner = Keyword.fetch!(opts, :owner)
     mode = determine_mode(opts)
 
-    with {:ok, security_policy} <- security_policy(opts) do
-      state = %__MODULE__{owner: owner, mode: mode, security_policy: security_policy}
+    case security_policy(opts) do
+      {:ok, security_policy} ->
+        state = %__MODULE__{owner: owner, mode: mode, security_policy: security_policy}
 
-      case mode do
-        :client -> init_client(state, opts)
-        :server -> init_server(state)
-      end
-    else
-      {:error, reason} -> {:stop, reason}
+        case mode do
+          :client -> init_client(state, opts)
+          :server -> init_server(state)
+        end
+
+      {:error, reason} ->
+        {:stop, reason}
     end
   end
 

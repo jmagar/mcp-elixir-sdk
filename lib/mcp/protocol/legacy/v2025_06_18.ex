@@ -1,3 +1,5 @@
+# Version modules mirror the protocol's date identifier deliberately.
+# credo:disable-for-this-file Credo.Check.Readability.ModuleNames
 defmodule MCP.Protocol.Legacy.V2025_06_18 do
   @moduledoc "MCP 2025-06-18 initialized-lifecycle adapter."
 

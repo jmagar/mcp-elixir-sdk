@@ -775,6 +775,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     %{state | legacy_sse_task: task, legacy_sse_ref: Process.monitor(task)}
   end
 
+  # Retry state is passed explicitly to keep the long-lived listener isolated.
+  # credo:disable-for-next-line Credo.Check.Refactor.FunctionArity
   defp legacy_sse_loop(
          owner,
          url,
@@ -1017,17 +1019,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp consume_subscription_chunks(transport, id, response, parser, chunks, receive_timeout) do
     Enum.reduce_while(chunks, {:continue, parser}, fn
       {:data, data}, {:continue, current_parser} ->
-        case SSE.feed(current_parser, data) do
-          {:ok, events, next_parser} ->
-            case deliver_subscription_events(transport, id, events) do
-              :ok -> {:cont, {:continue, next_parser}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-
-          {:error, reason} ->
-            _ = Req.cancel_async_response(response)
-            {:halt, {:error, reason}}
-        end
+        consume_subscription_data(transport, id, response, current_parser, data)
 
       :done, {:continue, current_parser} ->
         {:halt, {:done, current_parser}}
@@ -1044,6 +1036,17 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  defp consume_subscription_data(transport, id, response, parser, data) do
+    with {:ok, events, next_parser} <- SSE.feed(parser, data),
+         :ok <- deliver_subscription_events(transport, id, events) do
+      {:cont, {:continue, next_parser}}
+    else
+      {:error, reason} ->
+        _ = Req.cancel_async_response(response)
+        {:halt, {:error, reason}}
     end
   end
 

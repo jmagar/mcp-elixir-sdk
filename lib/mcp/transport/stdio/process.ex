@@ -133,15 +133,17 @@ defmodule MCP.Transport.Stdio.Process do
       {:ok, contents} ->
         contents
         |> String.split()
-        |> Enum.flat_map(fn value ->
-          case Integer.parse(value) do
-            {child, ""} -> [child]
-            _invalid -> []
-          end
-        end)
+        |> Enum.flat_map(&parse_child_pid/1)
 
       {:error, _reason} ->
         []
+    end
+  end
+
+  defp parse_child_pid(value) do
+    case Integer.parse(value) do
+      {child, ""} -> [child]
+      _invalid -> []
     end
   end
 

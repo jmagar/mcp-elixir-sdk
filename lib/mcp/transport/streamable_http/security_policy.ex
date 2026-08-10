@@ -75,6 +75,8 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   end
 
   @spec validate_url(t(), String.t()) :: {:ok, URI.t()} | {:error, {:invalid_url, term()}}
+  # Each branch intentionally names the exact rejected URL property.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def validate_url(%__MODULE__{} = policy, url) when is_binary(url) do
     uri = URI.parse(url)
 
