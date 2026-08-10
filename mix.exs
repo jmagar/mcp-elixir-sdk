@@ -117,7 +117,11 @@ defmodule MCPElixirSDK.MixProject do
         Protocol: [
           MCP.Protocol,
           MCP.Protocol.Error,
-          MCP.Protocol.Methods
+          MCP.Protocol.Methods,
+          MCP.Protocol.Revision,
+          MCP.Protocol.LegacyAdapter,
+          MCP.Protocol.Legacy.V2025_06_18,
+          MCP.Protocol.Legacy.V2025_11_25
         ],
         Capabilities: ~r/MCP\.Protocol\.Capabilities\..*/,
         Messages: ~r/MCP\.Protocol\.Messages\..*/,
