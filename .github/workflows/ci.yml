@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - otp: "27.2"
+            elixir: "1.17.3"
+          - otp: "27.2"
+            elixir: "1.18.4"
+          - otp: "29.0.5"
+            elixir: "1.20.3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps
+            _build
+          key: beam-${{ runner.os }}-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix test --seed 0
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.4"
+      - run: mix deps.get
+      - run: mix credo --strict
+      - run: mix dialyzer
+      - run: mix docs
+      - run: mix hex.build
+      - run: mix hex.audit
+      - run: mix deps.unlock --check-unused
+      - run: git diff --check
+      - run: jq empty conformance/scenarios.json
+      - run: jq empty conformance/compatibility-2025-11-25.json
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.4"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - name: Server and client conformance
+        run: |
+          set -euo pipefail
+          server_log="${RUNNER_TEMP}/mcp-conformance-server.log"
+          mix run --no-halt conformance/server_adapter.exs 43001 >"${server_log}" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "${server_pid}" 2>/dev/null || true
+            wait "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:43001/mcp -H 'Accept: text/event-stream' >/dev/null; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          if [[ "${ready}" != "true" ]]; then
+            cat "${server_log}"
+            exit 1
+          fi
+
+          npx --no-install conformance server \
+            --url http://127.0.0.1:43001/mcp \
+            --requirements 2026-07-28
+
+          npx --no-install conformance server \
+            --url http://127.0.0.1:43001/mcp \
+            --requirements 2025-11-25
+
+          for scenario in \
+            tools_call \
+            request-metadata \
+            sep-2322-client-request-state \
+            http-standard-headers \
+            http-custom-headers \
+            http-invalid-tool-headers \
+            json-schema-ref-no-deref \
+            json-schema-2020-12-preservation
+          do
+            npx --no-install conformance client \
+              --command 'mix run conformance/client_adapter.exs' \
+              --scenario "$scenario" \
+              --spec-version 2026-07-28
+          done

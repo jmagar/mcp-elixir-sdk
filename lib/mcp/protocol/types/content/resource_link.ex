@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Content.ResourceLink do
 
   alias MCP.Protocol.Types.{Annotations, Icon}
 
-  @derive Jason.Encoder
   defstruct type: "resource_link",
             uri: nil,
             name: nil,

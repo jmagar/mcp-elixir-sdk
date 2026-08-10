@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Types.Root do
   A filesystem root that a client exposes to servers.
   """
 
-  @derive Jason.Encoder
   defstruct [:uri, :name, :meta]
 
   @type t :: %__MODULE__{

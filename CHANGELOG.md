@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-dev.2] - Unreleased
+
+### Added
+
+- Core `2025-11-25` compatibility alongside `2026-07-28`: bounded client
+  negotiation fallback, initialize/initialized, legacy Streamable HTTP
+  sessions, GET SSE server requests, session DELETE, resource subscriptions,
+  logging, roots, sampling, elicitation, ping, and legacy notifications.
+- Stateless MCP `2026-07-28` client/server core with per-request metadata and
+  `server/discover`.
+- OTP-supervised stdio and Streamable HTTP subscriptions with explicit handles,
+  acknowledgment-first ordering, filters, bounded queues, and cancellation.
+- MRTR input-required client resolution, extension capability negotiation,
+  lossless JSON Schema 2020-12, complete JSON structured-content values, W3C
+  trace metadata, and schema-directed routing headers.
+- Pinned official conformance adapters, scenario ledger, and CI release gates.
+  The official 2025 server requirements denominator is covered; client
+  compatibility evidence currently combines the official initialize scenario
+  with the local cross-transport matrix rather than claiming a full official
+  client denominator.
+
+### Changed
+
+- Streamable HTTP selects a protocol mode per request/session: stateless 2026
+  traffic remains sessionless while 2025 traffic is isolated in an OTP-owned
+  session connection.
+- `MCP.Server.Handler` callbacks receive `ToolContext` and immutable launch
+  configuration; callback results no longer replace handler state.
+- `MCP.Server.Connection` replaces the removed per-session `MCP.Server` API.
+- The request deadline now covers transport send, schema refresh, and MRTR
+  resolver work. Callback failures are isolated to their request.
+
+### Removed (original 2.0 cutover; legacy removals superseded above)
+
+- The original cutover removed initialize/session handling, legacy resource
+  subscriptions, held-open server requests, and protocol negotiation. The
+  `2025-11-25` portions of that removal are restored by the dual-era
+  compatibility entry above; revisions older than `2025-11-25` remain absent.
+- Client result caching. Cache metadata remains visible to consumers.
+
+### Security
+
+- Identity is resolved per authenticated HTTP request or once at stdio launch
+  and is carried only in `ToolContext`; model-controlled arguments and metadata
+  cannot override it.
+- Stateful HTTP sessions are principal-bound, supervised, capacity-limited,
+  and reclaimed on idle/absolute expiry or endpoint shutdown.
+- Request metadata, routing headers, extension values, cache policy, queue
+  bounds, and tool routing annotations are validated at their boundaries.
+
 ## [1.1.0] - 2026-07-12
 
 ### Added

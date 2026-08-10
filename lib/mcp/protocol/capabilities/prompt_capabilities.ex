@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Capabilities.PromptCapabilities do
   Server capability for prompts.
   """
 
-  @derive Jason.Encoder
   defstruct [:list_changed]
 
   @type t :: %__MODULE__{

@@ -30,9 +30,18 @@ defmodule MCP.Transport do
   Sends a JSON-RPC message (as a map) through the transport.
   """
   @callback send_message(pid :: pid(), message()) :: :ok | {:error, term()}
+  @callback send_message(pid :: pid(), message(), opts()) :: :ok | {:error, term()}
+
+  @doc "Opens a transport-owned long-lived subscription response stream."
+  @callback open_subscription(pid :: pid(), message(), opts()) :: :ok | {:error, term()}
+
+  @doc "Cancels one transport-owned subscription stream without closing siblings."
+  @callback cancel_subscription(pid :: pid(), request_id :: String.t() | integer()) :: :ok
+
+  @optional_callbacks send_message: 3, open_subscription: 3, cancel_subscription: 2
 
   @doc """
   Closes the transport, releasing all resources.
   """
-  @callback close(pid :: pid()) :: :ok
+  @callback close(pid :: pid()) :: :ok | {:error, term()}
 end

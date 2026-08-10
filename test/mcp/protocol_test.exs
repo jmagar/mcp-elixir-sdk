@@ -7,7 +7,7 @@ defmodule MCP.ProtocolTest do
 
   describe "protocol_version/0" do
     test "returns the target MCP version" do
-      assert Protocol.protocol_version() == "2025-11-25"
+      assert Protocol.protocol_version() == "2026-07-28"
     end
   end
 
@@ -154,6 +154,13 @@ defmodule MCP.ProtocolTest do
       }
 
       assert {:ok, %Response{}} = Protocol.decode_message(map)
+    end
+
+    test "rejects malformed response error objects without raising" do
+      for malformed <- ["scalar", %{}, %{"code" => "bad", "message" => 7}] do
+        map = %{"jsonrpc" => "2.0", "id" => 1, "error" => malformed}
+        assert {:error, %Error{code: -32_600}} = Protocol.decode_message(map)
+      end
     end
 
     test "classifies request when id and method present (no result/error)" do

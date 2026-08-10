@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Types.Icon do
   Icon for visual identification of tools, resources, prompts, etc.
   """
 
-  @derive Jason.Encoder
   defstruct [:src, :mime_type, :sizes, :theme]
 
   @type t :: %__MODULE__{

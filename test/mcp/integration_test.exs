@@ -12,7 +12,7 @@ defmodule MCP.IntegrationTest do
   alias MCP.Client
   alias MCP.Server.Connection
   alias MCP.Server.ToolContext
-  alias MCP.Test.BridgeTransport
+  alias MCP.Test.{BridgeTransport, StatelessHandler}
 
   # --- Context-bearing handler (stateless: reads ctx, never args, for identity) ---
 
@@ -23,7 +23,7 @@ defmodule MCP.IntegrationTest do
     def init(_opts), do: {:ok, %{}}
 
     @impl true
-    def handle_list_tools(_cursor, %ToolContext{}, state) do
+    def handle_list_tools(_cursor, %ToolContext{}, _config) do
       tools = [
         %{
           "name" => "echo",
@@ -37,63 +37,64 @@ defmodule MCP.IntegrationTest do
         }
       ]
 
-      {:ok, tools, nil, state}
+      {:ok, tools, nil}
     end
 
     @impl true
-    def handle_call_tool("echo", %{"message" => msg}, %ToolContext{}, state),
-      do: {:ok, [%{"type" => "text", "text" => msg}], state}
+    def handle_call_tool("echo", %{"message" => msg}, %ToolContext{}, _config),
+      do: {:ok, [%{"type" => "text", "text" => msg}]}
 
-    def handle_call_tool("add", %{"a" => a, "b" => b}, %ToolContext{}, state),
-      do: {:ok, [%{"type" => "text", "text" => "#{a + b}"}], state}
+    def handle_call_tool("add", %{"a" => a, "b" => b}, %ToolContext{}, _config),
+      do: {:ok, [%{"type" => "text", "text" => "#{a + b}"}]}
 
-    def handle_call_tool("error_tool", _args, %ToolContext{}, state),
-      do: {:ok, [%{"type" => "text", "text" => "boom"}], true, state}
+    def handle_call_tool("error_tool", _args, %ToolContext{}, _config),
+      do: {:ok, [%{"type" => "text", "text" => "boom"}], true}
 
     # MRTR: ask for input on the first pass, complete on the retry.
-    def handle_call_tool("needs_input", _args, %ToolContext{input: nil}, state),
-      do: {:input_required, [%{"kind" => "elicitation"}], "rs-1", state}
+    def handle_call_tool("needs_input", _args, %ToolContext{input: nil}, _config),
+      do:
+        {:input_required, %{"name" => %{"method" => "elicitation/create", "params" => %{}}},
+         "rs-1"}
 
-    def handle_call_tool("needs_input", _args, %ToolContext{input: %{responses: r}}, state) do
-      name = r |> List.wrap() |> List.first() |> then(&Map.get(&1 || %{}, "name", "?"))
-      {:ok, [%{"type" => "text", "text" => "hi #{name}"}], state}
+    def handle_call_tool("needs_input", _args, %ToolContext{input: %{responses: r}}, _config) do
+      name = get_in(r || %{}, ["name", "name"]) || "?"
+      {:ok, [%{"type" => "text", "text" => "hi #{name}"}]}
     end
 
-    def handle_call_tool(name, _args, %ToolContext{}, state),
-      do: {:error, -32_601, "Unknown tool: #{name}", state}
+    def handle_call_tool(name, _args, %ToolContext{}, _config),
+      do: {:error, -32_601, "Unknown tool: #{name}"}
 
     @impl true
-    def handle_list_resources(_cursor, %ToolContext{}, state),
-      do: {:ok, [%{"uri" => "file:///readme.txt", "name" => "readme"}], nil, state}
+    def handle_list_resources(_cursor, %ToolContext{}, _config),
+      do: {:ok, [%{"uri" => "file:///readme.txt", "name" => "readme"}], nil}
 
     @impl true
-    def handle_read_resource("file:///readme.txt", %ToolContext{}, state),
-      do: {:ok, [%{"uri" => "file:///readme.txt", "text" => "Hello from MCP!"}], state}
+    def handle_read_resource("file:///readme.txt", %ToolContext{}, _config),
+      do: {:ok, [%{"uri" => "file:///readme.txt", "text" => "Hello from MCP!"}]}
 
-    def handle_read_resource(uri, %ToolContext{}, state),
-      do: {:error, -32_602, "Resource not found: #{uri}", state}
-
-    @impl true
-    def handle_list_resource_templates(_cursor, %ToolContext{}, state),
-      do: {:ok, [%{"uriTemplate" => "file:///{path}", "name" => "File"}], nil, state}
+    def handle_read_resource(uri, %ToolContext{}, _config),
+      do: {:error, -32_602, "Resource not found: #{uri}"}
 
     @impl true
-    def handle_list_prompts(_cursor, %ToolContext{}, state),
-      do: {:ok, [%{"name" => "greeting", "description" => "A greeting"}], nil, state}
+    def handle_list_resource_templates(_cursor, %ToolContext{}, _config),
+      do: {:ok, [%{"uriTemplate" => "file:///{path}", "name" => "File"}], nil}
 
     @impl true
-    def handle_get_prompt("greeting", _args, %ToolContext{}, state) do
+    def handle_list_prompts(_cursor, %ToolContext{}, _config),
+      do: {:ok, [%{"name" => "greeting", "description" => "A greeting"}], nil}
+
+    @impl true
+    def handle_get_prompt("greeting", _args, %ToolContext{}, _config) do
       {:ok,
-       %{"messages" => [%{"role" => "user", "content" => %{"type" => "text", "text" => "Hi!"}}]},
-       state}
+       %{"messages" => [%{"role" => "user", "content" => %{"type" => "text", "text" => "Hi!"}}]}}
     end
 
-    def handle_get_prompt(name, _args, %ToolContext{}, state),
-      do: {:error, -32_601, "Unknown prompt: #{name}", state}
+    def handle_get_prompt(name, _args, %ToolContext{}, _config),
+      do: {:error, -32_601, "Unknown prompt: #{name}"}
 
     @impl true
-    def handle_complete(_ref, _argument, %ToolContext{}, state),
-      do: {:ok, %{"values" => ["foo", "foobar"], "total" => 2}, state}
+    def handle_complete(_ref, _argument, %ToolContext{}, _config),
+      do: {:ok, %{"values" => ["foo", "foobar"], "total" => 2}}
   end
 
   # --- Helpers ---
@@ -132,6 +133,28 @@ defmodule MCP.IntegrationTest do
     assert result.protocol_version == "2026-07-28"
     assert result.server_capabilities.tools != nil
     assert Client.status(client) == :ready
+  end
+
+  test "a raising stdio handler returns an internal error and the connection remains usable" do
+    {client_transport, server_transport} = BridgeTransport.create_pair()
+
+    server =
+      start_supervised!(
+        {Connection,
+         transport: {BridgeTransport, pid: server_transport}, handler: {StatelessHandler, []}}
+      )
+
+    client =
+      start_supervised!(
+        {Client,
+         transport: {BridgeTransport, pid: client_transport},
+         client_info: %{name: "test-client", version: "1"}}
+      )
+
+    assert {:error, %{code: -32_603}} = Client.call_tool(client, "emit_then_raise")
+    assert {:ok, result} = Client.call_tool(client, "whoami")
+    assert hd(result["content"])["text"] == ""
+    assert :sys.get_state(server)
   end
 
   test "tools: list, echo, add, isError, unknown" do
@@ -196,7 +219,9 @@ defmodule MCP.IntegrationTest do
   end
 
   test "MRTR: call_tool transparently completes an input-required round-trip" do
-    %{client: client} = start_pair(on_input_required: fn _requests -> [%{"name" => "Ada"}] end)
+    %{client: client} =
+      start_pair(on_input_required: fn _requests -> %{"name" => %{"name" => "Ada"}} end)
+
     {:ok, _} = Client.connect(client)
 
     {:ok, result} = Client.call_tool(client, "needs_input", %{})

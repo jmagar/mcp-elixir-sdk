@@ -29,7 +29,6 @@ defmodule MCP.Protocol.Messages.Prompts do
 
     alias MCP.Protocol.Types.Prompt
 
-    @derive Jason.Encoder
     defstruct [:prompts, :next_cursor, :meta]
 
     @type t :: %__MODULE__{
@@ -95,7 +94,6 @@ defmodule MCP.Protocol.Messages.Prompts do
 
     alias MCP.Protocol.Types.PromptMessage
 
-    @derive Jason.Encoder
     defstruct [:description, :messages, :meta]
 
     @type t :: %__MODULE__{

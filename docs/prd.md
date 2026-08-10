@@ -1,5 +1,12 @@
 # Product Requirements Document: MCP Elixir SDK
 
+> **Archived 1.x planning record.** This document describes the superseded
+> stateful `2025-11-25` design. It is retained for project history and is not
+> current SDK guidance. See [README.md](../README.md),
+> [architecture.md](architecture.md), and
+> [SDK 2.0 specifications](sdk-2.0/specifications.md) for the implemented
+> `2026-07-28` stateless core.
+
 ## Document Info
 - **Project**: MCP Elixir SDK — Elixir implementation of the Model Context Protocol
 - **Hex package**: `mcp_elixir_sdk`

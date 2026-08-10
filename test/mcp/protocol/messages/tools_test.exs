@@ -88,6 +88,7 @@ defmodule MCP.Protocol.Messages.ToolsTest do
       assert length(result.content) == 1
       assert hd(result.content).text == "72F, sunny"
       assert result.is_error == false
+      assert result.structured_content == :absent
     end
 
     test "from_map/1 parses with structuredContent" do
@@ -113,6 +114,69 @@ defmodule MCP.Protocol.Messages.ToolsTest do
 
       assert decoded["structuredContent"] == %{"val" => 1}
       assert decoded["isError"] == true
+    end
+
+    test "preserves every JSON value kind in structuredContent" do
+      values = [
+        %{"nested" => [1, nil, true]},
+        [1, "two", false],
+        "scalar",
+        42,
+        3.5,
+        true,
+        false,
+        nil
+      ]
+
+      for value <- values do
+        result =
+          Tools.CallResult.from_map(%{
+            "content" => [],
+            "structuredContent" => value
+          })
+
+        assert result.structured_content === value
+        assert Jason.decode!(Jason.encode!(result))["structuredContent"] === value
+      end
+    end
+
+    test "distinguishes an absent structuredContent member from present null" do
+      absent = Tools.CallResult.from_map(%{"content" => []})
+      present_null = Tools.CallResult.from_map(%{"content" => [], "structuredContent" => nil})
+
+      assert absent.structured_content == :absent
+      refute Map.has_key?(Jason.decode!(Jason.encode!(absent)), "structuredContent")
+
+      assert present_null.structured_content == nil
+      assert %{"structuredContent" => nil} = Jason.decode!(Jason.encode!(present_null))
+    end
+
+    test "preserves unknown result members" do
+      result =
+        Tools.CallResult.from_map(%{
+          "content" => [],
+          "vendorResult" => %{"falsey" => false}
+        })
+
+      assert result.extra == %{"vendorResult" => %{"falsey" => false}}
+      assert Jason.decode!(Jason.encode!(result))["vendorResult"] == %{"falsey" => false}
+    end
+
+    test "preserves an explicit false isError value" do
+      result = Tools.CallResult.from_map(%{"content" => [], "isError" => false})
+      assert Jason.decode!(Jason.encode!(result))["isError"] == false
+    end
+
+    test "rejects known-field collisions in manually constructed extras" do
+      result = %Tools.CallResult{content: [], extra: %{"content" => "ambiguous"}}
+
+      assert_raise ArgumentError, ~r/call result extra field collides with content/, fn ->
+        Jason.encode!(result)
+      end
+
+      assert_raise ArgumentError, ~r/field names must be strings/, fn ->
+        Jason.encode!(%Tools.CallResult{content: [], extra: %{content: "ambiguous"}})
+      end
     end
   end
 end

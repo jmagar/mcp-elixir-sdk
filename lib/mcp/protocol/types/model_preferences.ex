@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.ModelPreferences do
 
   alias MCP.Protocol.Types.ModelHint
 
-  @derive Jason.Encoder
   defstruct [:hints, :cost_priority, :speed_priority, :intelligence_priority]
 
   @type t :: %__MODULE__{

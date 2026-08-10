@@ -8,7 +8,6 @@ defmodule MCP.Protocol.Messages.Completion do
     Parameters for `completion/complete`.
     """
 
-    @derive Jason.Encoder
     defstruct [:ref, :argument, :context, :meta]
 
     @type t :: %__MODULE__{
@@ -43,7 +42,6 @@ defmodule MCP.Protocol.Messages.Completion do
     Result of `completion/complete`.
     """
 
-    @derive Jason.Encoder
     defstruct [:completion, :meta]
 
     @type t :: %__MODULE__{

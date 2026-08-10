@@ -1,0 +1,28 @@
+{
+  "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
+  "protocolVersion": "2025-11-25",
+  "verifiedOn": "2026-08-09",
+  "server": {
+    "profile": "requirements:2025-11-25",
+    "status": "passed",
+    "checks": {
+      "passed": 81,
+      "failed": 0,
+      "warnings": 0
+    },
+    "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2025-11-25"
+  },
+  "client": {
+    "officialInitializeScenario": {
+      "passed": 1,
+      "failed": 0
+    },
+    "sdkIntegrationCoverage": [
+      "explicit 2025-11-25 selection",
+      "2026 discovery fallback to a 2025-11-25 server",
+      "legacy request and notification shapes",
+      "HTTP session lifecycle and SSE server requests"
+    ],
+    "authorizationProfile": "excluded: authentication is owned by the embedding transport pipeline"
+  }
+}

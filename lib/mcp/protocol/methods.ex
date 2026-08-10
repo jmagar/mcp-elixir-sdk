@@ -19,6 +19,7 @@ defmodule MCP.Protocol.Methods do
   def prompts_get, do: "prompts/get"
   def logging_set_level, do: "logging/setLevel"
   def completion_complete, do: "completion/complete"
+  def subscriptions_listen, do: "subscriptions/listen"
 
   # Request methods (server → client)
   def sampling_create_message, do: "sampling/createMessage"
@@ -35,4 +36,5 @@ defmodule MCP.Protocol.Methods do
   def resources_updated, do: "notifications/resources/updated"
   def prompts_list_changed, do: "notifications/prompts/list_changed"
   def roots_list_changed, do: "notifications/roots/list_changed"
+  def subscriptions_acknowledged, do: "notifications/subscriptions/acknowledged"
 end

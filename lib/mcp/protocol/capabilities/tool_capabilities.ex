@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Capabilities.ToolCapabilities do
   Server capability for tools.
   """
 
-  @derive Jason.Encoder
   defstruct [:list_changed]
 
   @type t :: %__MODULE__{

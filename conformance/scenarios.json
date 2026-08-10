@@ -1,0 +1,865 @@
+{
+  "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
+  "protocolVersion": "2026-07-28",
+  "schemaCommit": "5f5440bb26a62e2cf3440b92da5a667efa03b267",
+  "releaseDenominator": "requirements:2026-07-28",
+  "scenarios": [
+    {
+      "name": "server-caching",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 8,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-completion-complete",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-dns-rebinding-protection",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-basic-elicitation",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-basic-list-roots",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-basic-sampling",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-capability-check",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-ignore-extra-params",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-missing-input-response",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-multi-round",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 4,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-multiple-input-requests",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-non-tool-request",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-request-state",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-result-type",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-tampered-state",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-unsupported-methods",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-input-required-result-validate-input",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-prompts-get-embedded-resource",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-prompts-get-simple",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-prompts-get-with-args",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-prompts-get-with-image",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-prompts-list",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-resources-list",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-resources-read-binary",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-resources-read-text",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-resources-templates-read",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-sep-2164-resource-not-found",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 4,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-server-sse-multiple-streams",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-server-stateless",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 30,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-audio",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-embedded-resource",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-error",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-image",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-mixed-content",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-simple-text",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-call-with-progress",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tools-list",
+      "side": "server",
+      "profile": "requirements",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 3,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-http-custom-header-server-validation",
+      "side": "server",
+      "profile": "pending-and-draft",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 10,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-http-header-validation",
+      "side": "server",
+      "profile": "pending-and-draft",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 14,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-json-schema-2020-12",
+      "side": "server",
+      "profile": "pending-and-draft",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 8,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-capability-negotiation",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 4,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-dispatch-and-envelope",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 3,
+        "failed": 6,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-lifecycle",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 8,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-mrtr-composition",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-mrtr-input",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 3,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-request-headers",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 2,
+        "failed": 3,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-request-state-removal",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-required-task-error",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-status-notifications",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 1
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "server-tasks-wire-fields",
+      "side": "server",
+      "profile": "tasks-extension",
+      "status": "excluded",
+      "scored": false,
+      "checks": {
+        "passed": 1,
+        "failed": 3,
+        "skipped": 0
+      },
+      "exclusionReason": "SEP-2663 Tasks is an experimental extension outside the SDK 2.0 core scope per ADR-003",
+      "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --spec-version 2026-07-28",
+      "evidence": "harness JSON report directory"
+    },
+    {
+      "name": "tools_call",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 2,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario tools_call --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "request-metadata",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 8,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario request-metadata --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "sep-2322-client-request-state",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 5,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario sep-2322-client-request-state --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "http-standard-headers",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 9,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario http-standard-headers --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "http-custom-headers",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 18,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario http-custom-headers --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "http-invalid-tool-headers",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 11,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario http-invalid-tool-headers --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "json-schema-ref-no-deref",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 1,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario json-schema-ref-no-deref --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    },
+    {
+      "name": "json-schema-2020-12-preservation",
+      "side": "client",
+      "profile": "required",
+      "status": "passed",
+      "scored": true,
+      "checks": {
+        "passed": 9,
+        "failed": 0,
+        "warnings": 0
+      },
+      "command": "npx --no-install conformance client --command 'mix run conformance/client_adapter.exs' --scenario json-schema-2020-12-preservation --spec-version 2026-07-28",
+      "evidence": "CI log and local harness output"
+    }
+  ],
+  "excludedProfiles": [
+    {
+      "name": "auth/*",
+      "side": "client",
+      "status": "excluded",
+      "scored": false,
+      "exclusionReason": "OAuth transport is outside the SDK 2.0 core scope; no auth transport is implemented",
+      "evidence": "docs/adr/0003-2.0.0-conformance-scope.md"
+    }
+  ],
+  "lastVerified": "2026-08-09",
+  "summary": {
+    "server": {
+      "scoredCore": {
+        "passed": 120,
+        "failed": 0,
+        "warnings": 0
+      },
+      "pendingAndDraft": {
+        "passed": 32,
+        "failed": 0,
+        "warnings": 0
+      },
+      "tasksExtension": "executed and enumerated above; excluded and not scored"
+    },
+    "client": {
+      "passed": 63,
+      "failed": 0,
+      "warnings": 0
+    },
+    "local": {
+      "tests": 439,
+      "failures": 0
+    }
+  }
+}

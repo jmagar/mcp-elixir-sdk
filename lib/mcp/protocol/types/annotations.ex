@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Types.Annotations do
   Content annotations describing audience, priority, and modification time.
   """
 
-  @derive Jason.Encoder
   defstruct [:audience, :priority, :last_modified]
 
   @type t :: %__MODULE__{

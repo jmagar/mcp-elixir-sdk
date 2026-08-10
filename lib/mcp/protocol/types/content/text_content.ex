@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Content.TextContent do
 
   alias MCP.Protocol.Types.Annotations
 
-  @derive Jason.Encoder
   defstruct type: "text", text: nil, annotations: nil, meta: nil
 
   @type t :: %__MODULE__{

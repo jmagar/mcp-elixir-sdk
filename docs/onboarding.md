@@ -1,5 +1,12 @@
 # Onboarding Guide: MCP Elixir SDK
 
+> **Archived 1.x onboarding record.** The initialization/session lifecycle
+> below is historical 1.x design material, not the current 2.0 implementation.
+> Version 2.0 again supports the `2025-11-25` wire lifecycle through its
+> isolated compatibility layer. New contributors must use the [current README](../README.md),
+> [architecture](architecture.md), and
+> [development tooling guide](dev-tooling.md) for SDK 2.0.
+
 ## For New AI Agents / Developers
 
 This document provides everything needed to start implementing the MCP Elixir SDK library
@@ -256,7 +263,7 @@ These are the most important constraints from the MCP spec. Violating any of the
 
 9. **Pagination is cursor-based**: List operations may include `nextCursor` in the result. To get more items, re-send the list request with `cursor` param set to that value.
 
-10. **Structured content in tool results**: `tools/call` responses can include `structuredContent` (a JSON object matching `outputSchema`) alongside the `content` array. The `content` array is for display; `structuredContent` is for programmatic use.
+10. **Structured content in tool results**: `tools/call` responses can include `structuredContent` (any JSON value) alongside the `content` array. The `content` array is for display; `structuredContent` is for programmatic use.
 
 ---
 
@@ -378,7 +385,7 @@ npx @modelcontextprotocol/conformance@latest test server --url http://localhost:
 
 8. **Tool result content is an array**: `tools/call` results contain a `content` field that is an ARRAY of content items (TextContent, ImageContent, etc.), not a single item.
 
-9. **Structured content is optional**: `structuredContent` in tool results is only present if the tool declares an `outputSchema`. It's a raw JSON object, not wrapped in Content types.
+9. **Structured content is optional**: `structuredContent` is a raw JSON value, not wrapped in Content types. In the SDK 2.0 model, absence is distinct from an explicitly present JSON null.
 
 10. **Error responses have no result**: A JSON-RPC error response has `error` (with code + message + optional data) but NOT `result`. These are mutually exclusive.
 

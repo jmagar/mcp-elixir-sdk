@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Prompt do
 
   alias MCP.Protocol.Types.{Icon, PromptArgument}
 
-  @derive Jason.Encoder
   defstruct [:name, :title, :description, :arguments, :icons, :meta]
 
   @type t :: %__MODULE__{

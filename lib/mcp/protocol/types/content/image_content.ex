@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Content.ImageContent do
 
   alias MCP.Protocol.Types.Annotations
 
-  @derive Jason.Encoder
   defstruct type: "image", data: nil, mime_type: nil, annotations: nil, meta: nil
 
   @type t :: %__MODULE__{

@@ -24,13 +24,18 @@ defmodule MCP.Server.DispatchTest do
 
   defp ctx(identity \\ nil), do: %ToolContext{request_id: 1, identity: identity}
 
-  defp meta(version \\ @version), do: %{"io.modelcontextprotocol/protocolVersion" => version}
+  defp meta(version \\ @version) do
+    %{
+      "io.modelcontextprotocol/protocolVersion" => version,
+      "io.modelcontextprotocol/clientCapabilities" => %{}
+    }
+  end
 
   defp req(method, params), do: %Request{id: 1, method: method, params: params}
 
   defp call_tool(name, args, identity) do
     params = %{"name" => name, "arguments" => args, "_meta" => meta()}
-    {:reply, resp, _state} = Dispatch.dispatch(req("tools/call", params), ctx(identity), config())
+    {:reply, resp} = Dispatch.dispatch(req("tools/call", params), ctx(identity), config())
     resp
   end
 
@@ -44,7 +49,7 @@ defmodule MCP.Server.DispatchTest do
 
   test "MC-1 — context reaches a non-tool path (prompts/get)" do
     params = %{"name" => "who", "arguments" => %{}, "_meta" => meta()}
-    {:reply, resp, _} = Dispatch.dispatch(req("prompts/get", params), ctx("REVIEWER"), config())
+    {:reply, resp} = Dispatch.dispatch(req("prompts/get", params), ctx("REVIEWER"), config())
     text = resp["result"]["messages"] |> hd() |> get_in(["content", "text"])
     assert text == "REVIEWER"
   end
@@ -63,7 +68,7 @@ defmodule MCP.Server.DispatchTest do
 
   test "MC-4 — prompts/get: a competing arguments.identity does not override ctx.identity (AC3′)" do
     params = %{"name" => "who", "arguments" => %{"identity" => "spoof"}, "_meta" => meta()}
-    {:reply, resp, _} = Dispatch.dispatch(req("prompts/get", params), ctx("REVIEWER"), config())
+    {:reply, resp} = Dispatch.dispatch(req("prompts/get", params), ctx("REVIEWER"), config())
     text = resp["result"]["messages"] |> hd() |> get_in(["content", "text"])
     assert text == "REVIEWER"
     refute text == "spoof"
@@ -78,15 +83,15 @@ defmodule MCP.Server.DispatchTest do
 
   # --- Removed methods: stateless behaviour, no legacy path ---
 
-  test "initialize is removed → UnsupportedProtocolVersion (-32022)" do
-    {:reply, resp, _} = Dispatch.dispatch(req("initialize", %{}), ctx(), config())
-    assert resp["error"]["code"] == -32_022
+  test "initialize is removed → method not found (-32601)" do
+    {:reply, resp} = Dispatch.dispatch(req("initialize", %{}), ctx(), config())
+    assert resp["error"]["code"] == -32_601
   end
 
   test "ping and logging/setLevel are removed → method not found (-32601)" do
-    {:reply, ping_resp, _} = Dispatch.dispatch(req("ping", %{}), ctx(), config())
+    {:reply, ping_resp} = Dispatch.dispatch(req("ping", %{}), ctx(), config())
 
-    {:reply, log_resp, _} =
+    {:reply, log_resp} =
       Dispatch.dispatch(req("logging/setLevel", %{"level" => "info"}), ctx(), config())
 
     assert ping_resp["error"]["code"] == -32_601
@@ -95,23 +100,36 @@ defmodule MCP.Server.DispatchTest do
 
   # --- Per-request version gate ---
 
-  test "request without a protocolVersion _meta fails fast (-32022)" do
-    {:reply, resp, _} =
+  test "request without required _meta fails as invalid params (-32602)" do
+    {:reply, resp} =
       Dispatch.dispatch(req("tools/call", %{"name" => "whoami"}), ctx("PM"), config())
 
-    assert resp["error"]["code"] == -32_022
+    assert resp["error"]["code"] == -32_602
+  end
+
+  test "non-object _meta is rejected without raising" do
+    {:reply, resp} =
+      Dispatch.dispatch(
+        req("tools/list", %{"_meta" => "not-an-object"}),
+        ctx(),
+        config()
+      )
+
+    assert resp["error"]["code"] == -32_602
   end
 
   test "old-shape (2025-11-25) version fails fast (-32022)" do
     params = %{"name" => "whoami", "arguments" => %{}, "_meta" => meta("2025-11-25")}
-    {:reply, resp, _} = Dispatch.dispatch(req("tools/call", params), ctx("PM"), config())
+    {:reply, resp} = Dispatch.dispatch(req("tools/call", params), ctx("PM"), config())
     assert resp["error"]["code"] == -32_022
   end
 
-  # --- server/discover: no version gate; schema-shaped result ---
+  # --- server/discover: required version gate and schema-shaped result ---
 
   test "server/discover: schema shape (supportedVersions + CacheableResult fields; serverInfo in _meta)" do
-    {:reply, resp, _} = Dispatch.dispatch(req("server/discover", %{}), ctx(), config())
+    {:reply, resp} =
+      Dispatch.dispatch(req("server/discover", %{"_meta" => meta()}), ctx(), config())
+
     result = resp["result"]
 
     assert result["supportedVersions"] == [@version]
@@ -122,6 +140,113 @@ defmodule MCP.Server.DispatchTest do
     # the pre-fix (wrong) shape must be gone
     refute Map.has_key?(result, "protocolVersions")
     refute Map.has_key?(result, "serverInfo")
+  end
+
+  test "prompts/get supports input-required and validates continuation state" do
+    first_params = %{"name" => "needs_input", "arguments" => %{}, "_meta" => meta()}
+    {:reply, first} = Dispatch.dispatch(req("prompts/get", first_params), ctx(), config())
+
+    assert first["result"] == %{
+             "resultType" => "input_required",
+             "inputRequests" => %{
+               "prompt_input" => %{"method" => "elicitation/create", "params" => %{}}
+             },
+             "requestState" => "prompt-state-1"
+           }
+
+    retry_params =
+      Map.merge(first_params, %{
+        "requestState" => "prompt-state-1",
+        "inputResponses" => %{"prompt_input" => %{"value" => "ready"}}
+      })
+
+    {:reply, final} = Dispatch.dispatch(req("prompts/get", retry_params), ctx(), config())
+    assert get_in(final, ["result", "resultType"]) == "complete"
+    assert get_in(final, ["result", "messages", Access.at(0), "content", "text"]) == "ready"
+
+    {:reply, invalid} =
+      Dispatch.dispatch(
+        req("prompts/get", %{retry_params | "requestState" => "tampered"}),
+        ctx(),
+        config()
+      )
+
+    assert invalid["error"]["code"] == -32_602
+  end
+
+  test "resources/read supports input-required and validates continuation state" do
+    first_params = %{"uri" => "mem://needs-input", "_meta" => meta()}
+    {:reply, first} = Dispatch.dispatch(req("resources/read", first_params), ctx(), config())
+
+    assert first["result"] == %{
+             "resultType" => "input_required",
+             "inputRequests" => %{
+               "resource_input" => %{"method" => "elicitation/create", "params" => %{}}
+             },
+             "requestState" => "resource-state-1"
+           }
+
+    retry_params =
+      Map.merge(first_params, %{
+        "requestState" => "resource-state-1",
+        "inputResponses" => %{"resource_input" => %{"value" => "ready"}}
+      })
+
+    {:reply, final} = Dispatch.dispatch(req("resources/read", retry_params), ctx(), config())
+    assert get_in(final, ["result", "resultType"]) == "complete"
+    assert get_in(final, ["result", "contents", Access.at(0), "text"]) == "ready"
+
+    {:reply, invalid} =
+      Dispatch.dispatch(
+        req("resources/read", %{retry_params | "requestState" => "tampered"}),
+        ctx(),
+        config()
+      )
+
+    assert invalid["error"]["code"] == -32_602
+  end
+
+  test "tools/call accepts a full typed result with lossless structured content" do
+    params = %{"name" => "structured", "arguments" => %{}, "_meta" => meta()}
+    {:reply, response} = Dispatch.dispatch(req("tools/call", params), ctx(), config())
+
+    assert response["result"] == %{
+             "content" => [],
+             "structuredContent" => false,
+             "isError" => false,
+             "vendorResult" => nil,
+             "resultType" => "complete"
+           }
+  end
+
+  test "MRTR fields with invalid wire types fail before handler invocation" do
+    requests = [
+      {"tools/call", %{"name" => "needs_input", "arguments" => %{}}},
+      {"prompts/get", %{"name" => "needs_input", "arguments" => %{}}},
+      {"resources/read", %{"uri" => "mem://needs-input"}}
+    ]
+
+    for {method, params} <- requests,
+        malformed <- [
+          %{"requestState" => 42},
+          %{"inputResponses" => []},
+          %{"requestState" => nil}
+        ] do
+      params = params |> Map.merge(malformed) |> Map.put("_meta", meta())
+      {:reply, response} = Dispatch.dispatch(req(method, params), ctx(), config())
+      assert response["error"]["code"] == -32_602
+    end
+  end
+
+  test "resources/read preserves structured handler error data" do
+    params = %{"uri" => "mem://missing", "_meta" => meta()}
+    {:reply, response} = Dispatch.dispatch(req("resources/read", params), ctx(), config())
+
+    assert response["error"] == %{
+             "code" => -32_602,
+             "message" => "resource not found",
+             "data" => %{"uri" => "mem://missing"}
+           }
   end
 
   # --- MC-1 depth: context reaches ALL EIGHT identity-capable callbacks ---
@@ -147,7 +272,7 @@ defmodule MCP.Server.DispatchTest do
 
     for {method, extra, extract} <- checks do
       params = Map.put(extra, "_meta", meta())
-      {:reply, resp, _} = Dispatch.dispatch(req(method, params), ctx(id), config())
+      {:reply, resp} = Dispatch.dispatch(req(method, params), ctx(id), config())
       assert extract.(resp["result"]) == id, "context identity did not reach #{method}"
     end
   end
@@ -162,7 +287,7 @@ defmodule MCP.Server.DispatchTest do
 
     cfg = %{config() | handler_module: NoCtxHandler}
     params = %{"_meta" => meta()}
-    {:reply, resp, _} = Dispatch.dispatch(req("tools/list", params), ctx("PM"), cfg)
+    {:reply, resp} = Dispatch.dispatch(req("tools/list", params), ctx("PM"), cfg)
     assert resp["error"]["code"] == -32_601
   end
 
@@ -170,6 +295,6 @@ defmodule MCP.Server.DispatchTest do
 
   test "notifications/initialized is tolerated as a no-op (handshake removed)" do
     notif = %Notification{method: "notifications/initialized", params: nil}
-    assert {:noreply, _state} = Dispatch.dispatch(notif, ctx(), config())
+    assert :noreply = Dispatch.dispatch(notif, ctx(), config())
   end
 end

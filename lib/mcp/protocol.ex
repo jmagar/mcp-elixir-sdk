@@ -6,14 +6,27 @@ defmodule MCP.Protocol do
   alias MCP.Protocol.Error
   alias MCP.Protocol.Messages.{Notification, Request, Response}
 
-  @protocol_version "2025-11-25"
+  @protocol_version "2026-07-28"
+  @supported_versions ["2026-07-28", "2025-11-25"]
   @jsonrpc_version "2.0"
+
+  @type json_value ::
+          nil
+          | boolean()
+          | number()
+          | String.t()
+          | [json_value()]
+          | %{required(String.t()) => json_value()}
 
   @doc """
   Returns the MCP protocol version this library targets.
   """
   @spec protocol_version() :: String.t()
   def protocol_version, do: @protocol_version
+
+  @doc "Returns every supported MCP revision, newest/preferred first."
+  @spec supported_versions() :: [String.t(), ...]
+  def supported_versions, do: @supported_versions
 
   @doc """
   Returns the JSON-RPC version.
@@ -61,7 +74,7 @@ defmodule MCP.Protocol do
     cond do
       # Response: has "id" and ("result" or "error")
       Map.has_key?(map, "id") and (Map.has_key?(map, "result") or Map.has_key?(map, "error")) ->
-        {:ok, decode_response(map)}
+        decode_response(map)
 
       # Request: has "id" and "method"
       Map.has_key?(map, "id") and Map.has_key?(map, "method") ->
@@ -88,19 +101,23 @@ defmodule MCP.Protocol do
     }
   end
 
-  defp decode_response(map) do
-    error =
-      case Map.get(map, "error") do
-        nil -> nil
-        error_map -> Error.from_map(error_map)
-      end
+  defp decode_response(%{"error" => error_map} = map) do
+    case error_map do
+      %{"code" => code, "message" => message} when is_integer(code) and is_binary(message) ->
+        {:ok,
+         %Response{
+           id: Map.fetch!(map, "id"),
+           result: Map.get(map, "result"),
+           error: Error.from_map(error_map)
+         }}
 
-    %Response{
-      id: Map.fetch!(map, "id"),
-      result: Map.get(map, "result"),
-      error: error
-    }
+      _invalid_error ->
+        {:error, Error.invalid_request("response error must contain integer code and message")}
+    end
   end
+
+  defp decode_response(map),
+    do: {:ok, %Response{id: Map.fetch!(map, "id"), result: Map.get(map, "result")}}
 
   defp decode_notification(map) do
     %Notification{

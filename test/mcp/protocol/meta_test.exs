@@ -49,4 +49,24 @@ defmodule MCP.Protocol.MetaTest do
                {:error, {:unsupported, "2025-11-25"}}
     end
   end
+
+  describe "validate_required/1" do
+    test "requires metadata, protocol version, and client capabilities" do
+      assert Meta.validate_required(Meta.from_meta(%{})) == {:error, :missing_meta}
+
+      assert Meta.validate_required(Meta.from_meta(%{"other" => true})) ==
+               {:error, :missing_protocol_version}
+
+      assert Meta.validate_required(
+               Meta.from_meta(%{"io.modelcontextprotocol/protocolVersion" => @version})
+             ) == {:error, :missing_client_capabilities}
+
+      assert Meta.validate_required(
+               Meta.from_meta(%{
+                 "io.modelcontextprotocol/protocolVersion" => @version,
+                 "io.modelcontextprotocol/clientCapabilities" => %{}
+               })
+             ) == :ok
+    end
+  end
 end

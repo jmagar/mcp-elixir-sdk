@@ -3,10 +3,10 @@ defmodule MCP.Server.ToolContext do
   Per-request context passed to identity-capable handler callbacks.
 
   In the 2026-07-28 stateless core this struct is **the per-request handler
-  context**: it is constructed once per request by the transport driver
-  (`MCP.Transport.StreamableHTTP.Plug` for HTTP, `MCP.Server.Connection` for
-  stdio / in-process) and handed to every identity-capable callback via
-  `MCP.Server.Dispatch`. There is no session and no per-session GenServer.
+  context**: it is constructed once per request by the transport driver and
+  handed to every identity-capable callback via `MCP.Server.Dispatch`. Under
+  2025-11-25, the same struct is created for each request inside the negotiated
+  connection or HTTP session and passed through `MCP.Server.LegacyDispatch`.
 
   ## The `:identity` field (security-critical)
 
@@ -21,32 +21,33 @@ defmodule MCP.Server.ToolContext do
 
   For Multi Round-Trip Requests (SEP-2322), a resumed request carries the
   server's continuation token and the client's fulfilled inputs. `:input` is
-  `nil` on a first attempt, or `%{request_state: binary(), responses: term()}`
-  on a retry. `MCP.Server.Dispatch` populates it from the request `params`
-  (`requestState` / `inputResponses`) before invoking the tool handler. It is
+  `nil` on a first attempt, or
+  `%{request_state: binary() | nil, responses: term()}` on a retry. Ephemeral
+  input flows can omit `requestState`. `MCP.Server.Dispatch` populates it from the request `params`
+  (`requestState` / `inputResponses`) before invoking the handler. It is
   handler-continuation data, orthogonal to identity.
 
   ## The `:reply_sink` field (per-request notification emitter)
 
-  The stateless core removes the per-session server GenServer, so a handler can
+  The 2026 stateless core removes the per-session server GenServer, so a handler can
   no longer `GenServer.call` a long-lived server to emit progress/logging
   notifications (dispatch runs synchronously *inside* the transport driver
   process — such a call would self-deadlock). Instead, `:reply_sink` is an
   optional `(method, params -> :ok)` function bound by the driver to that
   request's outbound channel. When `nil`, notifications are dropped.
 
-  Server→client **requests** (sampling/elicitation) are NOT made through this
-  context in the stateless core: they convert to MRTR (a tool returns
-  `{:input_required, input_requests, request_state, state}`, which
+  Server→client **requests** are not made through this context. In 2026 they
+  convert to MRTR (a handler returns
+  `{:input_required, input_requests, request_state}`, which
   `Dispatch` shapes into an `InputRequiredResult`; the client fulfils the
-  inputs and retries carrying `requestState`). The old blocking
-  `request_sampling/3` / `request_elicitation/3` / `request/4` helpers are
-  removed (they depended on the deleted per-session GenServer).
+  inputs and retries carrying `requestState`). In 2025, `MCP.Server.Connection`
+  converts the same handler result into correlated sampling, roots, or
+  elicitation requests over the negotiated session and resumes the handler.
   """
 
   defstruct [:request_id, :meta, :identity, :input, :reply_sink]
 
-  @type input :: %{request_state: binary(), responses: term()} | nil
+  @type input :: %{request_state: binary() | nil, responses: term()} | nil
 
   @type t :: %__MODULE__{
           request_id: term(),

@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Capabilities.RootCapabilities do
   Client capability for filesystem roots.
   """
 
-  @derive Jason.Encoder
   defstruct [:list_changed]
 
   @type t :: %__MODULE__{

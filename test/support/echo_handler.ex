@@ -17,7 +17,7 @@ defmodule MCP.Test.EchoHandler do
   end
 
   @impl true
-  def handle_list_tools(_cursor, state) do
+  def handle_list_tools(_cursor, _context, _config) do
     tools = [
       %{
         "name" => "whoami",
@@ -34,21 +34,21 @@ defmodule MCP.Test.EchoHandler do
       }
     ]
 
-    {:ok, tools, nil, state}
+    {:ok, tools, nil}
   end
 
   @impl true
-  def handle_call_tool("whoami", _args, state) do
-    {:ok, [%{"type" => "text", "text" => to_string(state.identity)}], state}
+  def handle_call_tool("whoami", _args, context, _config) do
+    {:ok, [%{"type" => "text", "text" => to_string(context.identity)}]}
   end
 
   # AC3: reads state.identity and ignores `args` entirely — a same-named
   # tool argument cannot override the pipeline-bound identity.
-  def handle_call_tool("whoami_with_arg", _args, state) do
-    {:ok, [%{"type" => "text", "text" => to_string(state.identity)}], state}
+  def handle_call_tool("whoami_with_arg", _args, context, _config) do
+    {:ok, [%{"type" => "text", "text" => to_string(context.identity)}]}
   end
 
-  def handle_call_tool(name, _args, state) do
-    {:error, -32_602, "Unknown tool: #{name}", state}
+  def handle_call_tool(name, _args, _context, _config) do
+    {:error, -32_602, "Unknown tool: #{name}"}
   end
 end

@@ -26,7 +26,6 @@ defmodule MCP.Protocol.Messages.Roots do
 
     alias MCP.Protocol.Types.Root
 
-    @derive Jason.Encoder
     defstruct [:roots, :meta]
 
     @type t :: %__MODULE__{

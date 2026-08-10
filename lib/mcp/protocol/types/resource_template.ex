@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.ResourceTemplate do
 
   alias MCP.Protocol.Types.{Annotations, Icon}
 
-  @derive Jason.Encoder
   defstruct [:uri_template, :name, :title, :description, :mime_type, :annotations, :icons, :meta]
 
   @type t :: %__MODULE__{

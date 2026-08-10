@@ -17,6 +17,7 @@ defmodule MCP.Protocol.MethodsTest do
     assert Methods.prompts_get() == "prompts/get"
     assert Methods.logging_set_level() == "logging/setLevel"
     assert Methods.completion_complete() == "completion/complete"
+    assert Methods.subscriptions_listen() == "subscriptions/listen"
   end
 
   test "server-to-client request methods" do
@@ -35,5 +36,8 @@ defmodule MCP.Protocol.MethodsTest do
     assert Methods.resources_updated() == "notifications/resources/updated"
     assert Methods.prompts_list_changed() == "notifications/prompts/list_changed"
     assert Methods.roots_list_changed() == "notifications/roots/list_changed"
+
+    assert Methods.subscriptions_acknowledged() ==
+             "notifications/subscriptions/acknowledged"
   end
 end

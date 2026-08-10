@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Messages.Notification do
   Notifications have no `id` and do not expect a response.
   """
 
-  @derive Jason.Encoder
   defstruct jsonrpc: "2.0", method: nil, params: nil
 
   @type t :: %__MODULE__{

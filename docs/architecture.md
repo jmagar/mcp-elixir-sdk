@@ -1,543 +1,162 @@
-# Architecture Document: MCP Elixir SDK
+# Architecture
 
-## Document Info
-- **Project**: MCP Elixir SDK (Hex package `mcp_elixir_sdk`)
-- **Version**: 1.0.2
-- **Date**: 2026-02-09
-- **Status**: Phase 7 Complete — 100% Conformance (Tier 1)
-- **Protocol**: MCP 2025-11-25
+MCP Elixir SDK 2.0 is an OTP-native dual-era implementation of MCP
+`2025-11-25` and `2026-07-28`. Stateless 2026 dispatch remains sessionless;
+legacy 2025 traffic uses an isolated initialize/session adapter. There is no
+client-side result cache or mutable per-request handler configuration.
 
----
+## Protocol selection
 
-## 1. Protocol Overview
+Clients prefer `2026-07-28` discovery and make one bounded fallback to the
+`2025-11-25` initialize handshake when discovery is unavailable or the server
+advertises only the legacy revision. Servers choose a mode on the first valid
+request. A connection never changes modes.
 
-MCP uses JSON-RPC 2.0 over stateful connections. The protocol has three phases:
+The 2026 path validates per-request metadata and routes directly to stateless
+dispatch. The 2025 path owns negotiated capabilities, session identity,
+logging level, subscriptions, pending server-to-client requests, and SSE event
+delivery. `MCP.Server.LegacyDispatch` adapts legacy envelopes to the immutable
+handler contract without exposing injected compatibility metadata to handlers.
 
-```
-1. Initialization    Client sends initialize request
-                     Server responds with capabilities
-                     Client sends initialized notification
+## Runtime topology
 
-2. Operation         Bidirectional JSON-RPC messages
-                     Based on negotiated capabilities
-
-3. Shutdown          Transport-level disconnection
-```
-
-### Roles
-
-```
-Host Application
-  |
-  +-- Client 1 ←→ Server A (tools: weather, stocks)
-  +-- Client 2 ←→ Server B (resources: files, git)
-  +-- Client 3 ←→ Server C (prompts: code review)
-```
-
-- **Host**: Application containing one or more clients
-- **Client**: Maintains 1:1 session with a server. Provides sampling, roots, elicitation to server.
-- **Server**: Provides tools, resources, prompts to client. May request sampling/elicitation from client.
-
----
-
-## 2. Module Map
-
-```
-lib/mcp/
-  # === Core Protocol (Phase 1 - COMPLETE) ===
-  protocol.ex                        # JSON-RPC 2.0 encoding/decoding
-  protocol/
-    error.ex                         # MCP error codes + JSON-RPC errors
-    methods.ex                       # Method name constants
-    types/
-      tool.ex                        # Tool struct
-      tool_annotations.ex            # ToolAnnotations struct
-      resource.ex                    # Resource struct
-      resource_template.ex           # ResourceTemplate struct
-      resource_contents.ex           # ResourceContents struct
-      prompt.ex                      # Prompt struct
-      prompt_argument.ex             # PromptArgument struct
-      prompt_message.ex              # PromptMessage struct
-      sampling_message.ex            # SamplingMessage struct
-      model_preferences.ex           # ModelPreferences struct
-      model_hint.ex                  # ModelHint struct
-      root.ex                        # Root struct
-      implementation.ex              # Implementation struct (client/server info)
-      annotations.ex                 # Content Annotations struct
-      icon.ex                        # Icon struct
-      content.ex                     # Content type dispatcher
-      content/
-        text_content.ex              # TextContent struct
-        image_content.ex             # ImageContent struct
-        audio_content.ex             # AudioContent struct
-        embedded_resource.ex         # EmbeddedResource struct
-        resource_link.ex             # ResourceLink struct
-    capabilities/
-      server_capabilities.ex         # ServerCapabilities struct
-      client_capabilities.ex         # ClientCapabilities struct
-      tool_capabilities.ex           # ToolCapabilities struct
-      resource_capabilities.ex       # ResourceCapabilities struct
-      prompt_capabilities.ex         # PromptCapabilities struct
-      logging_capabilities.ex        # LoggingCapabilities struct
-      completion_capabilities.ex     # CompletionCapabilities struct
-      sampling_capabilities.ex       # SamplingCapabilities struct
-      root_capabilities.ex           # RootCapabilities struct
-      elicitation_capabilities.ex    # ElicitationCapabilities struct
-    messages/
-      request.ex                     # JSON-RPC Request struct
-      response.ex                    # JSON-RPC Response struct
-      notification.ex                # JSON-RPC Notification struct
-      initialize.ex                  # Initialize Params + Result
-      ping.ex                        # Ping Params
-      tools.ex                       # Tools ListParams/ListResult/CallParams/CallResult
-      resources.ex                   # Resources List/Read/Subscribe/Templates types
-      prompts.ex                     # Prompts List/Get types
-      sampling.ex                    # Sampling CreateMessage Params/Result
-      roots.ex                       # Roots List Params/Result
-      elicitation.ex                 # Elicitation Params/Result
-      logging.ex                     # Logging SetLevel/Message types
-      completion.ex                  # Completion Params/Result
-      notifications.ex               # Progress/Cancelled/ResourceUpdated params
-
-  # === Transport Layer (Phase 2 + Phase 5 - COMPLETE) ===
-  transport.ex                       # Transport behaviour (start_link, send_message, close)
-  transport/
-    stdio.ex                         # Port-based stdin/stdout transport (client + server modes)
-    sse.ex                           # SSE encoding/decoding utilities
-    streamable_http/
-      client.ex                      # HTTP POST + SSE client transport (Req)
-      server.ex                      # Server-side transport GenServer (bridges Plug ↔ MCP.Server)
-      plug.ex                        # Plug endpoint handling POST/GET/DELETE HTTP methods
-      pre_started.ex                 # Transport adapter for reusing existing transport pid
-
-  # === Client (Phase 3 - COMPLETE) ===
-  client.ex                          # High-level client API (GenServer)
-
-  # === Server (Phase 4 + Phase 7 - COMPLETE) ===
-  server.ex                          # High-level server API (GenServer, async tool support)
-  server/
-    handler.ex                       # Behaviour for tool/resource/prompt handlers
-    tool_context.ex                  # Context for async tool handlers (Phase 7)
+```text
+Host application
+├── MCP.Client (GenServer)
+│   ├── transport process
+│   ├── owned Task.Supervisor
+│   └── optional consumer-supervised subscription workers
+└── server transport
+    ├── MCP.Server.Connection (stdio/in-process)
+    │   └── optional consumer-supervised subscription workers
+    └── MCP.Transport.StreamableHTTP.Plug (one dispatch per request)
+        └── optional consumer-supervised subscription workers
 ```
 
----
+The durable boundaries are:
 
-## 3. Transport Architecture
+- the transport owns bytes, HTTP/SSE framing, and transport cancellation;
+- `MCP.Protocol` owns lossless message decoding and encoding;
+- `MCP.Server.Dispatch` owns request metadata/version gates and method routing;
+- the consumer handler owns domain behavior;
+- consumer supervisors own long-lived subscription worker lifetimes.
 
-### Transport Behaviour
+## Request path
 
-```elixir
-@callback start_link(opts :: keyword()) :: GenServer.on_start()
-@callback send_message(pid :: pid(), message :: map()) :: :ok | {:error, term()}
-@callback close(pid :: pid()) :: :ok
+Every request is independently serviceable by any compatible server instance:
+
+```text
+JSON-RPC request
+→ structural metadata validation
+→ standard routing-header validation (HTTP)
+→ authenticated identity resolution
+→ schema-directed custom-header validation (HTTP tools/call)
+→ protocol decode
+→ ToolContext construction
+→ immutable handler callback
+→ result/error envelope
 ```
 
-Transports run as GenServer processes. The owner receives messages via:
-- `{:mcp_message, decoded_map}` — incoming JSON-RPC message
-- `{:mcp_transport_closed, reason}` — transport closed/disconnected
+Required `_meta` fields are protocol version and client capabilities. Client
+information is recommended but optional. An unsupported, internally consistent
+version yields `-32022` with `data.supported` and `data.requested`; missing
+required metadata yields `-32602`; a header/body disagreement yields `-32020`.
 
-### Stdio Transport
+## Client
 
-```
-MCP.Client (GenServer)
-  |
-  +-- Port (stdin/stdout to subprocess)
-  |     Write: JSON + newline to stdin
-  |     Read: Newline-delimited JSON from stdout
-  |     Stderr: Logged (not protocol messages)
-  |
-  +-- MCP Server Process (child)
-```
+`MCP.Client` tracks discovered server information, monotonically increasing
+request ids, pending operations, a bounded tool-schema LRU, callback tasks, and
+subscriptions. Transport sends and user callbacks execute beneath a linked
+`Task.Supervisor`, so blocking or crashing callbacks cannot block or terminate
+the client GenServer.
 
-- Client launches server as subprocess via `Port.open/2`
-- Messages are newline-delimited JSON-RPC (no embedded newlines)
-- Server's stderr is captured/logged but not parsed as protocol
+An operation records its pending entry, timer, and absolute deadline before
+transport I/O begins. The same deadline covers:
 
-### Streamable HTTP Transport (Phase 5 - COMPLETE)
+1. transport send and response;
+2. one stale routing-schema refresh and retry;
+3. every MRTR resolver round and retry.
 
-```
-Client Side:                          Server Side:
-MCP.Client (GenServer)               StreamableHTTP.Plug (Plug endpoint)
-  |                                     |
-  +-- StreamableHTTP.Client             +-- POST → route_post → deliver_message
-  |   (GenServer, Transport)            |     → StreamableHTTP.Server (GenServer)
-  |   Sends HTTP POST (Req)             |     → MCP.Server (handler callbacks)
-  |   Parses JSON or SSE response       |     → response routed back to caller
-  |                                     |
-  |   Headers:                          +-- GET → SSE stream (server-initiated)
-  |   Content-Type: application/json    |
-  |   Accept: application/json,         +-- DELETE → terminate session
-  |           text/event-stream         |
-  |   MCP-Session-Id: <sid>             +-- ETS session registry
-  |   MCP-Protocol-Version: 2025-11-25 |     {session_id → transport_pid}
-  |                                     |
-  +-- On close: HTTP DELETE             +-- PreStarted adapter
-                                              (reuses transport pid for MCP.Server)
-```
+The SDK exposes server cache hints but intentionally maintains no result cache.
 
-Architecture overview:
-- **Client**: `StreamableHTTP.Client` GenServer implements Transport behaviour.
-  Sends JSON-RPC via `Req.post/2`, parses `application/json` or SSE responses.
-  Extracts `MCP-Session-Id` from initialize response, includes in all subsequent requests.
-  On close, sends HTTP DELETE to terminate session.
+## Server handler configuration
 
-- **Server**: Three-module design:
-  - `StreamableHTTP.Plug` — Plug handling POST/GET/DELETE HTTP methods. Creates sessions
-    (transport + MCP.Server pairs) on initialize. Routes requests via ETS session registry.
-  - `StreamableHTTP.Server` — Transport GenServer bridging Plug ↔ MCP.Server. Stores
-    pending response callers so responses can be routed back to the correct HTTP connection.
-  - `StreamableHTTP.PreStarted` — Adapter that lets MCP.Server reuse an already-started
-    transport process (since the Plug starts the transport before the MCP.Server).
-  - **`handler_opts` seam (1.1.0):** the Plug threads request-scoped identity from the
-    authenticated Plug pipeline into `Handler.init/1` — a static keyword list or a per-session
-    `(Plug.Conn.t() -> keyword())` factory evaluated once at `initialize`. Backward-compatible
-    (absent `handler_opts` = prior behaviour). See
-    [`handler-opts-identity-seam-spec.md`](https://github.com/JohnSmall/mcp-elixir-sdk/blob/main/docs/handler-opts-identity-seam-spec.md).
+`MCP.Server.Config.build/2` calls `Handler.init/1` once. Its return value is
+immutable launch configuration and is passed to each callback. Callback results
+cannot replace it. Consumers needing mutable state store a supervised pid,
+registered name, or other stable reference in the config.
 
-- **SSE**: `MCP.Transport.SSE` provides encoding/decoding utilities:
-  - `encode_event/1`, `encode_message/2` for SSE event creation
-  - `decode_event/1` for parsing SSE event text
-  - `new_parser/0`, `feed/2` for incremental/chunked SSE stream parsing
+`MCP.Server.ToolContext` is constructed for one request and carries the request
+id, raw metadata, transport-authenticated identity, MRTR continuation input,
+and a notification sink. Dispatch never derives identity from arguments or
+metadata.
 
-- **Session management**: Server generates UUID session IDs, stores in ETS. Client extracts
-  from `MCP-Session-Id` response header. Protocol version validated via `MCP-Protocol-Version`.
+## Transports
 
-- **Handshake ordering**: a session's `MCP.Server` stays `:waiting` until it receives
-  `notifications/initialized`; clients MUST drive `initialize → notifications/initialized →
-  tools/call` (requests before `:ready` are rejected with "Server not initialized"). This is the
-  most common consumer stumble. `MCP.Client.connect/1` does this automatically; raw HTTP clients
-  must send `notifications/initialized` themselves.
+`MCP.Transport` provides start, send, and close callbacks; transports may also
+implement descriptor-aware sends and explicit subscription open/cancel hooks.
 
-- **Dependencies**: req ~> 0.5 (HTTP client), plug ~> 1.16 (HTTP framework),
-  bandit ~> 1.5 (HTTP server) — all optional, only needed for Streamable HTTP
+### Stdio and in-process
 
----
+`MCP.Server.Connection` owns one transport endpoint and multiplexes independent
+requests and long-lived subscriptions. It is not a protocol session: no
+initialize state or negotiated identity exists. Stdio identity is fixed at
+launch.
 
-## 4. Client Architecture
+### Streamable HTTP
 
-```
-MCP.Client (GenServer)
-  |
-  +-- state:
-  |     transport_module / transport_pid — the transport process
-  |     server_capabilities: ServerCapabilities.t()
-  |     server_info: Implementation.t()
-  |     client_info / client_capabilities — sent during initialization
-  |     pending_requests: %{id => {from, timeout_ref}}
-  |     next_id: integer (incrementing)
-  |     status: :disconnected | :initializing | :ready | :closed
-  |     notification_handler: pid | (method, params -> any)
-  |     request_handlers: %{method => callback_fn}
-  |
-  +-- Public API:
-  |     start_link/1         → create GenServer + start transport
-  |     connect/1-2          → initialize handshake
-  |     list_tools/2         → tools/list
-  |     call_tool/3-4        → tools/call
-  |     list_resources/2     → resources/list
-  |     read_resource/2-3    → resources/read
-  |     list_resource_templates/2 → resources/templates/list
-  |     subscribe_resource/2-3    → resources/subscribe
-  |     unsubscribe_resource/2-3  → resources/unsubscribe
-  |     list_prompts/2       → prompts/list
-  |     get_prompt/3-4       → prompts/get
-  |     ping/1-2             → ping (works pre-init)
-  |     close/1              → shutdown
-  |     list_all_tools/2     → paginated tools/list
-  |     list_all_resources/2 → paginated resources/list
-  |     list_all_prompts/2   → paginated prompts/list
-  |
-  +-- Incoming (from server):
-        notifications → dispatch to notification_handler (pid or function)
-        requests (sampling, elicitation) → dispatch to request_handlers map
-```
+`MCP.Transport.StreamableHTTP.Plug` builds immutable server config at mount.
+For 2026 it dispatches each POST independently and runs its `handler_opts`
+factory per request after upstream authentication. For 2025 it runs the factory
+at initialize, fingerprints that authenticated identity, and re-runs it on
+every POST, GET, and DELETE before constant-time comparison with the session
+binding. A supervised runtime manager owns the session process pair, endpoint
+and per-principal capacity, idle/absolute expiry, and endpoint cleanup. HTTP
+subscriptions retain only their individual response stream.
 
-### Request/Response Matching
+`MCP.Transport.StreamableHTTP.Client` emits `MCP-Protocol-Version`,
+`Mcp-Method`, method-appropriate `Mcp-Name`, and validated `Mcp-Param-*`
+headers. SSE response parsing supports interleaved notifications, final
+results, comments, and chunk boundaries.
 
-Client assigns incrementing integer IDs to outgoing requests. Each pending request stores `{from, timeout_ref}` in a map. When a response arrives via `{:mcp_message, decoded}`, `Protocol.decode_message/1` classifies it and the matching ID resolves the pending `GenServer.call/3` via `GenServer.reply/2`. Timeouts use `Process.send_after/3`.
+## Subscriptions
 
-### Server-Initiated Requests
+The client and server use distinct temporary worker types under
+consumer-supplied `DynamicSupervisor`s. Server workers register in a duplicate
+Registry and receive events through `MCP.Server.SubscriptionPublisher`.
 
-MCP servers can send requests to clients (sampling, roots, elicitation). The client dispatches these to callback functions provided at start:
+Invariants:
 
-```elixir
-{:ok, client} = MCP.Client.start_link(
-  transport: {MCP.Transport.Stdio, command: "server", args: []},
-  client_info: %{name: "my_app", version: "1.0.0"},
-  request_handlers: %{
-    "sampling/createMessage" => fn _method, params -> {:ok, result} end,
-    "roots/list" => fn _method, _params -> {:ok, %{"roots" => []}} end
-  },
-  notification_handler: self()  # or fn method, params -> ... end
-)
-```
+- acknowledgment is the first stream message;
+- honored filters are a subset of requested filters;
+- every event and final result carries the subscription id;
+- queues are bounded and FIFO;
+- overflow, owner death, or disconnect affects only one subscription;
+- HTTP close cancels the response stream; stdio close sends a scoped
+  `notifications/cancelled`.
 
----
+## MRTR
 
-## 5. Server Architecture
+In 2026, server-to-client sampling, elicitation, and roots work is represented
+as `InputRequiredResult`; the client resolves it outside the GenServer and
+retries using MRTR. In 2025, these operations are independent correlated
+JSON-RPC requests on the owner transport or legacy session GET SSE channel.
 
-```
-MCP.Server (GenServer)
-  |
-  +-- state:
-  |     handler_module / handler_state — user's Handler behaviour implementation
-  |     transport_module / transport_pid — the transport process
-  |     client_capabilities: ClientCapabilities.t()
-  |     client_info: Implementation.t()
-  |     server_info / capabilities / instructions — declared at startup
-  |     status: :waiting | :ready | :closed
-  |     pending_requests: %{id => {from, timeout_ref}}
-  |     next_id: integer (incrementing, for server-initiated requests)
-  |     log_level: current log level set by client
-  |
-  +-- Public API:
-  |     start_link/1          → create GenServer + start transport + init handler
-  |     close/1               → shutdown
-  |     transport/1, status/1 → accessors
-  |     client_capabilities/1, client_info/1 → from initialization
-  |
-  +-- Notifications (server → client):
-  |     notify_tools_changed/1     → notifications/tools/list_changed
-  |     notify_resources_changed/1 → notifications/resources/list_changed
-  |     notify_resource_updated/2  → notifications/resources/updated (with uri)
-  |     notify_prompts_changed/1   → notifications/prompts/list_changed
-  |     log/3-4                    → notifications/message (respects log level)
-  |     send_progress/3-4          → notifications/progress
-  |
-  +-- Server-initiated requests (server → client):
-  |     request_sampling/2-3       → sampling/createMessage
-  |     request_roots/1-2          → roots/list
-  |     request_elicitation/2-3    → elicitation/create
-  |
-  +-- Incoming (from client):
-  |     initialize → respond with capabilities, store client info
-  |     notifications/initialized → transition to :ready
-  |     ping → empty response (works pre-init)
-  |     tools/list, tools/call → dispatch to handler
-  |     resources/list, resources/read → dispatch to handler
-  |     resources/subscribe, resources/unsubscribe → dispatch to handler
-  |     resources/templates/list → dispatch to handler
-  |     prompts/list, prompts/get → dispatch to handler
-  |     completion/complete → dispatch to handler
-  |     logging/setLevel → dispatch to handler + update log_level
-  |     unknown method → -32601 error
-```
+## Protocol representation
 
-### Handler Behaviour
+Known structs preserve unknown members in explicit `extra` maps where the
+schema is extensible. Remote strings are never converted to atoms. Tool schemas
+remain arbitrary JSON Schema 2020-12 objects; structured content accepts every
+JSON value, preserving the distinction between absent and explicit `null`.
 
-`MCP.Server.Handler` defines optional callbacks for all server features.
-The server auto-detects capabilities by inspecting which callbacks the
-handler module exports via `__info__(:functions)`.
+Capability `extensions` are validated string-keyed maps with namespaced
+identifiers and object-valued settings. Advertising an extension never creates
+an implementation for its methods.
 
-```elixir
-@callback init(opts) :: {:ok, state}
-@callback handle_list_tools(cursor, state) :: {:ok, tools, next_cursor, state}
-@callback handle_call_tool(name, arguments, state) :: {:ok, content, state} | {:error, code, msg, state}
-@callback handle_call_tool(name, arguments, context, state) :: {:ok, content, state} | {:error, code, msg, state}  # async (Phase 7)
-@callback handle_list_resources(cursor, state) :: {:ok, resources, next_cursor, state}
-@callback handle_read_resource(uri, state) :: {:ok, contents, state} | {:error, code, msg, state}
-@callback handle_subscribe(uri, state) :: {:ok, state} | {:error, code, msg, state}
-@callback handle_unsubscribe(uri, state) :: {:ok, state} | {:error, code, msg, state}
-@callback handle_list_resource_templates(cursor, state) :: {:ok, templates, next_cursor, state}
-@callback handle_list_prompts(cursor, state) :: {:ok, prompts, next_cursor, state}
-@callback handle_get_prompt(name, arguments, state) :: {:ok, result, state} | {:error, code, msg, state}
-@callback handle_complete(ref, argument, state) :: {:ok, completion, state}
-@callback handle_set_log_level(level, state) :: {:ok, state}
-```
+## Verification
 
-### Request Routing
-
-Routing is inline in the Server GenServer via pattern-matched function clauses
-on `%Request{method: "tools/list"}` etc. No separate Router module needed —
-Elixir's pattern matching makes this clean and Credo-friendly.
-
-### Async Tool Execution (Phase 7)
-
-Tools that implement `handle_call_tool/4` (with `ToolContext`) execute asynchronously
-in a spawned `Task`. This allows tools to send intermediate messages during execution:
-
-```
-Client                      Plug                    Server                  Handler Task
-  |                           |                       |                       |
-  +-- POST tools/call ------->|                       |                       |
-  |                           +-- register_stream --->|                       |
-  |                           +-- deliver_async ----->|                       |
-  |                           |                       +-- Task.async -------->|
-  |                           |                       |                       |
-  |                           |                       |<-- context_notify ----|  (log)
-  |                     {sse_event} <-- send_message -|                       |
-  |<-- SSE: log notification -|                       |                       |
-  |                           |                       |<-- context_request ---|  (sampling)
-  |                     {sse_event} <-- send_message -|                       |
-  |<-- SSE: sampling request -|                       |                       |
-  |                           |                       |                       |
-  +-- POST sampling response->|                       |                       |
-  |                           +-- deliver_message --->|                       |
-  |                           |                       +-- reply to request -->|
-  |                           |                       |                       |
-  |                           |                       |<-- Task completes ----|
-  |                     {sse_done} <-- send_message --|                       |
-  |<-- SSE: tool result ------| (stream closed)       |                       |
-```
-
-Key components:
-- `MCP.Server.ToolContext` — context struct with `server_pid`, `request_id`, `meta`
-- `handle_call_tool/4` — async callback detected via `__info__(:functions)`
-- HTTPTransport `send_message/3` — opts `[related_request_id: id]` routes to correct SSE stream
-- Plug `stream_loop/1` — chunked SSE receive loop for `{:sse_event, data}` and `{:sse_done, data}`
-
-### Capability Auto-Detection
-
-The server inspects `handler_module.__info__(:functions)` to detect which
-callbacks are implemented, then builds `%ServerCapabilities{}` accordingly:
-- `handle_list_tools/2` → tools capability (with listChanged)
-- `handle_list_resources/2` → resources capability (with listChanged)
-- `handle_subscribe/2` → resources.subscribe capability
-- `handle_list_prompts/2` → prompts capability (with listChanged)
-- `handle_set_log_level/2` → logging capability
-- `handle_complete/3` → completions capability
-
----
-
-## 6. JSON-RPC 2.0 Message Types
-
-### Request
-```json
-{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
-```
-
-### Response (success)
-```json
-{"jsonrpc": "2.0", "id": 1, "result": {"tools": [...]}}
-```
-
-### Response (error)
-```json
-{"jsonrpc": "2.0", "id": 1, "error": {"code": -32602, "message": "Unknown tool"}}
-```
-
-### Notification (no response expected)
-```json
-{"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
-```
-
-### Standard Error Codes
-| Code | Meaning |
-|------|---------|
-| -32700 | Parse error |
-| -32600 | Invalid request |
-| -32601 | Method not found |
-| -32602 | Invalid params |
-| -32603 | Internal error |
-| -32002 | Resource not found |
-| -32042 | URL elicitation required |
-| -1 | User rejected sampling |
-
----
-
-## 7. Capability Negotiation
-
-During initialization, both sides declare what they support:
-
-### Server Capabilities
-```elixir
-%ServerCapabilities{
-  tools: %{listChanged: true},
-  resources: %{subscribe: true, listChanged: true},
-  prompts: %{listChanged: true},
-  logging: %{},
-  completions: %{}
-}
-```
-
-### Client Capabilities
-```elixir
-%ClientCapabilities{
-  roots: %{listChanged: true},
-  sampling: %{tools: %{}},
-  elicitation: %{form: %{}, url: %{}}
-}
-```
-
-Both sides MUST respect declared capabilities throughout the session.
-
----
-
-## 8. Content Types
-
-Tool results, prompts, and resources can contain multiple content types:
-
-| Type | Fields | Usage |
-|------|--------|-------|
-| `TextContent` | type: "text", text | Most common |
-| `ImageContent` | type: "image", data (base64), mimeType | Visual content |
-| `AudioContent` | type: "audio", data (base64), mimeType | Audio content |
-| `ResourceContent` | type: "resource", resource (uri, text/blob) | Embedded resources |
-| `ResourceLink` | type: "resource_link", uri, name, mimeType | Links to resources |
-
----
-
-## 9. Elixir/OTP Design Patterns
-
-| MCP Concept | Elixir Implementation |
-|-------------|----------------------|
-| Client session | GenServer per connection |
-| Server instance | GenServer per connection |
-| Stdio transport | Port (Erlang port for subprocess) |
-| SSE stream | `Req` + stream processing / `Plug.Conn` chunked |
-| Request/response matching | Map of `%{id => from}` in GenServer state |
-| Notifications | `send/2` to registered handler processes |
-| Tool registration | Map in GenServer state |
-| JSON-RPC framing | `Jason.encode!/1` + `Jason.decode!/1` |
-| Session lifecycle | GenServer init/handle_call/terminate |
-| Concurrent clients | Supervisor with dynamic children |
-| Pagination | Cursor-based, lazy with Stream |
-
----
-
-## 10. Testing Strategy
-
-### Unit Tests
-- Protocol encoding/decoding (JSON-RPC messages)
-- Type serialization/deserialization
-- Capability negotiation logic
-- Transport message framing (stdio, HTTP)
-- Client API (with mock transport)
-- Server API (with mock transport)
-
-### Integration Tests
-- Client ↔ Server over stdio (in-process)
-- Client ↔ Server over HTTP (localhost)
-- Full lifecycle: init → operations → shutdown
-
-### Conformance Tests
-- Official MCP conformance suite via `npx @modelcontextprotocol/conformance`
-- Server mode: conformance framework connects to our server
-- Client mode: conformance framework tests our client
-- Expected failures baseline file for incremental compliance
-- GitHub Actions integration for CI
-
----
-
-## 11. Dependencies
-
-### Required
-| Dep | Purpose |
-|-----|---------|
-| `jason` | JSON encoding/decoding |
-| `elixir_uuid` | ID generation |
-
-### Optional
-| Dep | Purpose | When Needed |
-|-----|---------|-------------|
-| `req` | HTTP client | Streamable HTTP client transport |
-| `plug` | HTTP server framework | Streamable HTTP server transport |
-| `bandit` | HTTP server | Streamable HTTP server transport |
-| `castore` | TLS certificates | HTTPS connections |
-
-### Dev/Test
-| Dep | Purpose |
-|-----|---------|
-| `dialyxir` | Type checking |
-| `credo` | Static analysis |
-| `ex_doc` | Documentation |
+Unit, process, transport, and cross-transport integration tests cover protocol
+types, ownership, deadlines, isolation, routing, MRTR, extensions, and
+subscriptions. The pinned official conformance harness is an additional release
+gate; exact commands and the scenario ledger are in `docs/dev-tooling.md` and
+`conformance/scenarios.json`.

@@ -8,7 +8,6 @@ defmodule MCP.Protocol.Messages.Notifications do
     Parameters for `notifications/progress`.
     """
 
-    @derive Jason.Encoder
     defstruct [:progress_token, :progress, :total, :message, :meta]
 
     @type t :: %__MODULE__{
@@ -46,7 +45,6 @@ defmodule MCP.Protocol.Messages.Notifications do
     Parameters for `notifications/cancelled`.
     """
 
-    @derive Jason.Encoder
     defstruct [:request_id, :reason, :meta]
 
     @type t :: %__MODULE__{

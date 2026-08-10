@@ -10,7 +10,6 @@ defmodule MCP.Protocol.Messages.Sampling do
 
     alias MCP.Protocol.Types.{ModelPreferences, SamplingMessage}
 
-    @derive Jason.Encoder
     defstruct [
       :messages,
       :model_preferences,
@@ -87,7 +86,6 @@ defmodule MCP.Protocol.Messages.Sampling do
 
     alias MCP.Protocol.Types.Content
 
-    @derive Jason.Encoder
     defstruct [:role, :content, :model, :stop_reason, :meta]
 
     @type t :: %__MODULE__{

@@ -36,6 +36,7 @@ defmodule MCP.Server.Config do
     ToolCapabilities
   }
 
+  alias MCP.Protocol.ExtensionCapabilities
   alias MCP.Protocol.Types.Implementation
   alias MCP.Server.Dispatch
 
@@ -68,42 +69,72 @@ defmodule MCP.Server.Config do
   def build(handler_module, opts) do
     handler_opts = Keyword.get(opts, :handler_opts, [])
 
-    case handler_module.init(handler_opts) do
-      {:ok, handler_state} ->
-        {:ok,
-         %{
-           handler_module: handler_module,
-           handler_state: handler_state,
-           server_info: build_server_info(Keyword.get(opts, :server_info, default_info())),
-           capabilities: detect_capabilities(handler_module),
-           instructions: Keyword.get(opts, :instructions),
-           protocol_version: Dispatch.protocol_version(),
-           cache_defaults: Keyword.get(opts, :cache_defaults, {0, "public"})
-         }}
+    with {:ok, extensions} <-
+           ExtensionCapabilities.validate(Keyword.get(opts, :extensions)),
+         {:ok, cache_defaults} <-
+           validate_cache_defaults(Keyword.get(opts, :cache_defaults, {0, "public"})),
+         {:ok, handler_state} <- handler_module.init(handler_opts) do
+      capabilities =
+        handler_module
+        |> detect_capabilities(subscriptions_enabled?(handler_module, opts))
+        |> Map.put(:extensions, extensions)
 
-      {:error, reason} ->
-        {:error, {:handler_init_failed, reason}}
+      {:ok,
+       %{
+         handler_module: handler_module,
+         handler_state: handler_state,
+         server_info: build_server_info(Keyword.get(opts, :server_info, default_info())),
+         capabilities: capabilities,
+         instructions: Keyword.get(opts, :instructions),
+         protocol_version: Dispatch.protocol_version(),
+         cache_defaults: cache_defaults
+       }}
+    else
+      {:error, {:invalid_extension_identifier, _key} = reason} -> {:error, reason}
+      {:error, {:invalid_extension_settings, _key} = reason} -> {:error, reason}
+      {:error, :extensions_must_be_an_object = reason} -> {:error, reason}
+      {:error, {:invalid_cache_defaults, _value} = reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:handler_init_failed, reason}}
     end
   end
 
-  @doc "Detects server capabilities from the handler's stateless (context-bearing) callback arities."
+  @doc "Detects server capabilities without claiming optional change notifications."
   @spec detect_capabilities(module()) :: ServerCapabilities.t()
-  def detect_capabilities(handler_module) do
+  def detect_capabilities(handler_module), do: detect_capabilities(handler_module, false)
+
+  @doc false
+  @spec detect_capabilities(module(), boolean()) :: ServerCapabilities.t()
+  def detect_capabilities(handler_module, list_changed?) do
     callbacks = handler_module.__info__(:functions)
 
     %ServerCapabilities{
-      tools: if({:handle_list_tools, 3} in callbacks, do: %ToolCapabilities{list_changed: true}),
-      resources: detect_resource_capabilities(callbacks),
+      tools:
+        if({:handle_list_tools, 3} in callbacks,
+          do: %ToolCapabilities{list_changed: enabled(list_changed?)}
+        ),
+      resources: detect_resource_capabilities(callbacks, list_changed?),
       prompts:
-        if({:handle_list_prompts, 3} in callbacks, do: %PromptCapabilities{list_changed: true}),
+        if({:handle_list_prompts, 3} in callbacks,
+          do: %PromptCapabilities{list_changed: enabled(list_changed?)}
+        ),
       completions: if({:handle_complete, 4} in callbacks, do: %CompletionCapabilities{})
     }
   end
 
-  defp detect_resource_capabilities(callbacks) do
+  defp detect_resource_capabilities(callbacks, list_changed?) do
     if {:handle_list_resources, 3} in callbacks do
-      %ResourceCapabilities{list_changed: true}
+      %ResourceCapabilities{
+        list_changed: enabled(list_changed?)
+      }
     end
+  end
+
+  defp enabled(true), do: true
+  defp enabled(false), do: nil
+
+  defp subscriptions_enabled?(handler_module, opts) do
+    function_exported?(handler_module, :handle_listen_subscriptions, 3) and
+      Keyword.get(opts, :subscriptions_enabled, false)
   end
 
   defp build_server_info(%Implementation{} = impl), do: impl
@@ -114,6 +145,13 @@ defmodule MCP.Server.Config do
       version: Map.get(map, :version) || Map.get(map, "version", "1.0.0")
     }
   end
+
+  defp validate_cache_defaults({ttl_ms, scope})
+       when is_integer(ttl_ms) and ttl_ms >= 0 and scope in ["public", "private"] do
+    {:ok, {ttl_ms, scope}}
+  end
+
+  defp validate_cache_defaults(value), do: {:error, {:invalid_cache_defaults, value}}
 
   defp default_info, do: %{name: "mcp_elixir_sdk", version: "1.0.0"}
 end

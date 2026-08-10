@@ -19,7 +19,6 @@ defmodule MCP.Protocol.Messages.Elicitation do
     MRTR. The `elicitationId` field is therefore dropped here; `mode`/`url` stay.
     """
 
-    @derive Jason.Encoder
     defstruct [:mode, :message, :requested_schema, :url, :meta]
 
     @type t :: %__MODULE__{
@@ -66,7 +65,6 @@ defmodule MCP.Protocol.Messages.Elicitation do
     Result of `elicitation/create`.
     """
 
-    @derive Jason.Encoder
     defstruct [:action, :content, :meta]
 
     @type t :: %__MODULE__{

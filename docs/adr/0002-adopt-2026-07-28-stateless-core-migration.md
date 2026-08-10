@@ -1,5 +1,9 @@
 # ADR-002: Adopt MCP 2026-07-28; migrate the transport to the stateless core
 
+> **Amendment:** sub-decisions 1 and 5 are superseded by
+> [ADR-007](0007-dual-protocol-era-support.md). The stateless 2026 architecture
+> remains the preferred path, but 2.0 also supports the 2025 protocol era.
+
 | | |
 | --- | --- |
 | **Status** | **Accepted** (2026-07-20) · _amended 2026-07-23 — factual correction, decision unchanged_ |
@@ -71,9 +75,9 @@ shipped 1.1.0 (which remains on 2025-11-25).
 
 ## Sub-decisions (resolved by PO, 2026-07-20)
 
-1. **No parallel support — package-level cutover.** `main` moves to 2.0.0/stateless. Consumers who
+1. ~~**No parallel support — package-level cutover.** `main` moves to 2.0.0/stateless. Consumers who
    want the old spec stay on Hex `{:mcp_elixir_sdk, "~> 1.1"}` (immutable on Hex, so it remains
-   available at zero cost). See sub-decision 5 for the mechanism choice.
+   available at zero cost). See sub-decision 5 for the mechanism choice.~~ **Superseded by ADR-007.**
 2. **The `~> 1.1` line is frozen except for security fixes.** No feature backports. A security issue in
    the 1.1.x code EMFA runs in production may warrant a 1.1.x patch; nothing else.
 3. **EMFA cuts over to 2.0.0 as soon as it's available.** EMFA remains the dogfooding consumer for the
@@ -82,12 +86,12 @@ shipped 1.1.0 (which remains on 2025-11-25).
 4. **Full conformance to the 2026-07-28 revision in its entirety, not a subset.** "Do everything" is
    simpler than cherry-picking interdependent SEPs. Conformance target = `@modelcontextprotocol/conformance`;
    self-certify against it rather than shipping "RC-complete, pending suite."
-5. **Package-level cutover, NOT in-SDK dual-era negotiation.** The reference SDKs (e.g. C# 2.0.0-preview)
+5. ~~**Package-level cutover, NOT in-SDK dual-era negotiation.** The reference SDKs (e.g. C# 2.0.0-preview)
    keep _both_ protocol eras alive in one package — clients negotiate down to the legacy handshake,
    servers accept both. We deliberately do **not** do that. For a small SDK with a single known
    consumer moving in lockstep, in-SDK dual-era is complexity EMFA doesn't need; package immutability on
    Hex already provides the fallback. This is a stated, deliberate divergence from the reference-SDK
-   approach.
+   approach.~~ **Superseded by ADR-007.**
 6. **Identity-threading redesign is owned by the spec-first design pass** (see Consequences).
 7. **Version: 2.0.0** (breaking major). EMFA coordinates its constraint at cutover.
 

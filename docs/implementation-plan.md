@@ -1,5 +1,10 @@
 # Implementation Plan: MCP Elixir SDK
 
+> **Archived 1.x implementation record.** The stateful `2025-11-25` phases
+> below have been superseded by the SDK 2.0 stateless implementation. Use the
+> [2.0 meta-plan](sdk-2.0/meta-plan.md) and
+> [current architecture](architecture.md) for actionable work and APIs.
+
 ## Document Info
 - **Project**: MCP Elixir SDK (Hex package `mcp_elixir_sdk`)
 - **Version**: 1.0.2

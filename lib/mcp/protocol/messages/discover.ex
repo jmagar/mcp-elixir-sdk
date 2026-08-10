@@ -41,6 +41,7 @@ defmodule MCP.Protocol.Messages.Discover do
       :instructions,
       :server_info,
       :meta,
+      extra: %{},
       result_type: "complete",
       ttl_ms: 0,
       cache_scope: "public"
@@ -54,7 +55,8 @@ defmodule MCP.Protocol.Messages.Discover do
             meta: map() | nil,
             result_type: String.t(),
             ttl_ms: non_neg_integer(),
-            cache_scope: String.t()
+            cache_scope: String.t(),
+            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
           }
 
     def server_info_meta_key, do: @server_info_meta_key
@@ -77,7 +79,17 @@ defmodule MCP.Protocol.Messages.Discover do
         ttl_ms: Map.get(map, "ttlMs", 0),
         cache_scope: Map.get(map, "cacheScope", "public"),
         server_info: server_info,
-        meta: meta
+        meta: meta,
+        extra:
+          Map.drop(map, [
+            "supportedVersions",
+            "capabilities",
+            "instructions",
+            "resultType",
+            "ttlMs",
+            "cacheScope",
+            "_meta"
+          ])
       }
     end
 
@@ -87,13 +99,14 @@ defmodule MCP.Protocol.Messages.Discover do
         (result.meta || %{})
         |> put_server_info(result.server_info)
 
-      map = %{
-        "supportedVersions" => result.supported_versions,
-        "capabilities" => Jason.decode!(Jason.encode!(result.capabilities)),
-        "resultType" => result.result_type,
-        "ttlMs" => result.ttl_ms,
-        "cacheScope" => result.cache_scope
-      }
+      map =
+        Map.merge(result.extra, %{
+          "supportedVersions" => result.supported_versions,
+          "capabilities" => Jason.decode!(Jason.encode!(result.capabilities)),
+          "resultType" => result.result_type,
+          "ttlMs" => result.ttl_ms,
+          "cacheScope" => result.cache_scope
+        })
 
       map =
         if result.instructions, do: Map.put(map, "instructions", result.instructions), else: map

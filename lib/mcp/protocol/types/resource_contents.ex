@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.ResourceContents do
   Either `text` or `blob` will be set, not both.
   """
 
-  @derive Jason.Encoder
   defstruct [:uri, :mime_type, :text, :blob, :meta]
 
   @type t :: %__MODULE__{

@@ -42,7 +42,6 @@ defmodule MCP.Protocol.Messages.Tools do
 
     alias MCP.Protocol.Types.Tool
 
-    @derive Jason.Encoder
     defstruct [:tools, :next_cursor, :meta]
 
     @type t :: %__MODULE__{
@@ -113,39 +112,65 @@ defmodule MCP.Protocol.Messages.Tools do
 
     alias MCP.Protocol.Types.Content
 
-    @derive Jason.Encoder
-    defstruct [:content, :structured_content, :is_error, :meta]
+    @known_keys ["content", "structuredContent", "isError", "_meta"]
+
+    defstruct [:content, structured_content: :absent, is_error: nil, meta: nil, extra: %{}]
 
     @type t :: %__MODULE__{
             content: [Content.content_block()],
-            structured_content: map() | nil,
+            structured_content: MCP.Protocol.json_value() | :absent,
             is_error: boolean() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
           }
 
     @spec from_map(map()) :: t()
     def from_map(map) when is_map(map) do
       %__MODULE__{
         content: map |> Map.fetch!("content") |> Enum.map(&Content.from_map/1),
-        structured_content: Map.get(map, "structuredContent"),
+        structured_content: Map.get(map, "structuredContent", :absent),
         is_error: Map.get(map, "isError"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: Map.drop(map, ["content", "structuredContent", "isError", "_meta"])
       }
     end
 
+    @spec to_map(t()) :: map()
+    def to_map(%__MODULE__{} = result) do
+      reject_extra_collisions!(result.extra)
+
+      %{"content" => result.content}
+      |> maybe_put("structuredContent", result.structured_content, :absent)
+      |> maybe_put("isError", result.is_error, nil)
+      |> maybe_put("_meta", result.meta, nil)
+      |> Map.merge(result.extra)
+    end
+
+    defp reject_extra_collisions!(extra) when is_map(extra) do
+      case Enum.find(Map.keys(extra), &(not is_binary(&1) or &1 in @known_keys)) do
+        nil ->
+          :ok
+
+        key when is_binary(key) ->
+          raise ArgumentError, "call result extra field collides with #{key}"
+
+        key ->
+          raise ArgumentError,
+                "call result extra field names must be strings, got: #{inspect(key)}"
+      end
+    end
+
+    defp reject_extra_collisions!(_extra),
+      do: raise(ArgumentError, "call result extra fields must be a map")
+
+    defp maybe_put(map, _key, value, value), do: map
+    defp maybe_put(map, key, value, _absent), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
+      alias MCP.Protocol.Messages.Tools.CallResult
+
       def encode(struct, opts) do
-        map = %{content: struct.content}
-
-        map =
-          if struct.structured_content,
-            do: Map.put(map, :structuredContent, struct.structured_content),
-            else: map
-
-        map = if struct.is_error, do: Map.put(map, :isError, struct.is_error), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-
-        Jason.Encode.map(map, opts)
+        struct |> CallResult.to_map() |> Jason.Encode.map(opts)
       end
     end
   end

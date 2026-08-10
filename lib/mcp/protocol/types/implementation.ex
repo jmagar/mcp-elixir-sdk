@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Implementation do
 
   alias MCP.Protocol.Types.Icon
 
-  @derive Jason.Encoder
   defstruct [:name, :version, :title, :description, :website_url, :icons]
 
   @type t :: %__MODULE__{

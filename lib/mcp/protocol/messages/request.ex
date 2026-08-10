@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Messages.Request do
   Requests have an `id` field and expect a response.
   """
 
-  @derive Jason.Encoder
   defstruct jsonrpc: "2.0", id: nil, method: nil, params: nil
 
   @type t :: %__MODULE__{

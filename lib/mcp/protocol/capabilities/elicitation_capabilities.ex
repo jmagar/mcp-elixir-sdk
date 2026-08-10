@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Capabilities.ElicitationCapabilities do
   Client capability for elicitation (form and/or URL modes).
   """
 
-  @derive Jason.Encoder
   defstruct [:form, :url]
 
   @type t :: %__MODULE__{

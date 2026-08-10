@@ -3,7 +3,6 @@ defmodule MCP.Protocol.Capabilities.ResourceCapabilities do
   Server capability for resources.
   """
 
-  @derive Jason.Encoder
   defstruct [:subscribe, :list_changed]
 
   @type t :: %__MODULE__{

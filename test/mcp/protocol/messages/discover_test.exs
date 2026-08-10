@@ -47,4 +47,17 @@ defmodule MCP.Protocol.Messages.DiscoverTest do
     assert result.cache_scope == "public"
     assert result.server_info.name == "s"
   end
+
+  test "unknown discovery result fields survive typed round trips" do
+    map = %{
+      "supportedVersions" => ["2026-07-28"],
+      "capabilities" => %{},
+      "vendorDiscovery" => [false, nil, 0]
+    }
+
+    result = Discover.Result.from_map(map)
+
+    assert result.extra == %{"vendorDiscovery" => [false, nil, 0]}
+    assert Discover.Result.to_map(result)["vendorDiscovery"] == [false, nil, 0]
+  end
 end

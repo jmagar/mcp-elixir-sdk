@@ -20,24 +20,44 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   DELETE on close (SEP-2567). Every POST is self-contained — the per-request
   `_meta` (protocol version, client identity/capabilities) is placed on the
   JSON-RPC message by `MCP.Client`, so any server instance can service it.
+
+  ## Stateful compatibility (2025-11-25)
+
+  An initialize response binds `Mcp-Session-Id`. Later requests reuse it, a
+  supervised GET SSE listener receives server messages, and close performs a
+  best-effort session DELETE.
   """
 
   use GenServer
 
   require Logger
 
+  alias MCP.Protocol.ToolRouting
   alias MCP.Transport.SSE
 
   @behaviour MCP.Transport
 
   @protocol_version "2026-07-28"
+  @legacy_protocol_version "2025-11-25"
+  @default_legacy_sse_retry_limit 3
+  @default_legacy_sse_retry_backoff 50
+  @default_legacy_sse_retry_max_backoff 1_000
 
   defstruct [
     :owner,
+    :owner_ref,
     :url,
     :protocol_version,
+    :session_id,
     :extra_headers,
-    :sse_task
+    :task_supervisor,
+    :legacy_sse_task,
+    :legacy_sse_ref,
+    :legacy_sse_retry_limit,
+    :legacy_sse_retry_backoff,
+    :legacy_sse_retry_max_backoff,
+    post_tasks: %{},
+    subscriptions: %{}
   ]
 
   # --- Public API (Transport behaviour) ---
@@ -49,12 +69,37 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl MCP.Transport
   def send_message(pid, message) when is_map(message) do
-    GenServer.call(pid, {:send_message, message}, 60_000)
+    send_message(pid, message, [])
+  end
+
+  @impl MCP.Transport
+  def send_message(pid, message, opts) when is_map(message) and is_list(opts) do
+    GenServer.call(pid, {:send_message, message, opts}, 60_000)
   end
 
   @impl MCP.Transport
   def close(pid) do
     GenServer.call(pid, :close)
+  catch
+    :exit, {:noproc, _call} -> :ok
+    :exit, reason -> {:error, {:close_failed, reason}}
+  end
+
+  @doc false
+  def reset_session(pid) do
+    GenServer.call(pid, :reset_session)
+  catch
+    :exit, _ -> :ok
+  end
+
+  @impl MCP.Transport
+  def open_subscription(pid, message, opts \\ []) when is_map(message) and is_list(opts) do
+    GenServer.call(pid, {:open_subscription, message, opts}, 60_000)
+  end
+
+  @impl MCP.Transport
+  def cancel_subscription(pid, request_id) do
+    GenServer.call(pid, {:cancel_subscription, request_id})
   catch
     :exit, _ -> :ok
   end
@@ -63,36 +108,98 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl GenServer
   def init(opts) do
+    Process.flag(:trap_exit, true)
     owner = Keyword.fetch!(opts, :owner)
     url = Keyword.fetch!(opts, :url)
     protocol_version = Keyword.get(opts, :protocol_version, @protocol_version)
     extra_headers = Keyword.get(opts, :headers, [])
+    {:ok, task_supervisor} = Task.Supervisor.start_link()
 
-    state = %__MODULE__{
-      owner: owner,
-      url: url,
-      protocol_version: protocol_version,
-      extra_headers: extra_headers
-    }
+    case reserved_extra_header(extra_headers) do
+      nil ->
+        state = %__MODULE__{
+          owner: owner,
+          owner_ref: Process.monitor(owner),
+          url: url,
+          protocol_version: protocol_version,
+          extra_headers: extra_headers,
+          task_supervisor: task_supervisor,
+          legacy_sse_retry_limit:
+            Keyword.get(opts, :legacy_sse_retry_limit, @default_legacy_sse_retry_limit),
+          legacy_sse_retry_backoff:
+            Keyword.get(opts, :legacy_sse_retry_backoff, @default_legacy_sse_retry_backoff),
+          legacy_sse_retry_max_backoff:
+            Keyword.get(
+              opts,
+              :legacy_sse_retry_max_backoff,
+              @default_legacy_sse_retry_max_backoff
+            )
+        }
 
-    {:ok, state}
+        {:ok, state}
+
+      name ->
+        {:stop, {:reserved_extra_header, name}}
+    end
   end
 
   @impl GenServer
-  def handle_call({:send_message, message}, _from, state) do
-    # Send HTTP POST with the JSON-RPC message
-    case do_post(state, message) do
-      {:ok, new_state} ->
-        {:reply, :ok, new_state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+  def handle_call({:send_message, message, opts}, from, state) do
+    case build_headers(state, message, opts) do
+      {:ok, headers} -> start_post_task(state, from, message, headers)
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:open_subscription, message, opts}, _from, state) do
+    id = Map.get(message, "id")
+
+    cond do
+      not (is_binary(id) or is_integer(id)) ->
+        {:reply, {:error, :invalid_subscription_id}, state}
+
+      Map.has_key?(state.subscriptions, id) ->
+        {:reply, {:error, :duplicate_subscription_id}, state}
+
+      true ->
+        case build_headers(state, message, opts) do
+          {:ok, headers} -> start_subscription_task(state, id, message, headers)
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  def handle_call({:cancel_subscription, request_id}, _from, state) do
+    case Map.pop(state.subscriptions, request_id) do
+      {nil, _subscriptions} ->
+        {:reply, :ok, state}
+
+      {subscription, subscriptions} ->
+        Process.demonitor(subscription.monitor_ref, [:flush])
+        _ = Task.Supervisor.terminate_child(state.task_supervisor, subscription.task)
+        {:reply, :ok, %{state | subscriptions: subscriptions}}
+    end
+  end
+
+  def handle_call({:bind_session, session_id, protocol_version}, _from, state)
+      when is_binary(session_id) and is_binary(protocol_version) do
+    state = %{state | session_id: session_id, protocol_version: protocol_version}
+    {:reply, :ok, start_legacy_sse_listener(state)}
+  end
+
+  def handle_call(:reset_session, _from, state) do
+    asynchronously_terminate_legacy_session(state)
+    {:reply, :ok, clear_legacy_session(state)}
   end
 
   def handle_call(:close, _from, state) do
     do_close(state)
-    {:stop, :normal, :ok, state}
+
+    {:stop, :normal, :ok, %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}}
+  rescue
+    exception -> transport_close_failure(state, :error, exception, __STACKTRACE__)
+  catch
+    kind, reason -> transport_close_failure(state, kind, reason, __STACKTRACE__)
   end
 
   @impl GenServer
@@ -123,16 +230,101 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   def handle_info({:sse_stream_closed, reason}, state) do
     Logger.debug("MCP StreamableHTTP Client: SSE stream closed: #{inspect(reason)}")
-    {:noreply, %{state | sse_task: nil}}
-  end
-
-  def handle_info({ref, _result}, state) when is_reference(ref) do
-    # Task completion message — ignore (we handle via :DOWN)
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+  def handle_info({:subscription_stream_message, id, stream, delivery_ref, message}, state) do
+    if Map.has_key?(state.subscriptions, id) do
+      send(
+        state.owner,
+        {:mcp_subscription_message, self(), stream, delivery_ref, message}
+      )
+    else
+      send(stream, {:subscription_delivery_ack, delivery_ref})
+    end
+
     {:noreply, state}
+  end
+
+  def handle_info({:subscription_stream_closed, id, reason}, state) do
+    case Map.pop(state.subscriptions, id) do
+      {nil, _subscriptions} ->
+        {:noreply, state}
+
+      {subscription, subscriptions} ->
+        Process.demonitor(subscription.monitor_ref, [:flush])
+        send(state.owner, {:mcp_subscription_transport_closed, id, reason})
+        {:noreply, %{state | subscriptions: subscriptions}}
+    end
+  end
+
+  def handle_info({:legacy_sse_response, body}, state) when is_binary(body) do
+    {:ok, state} = parse_sse_body(state, body)
+    {:noreply, state}
+  end
+
+  def handle_info({:legacy_sse_stopped, task, reason}, %{legacy_sse_task: task} = state) do
+    Process.demonitor(state.legacy_sse_ref, [:flush])
+    state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
+    state = if reason == :session_expired, do: clear_legacy_session(state), else: state
+    send(state.owner, {:mcp_legacy_sse_failed, reason})
+    {:noreply, state}
+  end
+
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    case Map.pop(state.post_tasks, ref) do
+      {nil, _post_tasks} ->
+        {:noreply, state}
+
+      {operation, post_tasks} ->
+        Process.demonitor(ref, [:flush])
+        Process.demonitor(operation.caller_ref, [:flush])
+        GenServer.reply(operation.from, normalize_post_result(result))
+
+        state =
+          if result == {:error, :session_expired},
+            do: clear_legacy_session(state),
+            else: state
+
+        {:noreply, %{state | post_tasks: post_tasks}}
+    end
+  end
+
+  def handle_info({:EXIT, owner, _reason}, %{owner: owner} = state) do
+    do_close(state)
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:DOWN, ref, :process, owner, _reason}, %{owner: owner, owner_ref: ref} = state) do
+    do_close(state)
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:DOWN, ref, :process, task, reason}, state) do
+    cond do
+      ref == state.legacy_sse_ref and task == state.legacy_sse_task ->
+        if reason not in [:normal, :shutdown] do
+          Logger.warning("MCP legacy SSE listener stopped: #{inspect(reason)}")
+        end
+
+        {:noreply, %{state | legacy_sse_task: nil, legacy_sse_ref: nil}}
+
+      Map.has_key?(state.post_tasks, ref) ->
+        fail_post_task(state, ref, reason)
+
+      operation = post_task_by_caller_ref(state.post_tasks, ref, task) ->
+        _ = Task.Supervisor.terminate_child(state.task_supervisor, operation.task_pid)
+        Process.demonitor(operation.task_ref, [:flush])
+        {:noreply, %{state | post_tasks: Map.delete(state.post_tasks, operation.task_ref)}}
+
+      subscription = subscription_by_monitor(state.subscriptions, ref, task) ->
+        {id, _subscription} = subscription
+        send(state.owner, {:mcp_subscription_transport_closed, id, reason})
+        {:noreply, %{state | subscriptions: Map.delete(state.subscriptions, id)}}
+
+      true ->
+        {:noreply, state}
+    end
   end
 
   def handle_info(msg, state) do
@@ -148,13 +340,44 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   # --- Private helpers ---
 
-  defp do_post(state, message) do
-    headers = build_headers(state)
+  defp start_post_task(state, from, message, headers) do
+    transport = self()
+
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        post(transport, state, message, headers)
+      end)
+
+    caller_ref = Process.monitor(elem(from, 0))
+
+    operation = %{
+      from: from,
+      caller_ref: caller_ref,
+      task_ref: task.ref,
+      task_pid: task.pid
+    }
+
+    {:noreply, %{state | post_tasks: Map.put(state.post_tasks, task.ref, operation)}}
+  end
+
+  defp normalize_post_result({:ok, _state}), do: :ok
+  defp normalize_post_result({:error, _reason} = error), do: error
+  defp normalize_post_result(other), do: {:error, {:invalid_post_result, other}}
+
+  defp fail_post_task(state, ref, reason) do
+    {operation, post_tasks} = Map.pop(state.post_tasks, ref)
+    Process.demonitor(operation.caller_ref, [:flush])
+    GenServer.reply(operation.from, {:error, {:post_task_exit, reason}})
+    {:noreply, %{state | post_tasks: post_tasks}}
+  end
+
+  defp post(transport, state, message, headers) do
     body = Jason.encode!(message)
 
     case Req.post(state.url, body: body, headers: headers, receive_timeout: 60_000) do
       {:ok, %Req.Response{status: status, headers: resp_headers, body: resp_body}}
       when status in [200, 201] ->
+        bind_response_session(transport, message, state.protocol_version, resp_headers)
         content_type = get_content_type(resp_headers)
 
         cond do
@@ -176,10 +399,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         # Accepted (notification/response acknowledged)
         {:ok, state}
 
-      {:ok, %Req.Response{status: status, body: resp_body}} ->
-        Logger.warning("MCP StreamableHTTP Client: HTTP #{status}: #{inspect(resp_body)}")
-
-        {:error, {:http_error, status, resp_body}}
+      {:ok, %Req.Response{status: status, headers: resp_headers, body: resp_body}} ->
+        handle_non_success_response(state, status, resp_headers, resp_body)
 
       {:error, reason} ->
         Logger.warning("MCP StreamableHTTP Client: POST failed: #{inspect(reason)}")
@@ -188,12 +409,165 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  defp build_headers(state) do
-    [
-      {"content-type", "application/json"},
-      {"accept", "application/json, text/event-stream"},
-      {"mcp-protocol-version", state.protocol_version}
-    ] ++ state.extra_headers
+  defp handle_non_success_response(state, status, headers, body) do
+    Logger.warning("MCP StreamableHTTP Client: HTTP #{status}: #{inspect(body)}")
+
+    cond do
+      status == 404 and
+          (is_binary(state.session_id) or state.protocol_version == @legacy_protocol_version) ->
+        {:error, :session_expired}
+
+      String.contains?(get_content_type(headers), "text/event-stream") ->
+        deliver_sse_error_response(state, status, body)
+
+      true ->
+        deliver_json_error_response(state, status, body)
+    end
+  end
+
+  defp json_rpc_error_response?(body) when is_map(body) do
+    Map.get(body, "jsonrpc") == "2.0" and Map.has_key?(body, "id") and
+      Map.has_key?(body, "error") and is_map(Map.get(body, "error"))
+  end
+
+  defp json_rpc_error_response?(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> json_rpc_error_response?(decoded)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp json_rpc_error_response?(_body), do: false
+
+  defp deliver_json_error_response(state, status, body) do
+    if json_rpc_error_response?(body) do
+      deliver_json_response(state, body)
+    else
+      {:error, {:http_error, status, body}}
+    end
+  end
+
+  defp deliver_sse_error_response(state, status, body) when is_binary(body) do
+    {events, _parser} = SSE.feed(SSE.new_parser(), body)
+
+    error =
+      Enum.find_value(events, fn event ->
+        with data when is_binary(data) <- Map.get(event, :data),
+             {:ok, decoded} <- Jason.decode(data),
+             true <- json_rpc_error_response?(decoded) do
+          decoded
+        else
+          _invalid -> nil
+        end
+      end)
+
+    case error do
+      nil -> {:error, {:http_error, status, body}}
+      error -> deliver_json_response(state, error)
+    end
+  end
+
+  defp deliver_sse_error_response(_state, status, body),
+    do: {:error, {:http_error, status, body}}
+
+  defp build_headers(state, message, opts) do
+    with {:ok, custom_headers} <-
+           custom_routing_headers(message, Keyword.get(opts, :routing_headers, [])) do
+      {:ok,
+       [
+         {"content-type", "application/json"},
+         {"accept", "application/json, text/event-stream"},
+         {"mcp-protocol-version", request_protocol_version(message, state.protocol_version)}
+       ] ++
+         session_headers(state) ++
+         routing_headers(message) ++ custom_headers ++ state.extra_headers}
+    end
+  end
+
+  defp request_protocol_version(message, fallback) do
+    get_in(message, ["params", "_meta", "io.modelcontextprotocol/protocolVersion"]) ||
+      get_in(message, ["params", "protocolVersion"]) || fallback
+  end
+
+  defp routing_headers(%{"method" => method} = message) do
+    [{"mcp-method", method}] ++ routing_name_header(method, Map.get(message, "params"))
+  end
+
+  defp routing_headers(_message), do: []
+
+  defp routing_name_header(method, params) when is_map(params) do
+    target =
+      case method do
+        "tools/call" -> Map.get(params, "name")
+        "prompts/get" -> Map.get(params, "name")
+        "resources/read" -> Map.get(params, "uri")
+        _method -> nil
+      end
+
+    if target, do: [{"mcp-name", encode_header_value(target)}], else: []
+  end
+
+  defp routing_name_header(_method, _params), do: []
+
+  defp custom_routing_headers(%{"params" => %{"arguments" => arguments}}, descriptors)
+       when is_map(arguments) do
+    Enum.reduce_while(descriptors, {:ok, []}, fn descriptor, {:ok, headers} ->
+      name = "mcp-param-#{String.downcase(descriptor.header)}"
+
+      case ToolRouting.argument_value(arguments, descriptor) do
+        :missing ->
+          {:cont, {:ok, headers}}
+
+        {:ok, value} ->
+          {:cont, {:ok, headers ++ [{name, encode_header_value(value)}]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_routing_argument, name, reason}}}
+      end
+    end)
+  end
+
+  defp custom_routing_headers(_message, _descriptors), do: {:ok, []}
+
+  defp encode_header_value(value) when is_binary(value) do
+    if plain_header_value?(value) do
+      value
+    else
+      "=?base64?#{Base.encode64(value)}?="
+    end
+  end
+
+  defp plain_header_value?(value) do
+    safe_bytes? =
+      value
+      |> :binary.bin_to_list()
+      |> Enum.all?(&(&1 == 0x09 or &1 in 0x20..0x7E))
+
+    safe_bytes? and value == String.trim(value) and not sentinel_shaped?(value)
+  end
+
+  defp sentinel_shaped?(value) do
+    String.starts_with?(value, "=?base64?") and String.ends_with?(value, "?=")
+  end
+
+  defp reserved_extra_header(headers) do
+    Enum.find_value(headers, fn
+      {name, _value} when is_binary(name) -> if reserved_header?(name), do: name
+      _header -> nil
+    end)
+  end
+
+  defp reserved_header?(name) do
+    normalized = String.downcase(name)
+
+    normalized in [
+      "content-type",
+      "accept",
+      "mcp-protocol-version",
+      "mcp-method",
+      "mcp-name",
+      "mcp-session-id"
+    ] or String.starts_with?(normalized, "mcp-param-")
   end
 
   defp get_content_type(headers) do
@@ -251,8 +625,371 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  defp do_close(_state) do
-    # Stateless: no session to terminate, so no DELETE is issued (SEP-2567).
+  defp do_close(state) do
+    if state.legacy_sse_task do
+      Process.demonitor(state.legacy_sse_ref, [:flush])
+      # A long-polling Req task can take seconds to unwind through a supervised
+      # shutdown. The listener owns no state, so an untrappable exit makes
+      # close deterministic while the supervisor reaps the child.
+      Process.exit(state.legacy_sse_task, :kill)
+    end
+
+    Enum.each(state.post_tasks, fn {_ref, operation} ->
+      Process.demonitor(operation.caller_ref, [:flush])
+      _ = Task.Supervisor.terminate_child(state.task_supervisor, operation.task_pid)
+    end)
+
+    Enum.each(state.subscriptions, fn {_id, subscription} ->
+      Process.demonitor(subscription.monitor_ref, [:flush])
+      _ = Task.Supervisor.terminate_child(state.task_supervisor, subscription.task)
+    end)
+
+    asynchronously_terminate_legacy_session(state)
     :ok
+  end
+
+  defp transport_close_failure(state, kind, reason, stacktrace) do
+    Logger.error("MCP HTTP transport close failed " <> Exception.format(kind, reason, stacktrace))
+
+    {:stop, :normal, {:error, {:close_failed, {kind, reason}}},
+     %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}}
+  end
+
+  defp bind_response_session(
+         transport,
+         %{"method" => "initialize"} = message,
+         fallback_version,
+         headers
+       ) do
+    case get_header(headers, "mcp-session-id") do
+      nil ->
+        :ok
+
+      session_id ->
+        protocol_version = request_protocol_version(message, fallback_version)
+        GenServer.call(transport, {:bind_session, session_id, protocol_version})
+    end
+  end
+
+  defp bind_response_session(_transport, _message, _fallback_version, _headers), do: :ok
+
+  defp session_headers(%{session_id: nil}), do: []
+  defp session_headers(%{session_id: session_id}), do: [{"mcp-session-id", session_id}]
+
+  defp terminate_legacy_session(state) do
+    headers = [
+      {"mcp-protocol-version", state.protocol_version},
+      {"mcp-session-id", state.session_id}
+    ]
+
+    case Req.delete(state.url, headers: headers, receive_timeout: 10_000) do
+      {:ok, %Req.Response{status: status}} when status in [200, 202, 204, 404] ->
+        :ok
+
+      {:ok, %Req.Response{status: status}} ->
+        Logger.debug("MCP session DELETE returned HTTP #{status}")
+
+      {:error, reason} ->
+        Logger.debug("MCP session DELETE failed: #{inspect(reason)}")
+    end
+  end
+
+  defp asynchronously_terminate_legacy_session(%{session_id: nil}), do: :ok
+
+  defp asynchronously_terminate_legacy_session(state) do
+    cleanup = %{
+      url: state.url,
+      protocol_version: state.protocol_version,
+      session_id: state.session_id
+    }
+
+    {:ok, _pid} = Task.start(fn -> terminate_legacy_session(cleanup) end)
+    :ok
+  end
+
+  defp clear_legacy_session(state) do
+    if state.legacy_sse_task do
+      Process.demonitor(state.legacy_sse_ref, [:flush])
+      Process.exit(state.legacy_sse_task, :kill)
+    end
+
+    %{state | session_id: nil, legacy_sse_task: nil, legacy_sse_ref: nil}
+  end
+
+  defp start_legacy_sse_listener(%{legacy_sse_task: task} = state) when is_pid(task), do: state
+
+  defp start_legacy_sse_listener(state) do
+    transport = self()
+
+    {:ok, task} =
+      Task.Supervisor.start_child(state.task_supervisor, fn ->
+        reason =
+          legacy_sse_loop(
+            state.owner,
+            state.url,
+            state.session_id,
+            state.protocol_version,
+            state.extra_headers,
+            state.legacy_sse_retry_limit,
+            state.legacy_sse_retry_backoff,
+            state.legacy_sse_retry_max_backoff
+          )
+
+        send(transport, {:legacy_sse_stopped, self(), reason})
+      end)
+
+    %{state | legacy_sse_task: task, legacy_sse_ref: Process.monitor(task)}
+  end
+
+  defp legacy_sse_loop(
+         owner,
+         url,
+         session_id,
+         protocol_version,
+         extra_headers,
+         retries_left,
+         backoff,
+         max_backoff
+       ) do
+    headers =
+      [
+        {"accept", "text/event-stream"},
+        {"mcp-session-id", session_id},
+        {"mcp-protocol-version", protocol_version}
+      ] ++ extra_headers
+
+    result =
+      case Req.get(url,
+             headers: headers,
+             into: :self,
+             receive_timeout: :infinity,
+             retry: false
+           ) do
+        {:ok, %Req.Response{status: 200} = response} ->
+          consume_legacy_sse_stream(owner, response, SSE.new_parser())
+
+        {:ok, %Req.Response{status: 404}} ->
+          :session_expired
+
+        {:ok, %Req.Response{status: status}} ->
+          {:error, {:http_status, status}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    case result do
+      :session_expired ->
+        :session_expired
+
+      :eof ->
+        wait_legacy_retry(backoff)
+
+        legacy_sse_loop(
+          owner,
+          url,
+          session_id,
+          protocol_version,
+          extra_headers,
+          retries_left,
+          backoff,
+          max_backoff
+        )
+
+      _result when retries_left <= 0 ->
+        {:retry_exhausted, result}
+
+      _result ->
+        wait_legacy_retry(backoff)
+
+        legacy_sse_loop(
+          owner,
+          url,
+          session_id,
+          protocol_version,
+          extra_headers,
+          retries_left - 1,
+          min(backoff * 2, max_backoff),
+          max_backoff
+        )
+    end
+  end
+
+  defp consume_legacy_sse_stream(owner, response, parser) do
+    receive do
+      message ->
+        case Req.parse_message(response, message) do
+          {:ok, chunks} -> consume_legacy_sse_chunks(owner, response, parser, chunks)
+          {:error, reason} -> {:error, reason}
+          :unknown -> consume_legacy_sse_stream(owner, response, parser)
+        end
+    end
+  end
+
+  defp consume_legacy_sse_chunks(owner, response, parser, chunks) do
+    Enum.reduce_while(chunks, {:continue, parser}, fn
+      {:data, data}, {:continue, current_parser} ->
+        {events, next_parser} = SSE.feed(current_parser, data)
+        deliver_legacy_sse_events(owner, events)
+        {:cont, {:continue, next_parser}}
+
+      :done, {:continue, current_parser} ->
+        {:halt, {:done, current_parser}}
+
+      {:trailers, _trailers}, accumulator ->
+        {:cont, accumulator}
+    end)
+    |> case do
+      {:continue, next_parser} -> consume_legacy_sse_stream(owner, response, next_parser)
+      {:done, _parser} -> :eof
+    end
+  end
+
+  defp deliver_legacy_sse_events(owner, events) do
+    Enum.each(events, fn event ->
+      case Map.get(event, :data) do
+        data when is_binary(data) and data != "" -> deliver_decoded(owner, data)
+        _empty -> :ok
+      end
+    end)
+  end
+
+  defp wait_legacy_retry(delay) do
+    receive do
+      :stop -> :ok
+    after
+      delay -> :ok
+    end
+  end
+
+  defp start_subscription_task(state, id, message, headers) do
+    transport = self()
+    url = state.url
+
+    {:ok, task} =
+      Task.Supervisor.start_child(state.task_supervisor, fn ->
+        run_subscription_stream(transport, id, url, message, headers)
+      end)
+
+    monitor_ref = Process.monitor(task)
+    subscription = %{task: task, monitor_ref: monitor_ref}
+    subscriptions = Map.put(state.subscriptions, id, subscription)
+    {:reply, :ok, %{state | subscriptions: subscriptions}}
+  end
+
+  defp run_subscription_stream(transport, id, url, message, headers) do
+    result =
+      case Req.post(url,
+             body: Jason.encode!(message),
+             headers: headers,
+             into: :self,
+             receive_timeout: :infinity
+           ) do
+        {:ok, %Req.Response{status: 200} = response} ->
+          if String.contains?(get_content_type(response.headers), "text/event-stream") do
+            consume_subscription_stream(transport, id, response, SSE.new_parser())
+          else
+            {:error, {:unexpected_content_type, get_content_type(response.headers)}}
+          end
+
+        {:ok, %Req.Response{status: status, body: body}} ->
+          {:error, {:http_error, status, body}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
+    send(transport, {:subscription_stream_closed, id, result})
+  rescue
+    exception ->
+      send(
+        transport,
+        {:subscription_stream_closed, id, {:error, {:raised, exception, __STACKTRACE__}}}
+      )
+  end
+
+  defp consume_subscription_stream(transport, id, response, parser) do
+    receive do
+      {:cancel_subscription_stream, requested_id} when requested_id in [id, :all] ->
+        _ = Req.cancel_async_response(response)
+        {:error, :cancelled}
+
+      message ->
+        case Req.parse_message(response, message) do
+          {:ok, chunks} -> consume_subscription_chunks(transport, id, response, parser, chunks)
+          {:error, reason} -> {:error, reason}
+          :unknown -> consume_subscription_stream(transport, id, response, parser)
+        end
+    end
+  end
+
+  defp consume_subscription_chunks(transport, id, response, parser, chunks) do
+    Enum.reduce_while(chunks, {:continue, parser}, fn
+      {:data, data}, {:continue, current_parser} ->
+        {events, next_parser} = SSE.feed(current_parser, data)
+
+        case deliver_subscription_events(transport, id, events) do
+          :ok -> {:cont, {:continue, next_parser}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      :done, {:continue, current_parser} ->
+        {:halt, {:done, current_parser}}
+
+      {:trailers, _trailers}, accumulator ->
+        {:cont, accumulator}
+    end)
+    |> case do
+      {:continue, next_parser} ->
+        consume_subscription_stream(transport, id, response, next_parser)
+
+      {:done, _parser} ->
+        :eof
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp deliver_subscription_events(transport, id, events) do
+    Enum.reduce_while(events, :ok, fn event, :ok ->
+      case Map.get(event, :data) do
+        nil ->
+          {:cont, :ok}
+
+        "" ->
+          {:cont, :ok}
+
+        data ->
+          deliver_subscription_event(transport, id, data)
+      end
+    end)
+  end
+
+  defp deliver_subscription_event(transport, id, data) do
+    case Jason.decode(data) do
+      {:ok, decoded} ->
+        delivery_ref = make_ref()
+        send(transport, {:subscription_stream_message, id, self(), delivery_ref, decoded})
+
+        receive do
+          {:subscription_delivery_ack, ^delivery_ref} -> {:cont, :ok}
+        end
+
+      {:error, reason} ->
+        {:halt, {:error, {:invalid_sse_json, reason}}}
+    end
+  end
+
+  defp subscription_by_monitor(subscriptions, ref, task) do
+    Enum.find(subscriptions, fn {_id, subscription} ->
+      subscription.monitor_ref == ref and subscription.task == task
+    end)
+  end
+
+  defp post_task_by_caller_ref(post_tasks, ref, caller) do
+    Enum.find_value(post_tasks, fn {_task_ref, operation} ->
+      if operation.caller_ref == ref and elem(operation.from, 0) == caller, do: operation
+    end)
   end
 end

@@ -42,7 +42,6 @@ defmodule MCP.Protocol.Messages.Resources do
 
     alias MCP.Protocol.Types.Resource
 
-    @derive Jason.Encoder
     defstruct [:resources, :next_cursor, :meta]
 
     @type t :: %__MODULE__{
@@ -105,7 +104,6 @@ defmodule MCP.Protocol.Messages.Resources do
 
     alias MCP.Protocol.Types.ResourceContents
 
-    @derive Jason.Encoder
     defstruct [:contents, :meta]
 
     @type t :: %__MODULE__{
@@ -194,7 +192,6 @@ defmodule MCP.Protocol.Messages.Resources do
 
     alias MCP.Protocol.Types.ResourceTemplate
 
-    @derive Jason.Encoder
     defstruct [:resource_templates, :next_cursor, :meta]
 
     @type t :: %__MODULE__{

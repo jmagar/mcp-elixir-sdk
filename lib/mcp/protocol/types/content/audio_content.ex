@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Content.AudioContent do
 
   alias MCP.Protocol.Types.Annotations
 
-  @derive Jason.Encoder
   defstruct type: "audio", data: nil, mime_type: nil, annotations: nil, meta: nil
 
   @type t :: %__MODULE__{

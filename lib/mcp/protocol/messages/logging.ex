@@ -30,7 +30,6 @@ defmodule MCP.Protocol.Messages.Logging do
     Parameters for `notifications/message` (log message from server).
     """
 
-    @derive Jason.Encoder
     defstruct [:level, :logger, :data, :meta]
 
     @type t :: %__MODULE__{

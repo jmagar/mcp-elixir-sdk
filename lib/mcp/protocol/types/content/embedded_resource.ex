@@ -5,7 +5,6 @@ defmodule MCP.Protocol.Types.Content.EmbeddedResource do
 
   alias MCP.Protocol.Types.{Annotations, ResourceContents}
 
-  @derive Jason.Encoder
   defstruct type: "resource", resource: nil, annotations: nil, meta: nil
 
   @type t :: %__MODULE__{

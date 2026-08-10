@@ -6,7 +6,6 @@ defmodule MCP.Protocol.Types.ToolAnnotations do
   rely on these for security decisions unless the server is trusted.
   """
 
-  @derive Jason.Encoder
   defstruct [:title, :read_only_hint, :destructive_hint, :idempotent_hint, :open_world_hint]
 
   @type t :: %__MODULE__{

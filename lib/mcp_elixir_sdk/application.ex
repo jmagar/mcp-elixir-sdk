@@ -5,7 +5,10 @@ defmodule MCPElixirSDK.Application do
 
   @impl true
   def start(_type, _args) do
-    children = []
+    children = [
+      {MCP.Transport.StreamableHTTP.LegacySessionManager,
+       name: MCP.Transport.StreamableHTTP.LegacySessionManager}
+    ]
 
     opts = [strategy: :one_for_one, name: MCPElixirSDK.Supervisor]
     Supervisor.start_link(children, opts)

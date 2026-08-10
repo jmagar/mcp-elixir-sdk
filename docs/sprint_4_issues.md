@@ -153,3 +153,91 @@ $ git diff 7634684382c3d14cf7e9f14073fe40a2d8ace3fa:schema/draft/schema.ts \
 `JSONRPCResultResponse`, wraps `SubscriptionsListenResult`) is added — the graceful-teardown
 response envelope. Model the wire shape against these final names.
 **Priority Hint:** Medium (gates MES-15's schema-level DoD) · **Blocking?:** No (for MES-13) · **Suggested Jira Ticket?:** MES-15 input
+
+---
+
+## MES-14 — Notification plumbing hardening: request-local collector + config-time cache-scope warning (2026-08-04)
+
+Canonical narrative: in-flight exchange [254541825], /plan [254902274], PM ratification
+[254345238] (RATIFIED WITH CONDITIONS C1–C5). Branch `MES-14` off `da1fe64`.
+
+### Decision: process-dictionary notification collector replaced by a per-request process (AC1/AC2/AC8)
+**Description:** The HTTP driver's notification collector was a process-dictionary slot
+(`@notifications_key` in `plug.ex`) — a process-keyed store that, because request processes
+are reused, the *next* request could address. That is the Sprint 3 cross-request identity
+leak (evidence-log I10); MES-10 Ruling 7 held it shut with a start-clear + `try/after`
+stopgap. Replaced with `MCP.Server.NotificationCollector`, a small per-request process whose
+pid is held only by that request's `reply_sink` closure on `ctx`. A later request holds no
+reference by which it could name a prior collector, so residue is **unaddressable, not merely
+cleared** — the AC2 property (amended at ratification C1 from "call-frame-lifetime-bounded"
+to "reachability-bounded", since Elixir has no mutable stack-local cell). The Ruling 7 stopgap
+was removed in the same diff (AC8); its removal is justified by the AC1–AC4 evidence.
+**Resolution:** New module `lib/mcp/server/notification_collector.ex`; `dispatch/5` rewritten;
+`@notifications_key`, `notification_collector/0`, `take_notifications/0` deleted.
+**Priority Hint:** n/a (ticket scope) · **Blocking?:** No · **Suggested Jira Ticket?:** n/a
+
+### Decision: AC4 negative direction demonstrated before implementation (ratification C2)
+**Description:** A by-construction mechanism resists being made to fail, which is in tension
+with A7's fail-then-pass requirement. Per C2, the reverted (leaky) state was defined and the
+AC3 SSE-level regression made to fail **before** writing implementation code: the reverted
+state is `dispatch/5` with the two Ruling-7 guards removed (restoring proc-dict cleanup on
+the normal branch only), not "delete the new collector" (which would be a compile error, not
+a leak). The test executes against that state without a shim (it asserts on `resp_body`, not
+collector internals). Observed failure — REVIEWER's request 2 received PM's
+`notifications/message` with `"data":{"identity":"PM"}` — pasted on the in-flight page.
+**Priority Hint:** n/a · **Blocking?:** No (discharged) · **Suggested Jira Ticket?:** n/a
+
+### Finding: E1 cache-field reality matches the gap register (ratification C4)
+**Description:** Gap-register E1's `ttlMs`/`cacheScope` are produced today via
+`MCP.Server.Dispatch.cacheable/2` (default `{0, "public"}`) on the five CacheableResult
+methods (`tools/list`, `resources/list`, `resources/read`, `resources/templates/list`,
+`prompts/list`); `cacheScope ∈ {public, private}` via `:cache_defaults`. Established from
+code with `git grep` widened repo-wide over `lib/` (C4): the only additional production site
+is `discover.ex` (client-side parse of the same fields). Reality does not differ from E1 — no
+A1 escalation. Cache-field *emission* semantics remain out of scope; MES-14 only adds a
+config-time warning about a risky *configuration* of the existing fields (AC7).
+**Priority Hint:** n/a · **Blocking?:** No · **Suggested Jira Ticket?:** n/a
+
+### Finding: AC7 warning surfacing under real deployment shapes (ratification C3)
+**Description:** The config-time cache-scope warning is emitted from `Plug.init/1`, so it
+fires once per configuration, never per request (AC7c is structural — `call/2` has no path to
+it). C3 asked where it actually surfaces. Established empirically: `Bandit.start_link(plug:
+{Module, opts})` — this SDK's documented deployment — calls `init/1` at **server startup**,
+so the warning reaches the runtime log (test: "C3: warning reaches the runtime log when
+started via Bandit plug: {Mod, opts}"). A module-based pipeline mounted with
+`plug_init_mode: :compile` (a Phoenix production default) runs `init/1` at compile time, so
+the warning would land in the build log; documented in the `Plug` moduledoc with the remedy
+(`plug_init_mode: :runtime`, or the Bandit `plug: {Module, opts}` form). The warning surfaces
+for the documented shape → discharged without escalation, with the caveat documented.
+**Priority Hint:** Low (doc caveat) · **Blocking?:** No · **Suggested Jira Ticket?:** No
+
+### Note: `da1fe64` provenance (ratification C5)
+**Description:** The ADR-003 landing-status correction (`da1fe64`) is a ticketless docs-only
+commit with no /plan or review; the PM's independent verification was rate-limited. Provenance
+posted on the in-flight page: `git log -1 --format='%H %s' da1fe64` and `git show --stat` —
+one file (`docs/adr/0003-2.0.0-conformance-scope.md`), +4/−3. Carried onto Codex's MES-14
+review checklist.
+**Priority Hint:** n/a · **Blocking?:** No · **Suggested Jira Ticket?:** n/a
+
+### Defect found in review: collector start failure broke MC-6 (correction round 1, 2026-08-05)
+**Description:** `plug.ex` started the per-request notification collector with an unguarded
+match — `{:ok, collector} = NotificationCollector.start_link()`. A start failure raised
+`MatchError` instead of taking the controlled JSON-RPC internal-error path, so **MC-6 (clean
+failure) was not satisfied** — while the /plan §2 MC-6 row and the close-out's AC5 both
+reported it satisfied. AC5 was the one acceptance criterion discharged by narrative rather
+than an executable check (PM finding V6); it was the one that carried a false claim. Codex
+demonstrated the crash by injecting `{:error, :collector_start_failed_for_review}`.
+**Resolution:** collector start moved into the `handle_post/2` with-chain via
+`start_collector/1`, which maps `{:error, reason}` to `{:error, {:collector_start_failed,
+reason}}`; the else clause logs the reason server-side and returns a controlled `-32603`
+("notification collector unavailable") with **no handler invoked** and no internal detail in
+the client body — after identity resolution, before dispatch. An injectable `:collector_start`
+seam (0-arity, defaults to `&NotificationCollector.start_link/0`) turns Codex's manual
+injection into a **permanent** regression test (A7): shown FAILING against the reverted
+unguarded match (`MatchError` at `start_collector/1`) and passing after the fix.
+**Lesson:** an AC backed by prose survived to review; every AC backed by a command did not.
+A2 is not ceremony (→ the point behind the newly codified A2d: grouped/narrative claims hide
+real items). Diff figure also reconciled: the committed `9522ef7` is **431 insertions / 46
+deletions** over 7 files (two-dot and three-dot agree, merge-base is `da1fe64`); the close-out's
+"+419" was measured before the final amend that added a 12-line test and was not refreshed.
+**Priority Hint:** n/a (in-ticket correction) · **Blocking?:** Was (merge-gate) — resolved · **Suggested Jira Ticket?:** n/a
