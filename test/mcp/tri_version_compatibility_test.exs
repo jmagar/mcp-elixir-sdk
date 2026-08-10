@@ -124,6 +124,54 @@ defmodule MCP.TriVersionCompatibilityTest do
     assert {:ok, %{protocol_version: @june}} = Task.await(connect)
   end
 
+  test "an advertised-revision selection keeps the rest of the fallback ladder" do
+    {:ok, client} =
+      start_supervised(
+        {Client,
+         transport: {MockTransport, []}, client_info: %{name: "auto-client", version: "1.0.0"}}
+      )
+
+    transport = Client.transport(client)
+    connect = Task.async(fn -> Client.connect(client) end)
+    {:ok, [discover]} = MockTransport.await_sent(transport, 1)
+
+    # Discovery advertises both legacy revisions; November is selected first.
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => discover["id"],
+      "error" => %{
+        "code" => -32_022,
+        "message" => "Unsupported protocol version",
+        "data" => %{"supported" => [@november, @june]}
+      }
+    })
+
+    {:ok, [_discover, november]} = MockTransport.await_sent(transport, 2)
+    assert november["params"]["protocolVersion"] == @november
+
+    # Rejecting November must advance to June rather than ending negotiation.
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => november["id"],
+      "error" => %{"code" => -32_022, "message" => "Unsupported protocol version"}
+    })
+
+    {:ok, [_discover, _november, june]} = MockTransport.await_sent(transport, 3)
+    assert june["params"]["protocolVersion"] == @june
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => june["id"],
+      "result" => %{
+        "protocolVersion" => @june,
+        "capabilities" => %{},
+        "serverInfo" => %{"name" => "june-server", "version" => "1.0.0"}
+      }
+    })
+
+    assert {:ok, %{protocol_version: @june}} = Task.await(connect)
+  end
+
   test "a non-version error during fallback initialize reaches the caller unchanged" do
     {:ok, client} =
       start_supervised(

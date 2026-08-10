@@ -846,7 +846,7 @@ defmodule MCP.Client do
     case supported_protocol_version(data) do
       version when is_binary(version) and remaining > 0 and version != @protocol_version ->
         state = select_protocol(state, version)
-        send_initialize(state, operation.from, remaining)
+        resume_initialize(state, operation.from, remaining, deadline)
 
       version when is_binary(version) and remaining > 0 ->
         state = %{state | protocol_version: version}
@@ -874,14 +874,8 @@ defmodule MCP.Client do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      state = select_protocol(state, "2025-11-25")
-
-      send_initialize(
-        state,
-        operation.from,
-        remaining,
-        {:initialize_fallback, ["2025-06-18"], deadline}
-      )
+      state = select_protocol(state, first_legacy_revision())
+      resume_initialize(state, operation.from, remaining, deadline)
     else
       GenServer.reply(operation.from, {:error, :timeout})
       {:noreply, state}
@@ -1167,9 +1161,9 @@ defmodule MCP.Client do
     end
   end
 
-  # The ladder lives in the expired operation's kind, so handing the attempt to a
-  # waiter would otherwise restart it as a plain initialize and stop advancing on
-  # the next -32022. Rebuild what is left from the registry.
+  # Every path that selects a legacy revision goes through here so the remaining
+  # ladder is always carried. Sending a plain `:initialize` instead would strand
+  # negotiation on the selected revision when the peer answers -32022.
   defp resume_initialize(state, from, remaining, deadline) do
     case remaining_legacy_revisions(state.protocol_version) do
       [] -> send_initialize(state, from, remaining)
@@ -1178,11 +1172,14 @@ defmodule MCP.Client do
   end
 
   defp remaining_legacy_revisions(protocol_version) do
-    Revision.supported()
-    |> Enum.filter(&Revision.legacy?/1)
+    legacy_revisions()
     |> Enum.drop_while(&(&1 != protocol_version))
     |> Enum.drop(1)
   end
+
+  defp first_legacy_revision, do: List.first(legacy_revisions())
+
+  defp legacy_revisions, do: Enum.filter(Revision.supported(), &Revision.legacy?/1)
 
   defp rollback_initialize(from, reason, state) do
     reset_transport_session(state)
