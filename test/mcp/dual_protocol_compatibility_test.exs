@@ -17,10 +17,16 @@ defmodule MCP.DualProtocolCompatibilityTest do
   alias MCP.Transport.StreamableHTTP.Plug, as: MCPPlug
 
   @legacy_version "2025-11-25"
+  @older_legacy_version "2025-06-18"
   @stateless_version "2026-07-28"
 
   test "the SDK advertises both supported protocol eras in preference order" do
-    assert Protocol.supported_versions() == [@stateless_version, @legacy_version]
+    assert Protocol.supported_versions() == [
+             @stateless_version,
+             @legacy_version,
+             @older_legacy_version
+           ]
+
     assert Protocol.protocol_version() == @stateless_version
   end
 

@@ -458,7 +458,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp legacy_request?(conn, message) do
-    first_header(conn, "mcp-protocol-version") == LegacyDispatch.protocol_version() or
+    first_header(conn, "mcp-protocol-version") in LegacyDispatch.protocol_versions() or
       (Map.get(message, "method") == "initialize" and
          is_nil(first_header(conn, "mcp-protocol-version"))) or
       not is_nil(first_header(conn, "mcp-session-id"))
@@ -526,9 +526,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   defp handle_legacy_post(conn, config, message) do
     session_id = first_header(conn, "mcp-session-id")
 
-    with :ok <- validate_legacy_protocol_header(conn),
+    with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
          {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, session} <- legacy_session(config, session_id, identity) do
+         {:ok, session} <- legacy_session(config, session_id, identity),
+         :ok <- validate_session_protocol(session, presented_version) do
       dispatch_legacy_http(conn, config, message, session)
     else
       {:error, {:factory_failed, reason}} -> legacy_identity_resolution_error(conn, reason)
@@ -572,9 +573,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   defp handle_legacy_delete(conn, config) do
     session_id = first_header(conn, "mcp-session-id")
 
-    with :ok <- validate_legacy_protocol_header(conn),
+    with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
          {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, _session} <- legacy_session(config, session_id, identity),
+         {:ok, session} <- legacy_session(config, session_id, identity),
+         :ok <- validate_session_protocol(session, presented_version),
          :ok <- delete_legacy_session(config, session_id) do
       Plug.Conn.send_resp(conn, 200, "")
     else
@@ -587,14 +589,17 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp validate_legacy_protocol_header(conn) do
-    legacy_version = LegacyDispatch.protocol_version()
-
     case first_header(conn, "mcp-protocol-version") do
-      ^legacy_version -> :ok
+      version when version in ["2025-11-25", "2025-06-18"] -> {:ok, version}
       nil -> {:error, "missing MCP-Protocol-Version"}
       version -> {:error, "unsupported MCP-Protocol-Version: #{inspect(version)}"}
     end
   end
+
+  defp validate_session_protocol(%{protocol_version: version}, version), do: :ok
+
+  defp validate_session_protocol(%{protocol_version: expected}, presented),
+    do: {:error, "session protocol mismatch: expected #{expected}, got #{presented}"}
 
   defp legacy_protocol_header_error(conn, message, detail) do
     send_json_error(
@@ -663,7 +668,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   defp resolve_handler_options(handler_opts, _conn) when is_list(handler_opts),
     do: {:ok, handler_opts}
 
-  defp start_legacy_session(config, handler_opts, identity) do
+  defp start_legacy_session(config, handler_opts, identity, protocol_version) do
     server_opts =
       Keyword.take(config.server_opts, [:server_info, :instructions, :request_timeout])
 
@@ -672,7 +677,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       per_identity_limit: config.legacy_sessions_per_identity,
       idle_timeout: config.legacy_session_idle_timeout,
       absolute_timeout: config.legacy_session_absolute_timeout,
-      endpoint_owner: config.legacy_endpoint_owner
+      endpoint_owner: config.legacy_endpoint_owner,
+      protocol_version: protocol_version
     ]
 
     LegacySessionManager.create(
@@ -689,7 +695,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp start_and_initialize_legacy(config, handler_opts, identity, message) do
-    with {:ok, session_id, session} <- start_legacy_session(config, handler_opts, identity) do
+    protocol_version = get_in(message, ["params", "protocolVersion"])
+
+    with true <- protocol_version in LegacyDispatch.protocol_versions(),
+         {:ok, session_id, session} <-
+           start_legacy_session(config, handler_opts, identity, protocol_version) do
       case LegacySession.deliver(session, message, config.legacy_sse_timeout) do
         {:ok, response, notifications} ->
           {:ok, session_id, response, notifications}
@@ -698,6 +708,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           delete_legacy_session(config, session_id)
           {:error, reason}
       end
+    else
+      false -> {:error, {:unsupported_protocol_version, protocol_version}}
+      error -> error
     end
   end
 
@@ -820,9 +833,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp handle_legacy_get(conn, config, session_id) do
-    with :ok <- validate_legacy_protocol_header(conn),
+    with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
          {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, session} <- legacy_session(config, session_id, identity) do
+         {:ok, session} <- legacy_session(config, session_id, identity),
+         :ok <- validate_session_protocol(session, presented_version) do
       case LegacySession.next_event(session, config.legacy_sse_timeout) do
         {:ok, message} ->
           send_legacy_sse(conn, SSE.encode_message(message))

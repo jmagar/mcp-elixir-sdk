@@ -59,6 +59,7 @@ defmodule MCP.Client do
   alias MCP.Protocol.Messages.{Discover, Initialize, MRTR, Notification, Request, Response}
   alias MCP.Protocol.Messages.Subscriptions.{AcknowledgedParams, ListenParams, ListenResult}
   alias MCP.Protocol.Methods
+  alias MCP.Protocol.Revision
   alias MCP.Protocol.ToolRouting
   alias MCP.Protocol.Types.{Implementation, SubscriptionFilter}
 
@@ -69,7 +70,6 @@ defmodule MCP.Client do
   @default_server_request_concurrency 32
   @default_server_request_timeout 30_000
   @protocol_version "2026-07-28"
-  @legacy_protocol_version "2025-11-25"
   @subscription_ack_method "notifications/subscriptions/acknowledged"
 
   defstruct [
@@ -80,6 +80,7 @@ defmodule MCP.Client do
     :client_info,
     :client_capabilities,
     :protocol_version,
+    :legacy_adapter,
     :status,
     :notification_handler,
     :on_input_required,
@@ -367,6 +368,7 @@ defmodule MCP.Client do
       client_info: build_client_info(Keyword.get(opts, :client_info, default_info())),
       client_capabilities: client_capabilities,
       protocol_version: Keyword.get(opts, :protocol_version, @protocol_version),
+      legacy_adapter: legacy_adapter(Keyword.get(opts, :protocol_version, @protocol_version)),
       status: :ready,
       notification_handler: Keyword.get(opts, :notification_handler),
       on_input_required: Keyword.get(opts, :on_input_required),
@@ -442,11 +444,8 @@ defmodule MCP.Client do
   def handle_call(_request, _from, %{status: :closed} = state),
     do: {:reply, {:error, :closed}, state}
 
-  def handle_call(
-        _request,
-        _from,
-        %{protocol_version: @legacy_protocol_version, legacy_ready: false} = state
-      ),
+  def handle_call(_request, _from, %{legacy_adapter: adapter, legacy_ready: false} = state)
+      when not is_nil(adapter),
       do: {:reply, {:error, :not_ready}, state}
 
   def handle_call({:list_tools, opts, timeout}, from, state),
@@ -548,8 +547,9 @@ defmodule MCP.Client do
   def handle_call(
         {:listen_subscriptions, _filter, _opts},
         _from,
-        %{protocol_version: @legacy_protocol_version} = state
-      ),
+        %{legacy_adapter: adapter} = state
+      )
+      when not is_nil(adapter),
       do: {:reply, {:error, :stateless_protocol_required}, state}
 
   def handle_call({:listen_subscriptions, filter, opts}, from, state) do
@@ -832,8 +832,8 @@ defmodule MCP.Client do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     case supported_protocol_version(data) do
-      @legacy_protocol_version when remaining > 0 ->
-        state = %{state | protocol_version: @legacy_protocol_version}
+      version when is_binary(version) and remaining > 0 and version != @protocol_version ->
+        state = select_protocol(state, version)
         send_initialize(state, operation.from, remaining)
 
       version when is_binary(version) and remaining > 0 ->
@@ -862,7 +862,7 @@ defmodule MCP.Client do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      state = %{state | protocol_version: @legacy_protocol_version}
+      state = select_protocol(state, "2025-11-25")
       send_initialize(state, operation.from, remaining)
     else
       GenServer.reply(operation.from, {:error, :timeout})
@@ -936,7 +936,7 @@ defmodule MCP.Client do
   end
 
   defp finish_response(%Response{result: result}, from, :initialize, state) do
-    case decode_initialize_result(result) do
+    case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do
           :ok -> complete_initialize(from, initialize, state)
@@ -950,7 +950,7 @@ defmodule MCP.Client do
   end
 
   defp finish_response(%Response{result: result}, from, {:reinitialize, original}, state) do
-    case decode_initialize_result(result) do
+    case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do
           :ok -> retry_after_reinitialize(from, initialize, original, state)
@@ -1291,8 +1291,8 @@ defmodule MCP.Client do
       String.contains?(detail, "mcp-param-")
   end
 
-  defp tools_from_result(%{"tools" => tools}, state)
-       when state.protocol_version == @legacy_protocol_version and is_list(tools),
+  defp tools_from_result(%{"tools" => tools}, %{legacy_adapter: adapter})
+       when not is_nil(adapter) and is_list(tools),
        do: {:ok, tools}
 
   defp tools_from_result(result, _state) when is_map(result) do
@@ -1911,7 +1911,7 @@ defmodule MCP.Client do
   # Every request carries the per-request _meta the stateless server needs in
   # place of the removed handshake (SEP-2575): protocol version + client
   # identity/capabilities. `server/discover` also carries it harmlessly.
-  defp with_meta(params, state) when state.protocol_version == @legacy_protocol_version,
+  defp with_meta(params, %{legacy_adapter: adapter}) when not is_nil(adapter),
     do: params
 
   defp with_meta(params, state) do
@@ -2229,7 +2229,7 @@ defmodule MCP.Client do
   end
 
   defp validate_callback_capabilities(opts, capabilities, handlers) do
-    if Keyword.get(opts, :protocol_version, @protocol_version) == @legacy_protocol_version do
+    if Revision.legacy?(Keyword.get(opts, :protocol_version, @protocol_version)) do
       [
         {Methods.sampling_create_message(), capabilities.sampling},
         {Methods.roots_list(), capabilities.roots},
@@ -2335,32 +2335,39 @@ defmodule MCP.Client do
   defp decode_discover_result(_result, _protocol_version), do: {:error, :result_must_be_an_object}
 
   defp send_initialize(state, from, timeout, kind \\ :initialize) do
-    params =
-      Initialize.Params.to_map(%Initialize.Params{
-        protocol_version: @legacy_protocol_version,
-        capabilities: state.client_capabilities,
-        client_info: state.client_info
-      })
+    params = state.legacy_adapter.initialize_params(state.client_info, state.client_capabilities)
 
     send_rpc(state, from, Methods.initialize(), params, kind, [], timeout)
   end
 
-  defp decode_initialize_result(result) when is_map(result) do
+  defp decode_initialize_result(result, state) when is_map(result) do
     initialize = Initialize.Result.from_map(result)
 
-    if initialize.protocol_version == @legacy_protocol_version do
-      {:ok, initialize}
-    else
-      {:error, {:unsupported_protocol_version, initialize.protocol_version}}
+    case state.legacy_adapter.validate_initialize_result(result) do
+      :ok ->
+        {:ok, initialize}
+
+      {:error, {:unexpected_protocol_version, version}} ->
+        {:error, {:unsupported_protocol_version, version}}
     end
   rescue
     error in [ArgumentError, KeyError, FunctionClauseError] ->
       {:error, Exception.message(error)}
   end
 
-  defp decode_initialize_result(_result), do: {:error, :result_must_be_an_object}
+  defp decode_initialize_result(_result, _state), do: {:error, :result_must_be_an_object}
 
-  defp legacy_protocol?(state), do: state.protocol_version == @legacy_protocol_version
+  defp legacy_protocol?(state), do: not is_nil(state.legacy_adapter)
+
+  defp legacy_adapter(version) do
+    case Revision.fetch(version) do
+      {:ok, adapter} when adapter != :stateless -> adapter
+      _other -> nil
+    end
+  end
+
+  defp select_protocol(state, version),
+    do: %{state | protocol_version: version, legacy_adapter: legacy_adapter(version)}
 
   defp maybe_put_request_state(params, result) do
     if Map.has_key?(result, "requestState") do

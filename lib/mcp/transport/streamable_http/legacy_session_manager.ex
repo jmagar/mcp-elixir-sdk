@@ -71,6 +71,9 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
          {:ok, session} <- LegacySession.start_linked(handler_module, handler_opts, server_opts) do
       session_id = UUID.uuid4()
 
+      session =
+        Map.put(session, :protocol_version, Keyword.get(limits, :protocol_version, "2025-11-25"))
+
       entry = %{
         endpoint_id: endpoint_id,
         identity_fingerprint: identity_fingerprint,
