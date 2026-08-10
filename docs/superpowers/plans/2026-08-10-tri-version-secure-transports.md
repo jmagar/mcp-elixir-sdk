@@ -6,7 +6,7 @@
 
 **Architecture:** A protocol revision registry selects modern or revision-specific legacy adapters without scattering version conditionals. HTTP and stdio each receive a validated policy struct with secure defaults; the transport implementations consume only validated policies and return structured failures. Conformance ledgers and Phoenix integration prove the public claims before version metadata changes.
 
-**Tech Stack:** Elixir 1.17+, OTP, Req 0.7, ExCmd 0.18, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
+**Tech Stack:** Elixir 1.17+, OTP, Req 0.7, erlexec 1.18, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
 
 ## Global Constraints
 
@@ -34,7 +34,7 @@ New production modules:
 - `lib/mcp/transport/streamable_http/security_policy.ex` — validated HTTP policy.
 - `lib/mcp/transport/streamable_http/response_reader.ex` — bounded Req async response consumption.
 - `lib/mcp/transport/stdio/security_policy.ex` — validated subprocess/framing policy.
-- `lib/mcp/transport/stdio/process.ex` — ExCmd-backed demand-driven subprocess owner.
+- `lib/mcp/transport/stdio/process.ex` — platform process adapter with a Unix erlexec backend.
 
 Existing orchestration modules remain responsible for orchestration only:
 
@@ -289,7 +289,7 @@ git add lib/mcp/transport/sse.ex lib/mcp/transport/streamable_http/client.ex lib
 git commit -m "feat(http): bound and harden upstream responses"
 ```
 
-### Task 5: Validated Stdio Policy and Demand-Driven Process Owner
+### Task 5: Validated Stdio Policy and Process-Group Owner
 
 **Files:**
 - Modify: `mix.exs:140-154`
@@ -302,12 +302,12 @@ git commit -m "feat(http): bound and harden upstream responses"
 
 **Interfaces:**
 - Produces: `MCP.Transport.Stdio.SecurityPolicy.default/0`, `gateway/0`, and `new/1`.
-- Produces: `MCP.Transport.Stdio.Process.start_link/1`, `write/2`, and `close/2` wrapping `ExCmd.Process`.
+- Produces: `MCP.Transport.Stdio.Process.start_link/1`, `write/2`, and `close/2` wrapping a platform backend; Unix uses erlexec process groups.
 - Stdio state stores `security_policy`, `process`, bounded `buffer`, and reader task.
 
-- [ ] **Step 1: Add ExCmd 0.18 and write failing policy tests**
+- [ ] **Step 1: Add erlexec 1.18 and write failing policy tests**
 
-Add `{:ex_cmd, "~> 0.18"}` and assert:
+Add `{:erlexec, "~> 1.18"}` and assert:
 
 ```elixir
 assert policy.max_frame_bytes == 1_000_000
@@ -326,11 +326,11 @@ The fixture accepts a mode argument and emits: a partial frame at limit, limit+1
 Run: `mix deps.get && mix test test/mcp/transport/stdio_security_test.exs --seed 0`  
 Expected: missing policy/process modules and current malformed-output behavior fails.
 
-- [ ] **Step 4: Implement policy and ExCmd-backed process owner**
+- [ ] **Step 4: Implement policy and Unix process-group owner**
 
-Launch with `[command | args]`, explicit `env`, `stderr: policy.stderr`, and demand-driven `ExCmd.Process.read/2`. The reader requests at most 65,531 bytes per call and sends chunks to Stdio. `close/2` calls `ExCmd.Process.await_exit/2` and returns its exact exit/kill result.
+Launch the configured executable directly through erlexec with explicit argv, `{env, [clear | entries]}`, `stdin`, independently tagged `stdout` and `stderr`, `monitor`, `kill_group`, and `kill_timeout`. The adapter forwards bounded chunks to Stdio, keeps stderr on a separate diagnostic path, and maps exit/timeout results to stable SDK closure reasons.
 
-Because ExCmd 0.18 supports console, redirect-to-stdout, or discard—but not independently captured stderr—accept only `:console` and `:disable` in the safe policy. Explicitly reject `:redirect_to_stdout` because it corrupts the protocol channel. Gateway defaults to `:disable`; stderr capture can be added only with a primitive that keeps streams separate.
+Accept `:capture`, `:console`, and `:disable` stderr policies. `:capture` applies the diagnostic byte/rate bounds before delivering redacted diagnostics; `:console` is explicit inheritance behavior; `:disable` discards stderr without ever joining it to stdout. Reject any option that redirects stderr into stdout because it corrupts the protocol channel.
 
 - [ ] **Step 5: Implement bounded iterative framing and JSON-RPC validation**
 
@@ -338,7 +338,7 @@ Reject before append when `byte_size(buffer) + byte_size(chunk)` exceeds the inc
 
 - [ ] **Step 6: Implement explicit environment and shutdown behavior**
 
-`gateway/0` uses replacement environment only. `default/0` also uses replacement environment with configured values; environment inheritance requires the explicit `environment: :inherit` policy. Close stops writes, closes stdin, awaits exit for the configured 5-second deadline, and reports `{:error, :killed}` distinctly.
+`gateway/0` uses replacement environment only. `default/0` also uses replacement environment with configured values; environment inheritance requires the explicit `environment: :inherit` policy. Close stops writes, closes stdin, requests termination, waits for the configured 5-second deadline, then kills and confirms the entire process group. Report a surviving group as `{:error, :process_group_cleanup_failed}` rather than returning success.
 
 - [ ] **Step 7: Run all stdio tests**
 
