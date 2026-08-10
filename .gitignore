@@ -3,6 +3,7 @@
 /deps/
 /doc/
 /tmp/
+/.worktrees/
 erl_crash.dump
 *.ez
 mcp_elixir_sdk-*.tar
