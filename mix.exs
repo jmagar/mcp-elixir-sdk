@@ -146,6 +146,7 @@ defmodule MCPElixirSDK.MixProject do
     [
       {:jason, "~> 1.4"},
       {:elixir_uuid, "~> 1.2"},
+      {:erlexec, "~> 2.3"},
 
       # Optional: Streamable HTTP transport
       {:req, "~> 0.7", optional: true},

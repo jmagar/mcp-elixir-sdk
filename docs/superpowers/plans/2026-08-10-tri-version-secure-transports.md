@@ -6,7 +6,7 @@
 
 **Architecture:** A protocol revision registry selects modern or revision-specific legacy adapters without scattering version conditionals. HTTP and stdio each receive a validated policy struct with secure defaults; the transport implementations consume only validated policies and return structured failures. Conformance ledgers and Phoenix integration prove the public claims before version metadata changes.
 
-**Tech Stack:** Elixir 1.17+, OTP, Req 0.7, erlexec 1.18, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
+**Tech Stack:** Elixir 1.17+, OTP, Req 0.7, erlexec 2.3, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
 
 ## Global Constraints
 
@@ -305,9 +305,9 @@ git commit -m "feat(http): bound and harden upstream responses"
 - Produces: `MCP.Transport.Stdio.Process.start_link/1`, `write/2`, and `close/2` wrapping a platform backend; Unix uses erlexec process groups.
 - Stdio state stores `security_policy`, `process`, bounded `buffer`, and reader task.
 
-- [ ] **Step 1: Add erlexec 1.18 and write failing policy tests**
+- [ ] **Step 1: Add erlexec 2.3 and write failing policy tests**
 
-Add `{:erlexec, "~> 1.18"}` and assert:
+Add `{:erlexec, "~> 2.3"}` and assert:
 
 ```elixir
 assert policy.max_frame_bytes == 1_000_000
@@ -338,7 +338,7 @@ Reject before append when `byte_size(buffer) + byte_size(chunk)` exceeds the inc
 
 - [ ] **Step 6: Implement explicit environment and shutdown behavior**
 
-`gateway/0` uses replacement environment only. `default/0` also uses replacement environment with configured values; environment inheritance requires the explicit `environment: :inherit` policy. Close stops writes, closes stdin, requests termination, waits for the configured 5-second deadline, then kills and confirms the entire process group. Report a surviving group as `{:error, :process_group_cleanup_failed}` rather than returning success.
+`gateway/0` uses replacement environment only. To preserve existing SDK startup calls, `default/0` inherits the environment; hardened consumers opt into `gateway/0` or explicit `environment: :replace`. Close stops writes, closes stdin, requests termination, waits for the configured 5-second deadline, then kills and confirms the entire process group. Report a surviving group as `{:error, :process_group_cleanup_failed}` rather than returning success.
 
 - [ ] **Step 7: Run all stdio tests**
 
