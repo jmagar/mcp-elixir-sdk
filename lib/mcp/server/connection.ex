@@ -59,7 +59,6 @@ defmodule MCP.Server.Connection do
     :subscription_endpoint,
     :protocol_mode,
     :legacy_status,
-    :legacy_protocol_version,
     :legacy_client_info,
     :legacy_client_capabilities,
     :legacy_log_level,
@@ -429,7 +428,6 @@ defmodule MCP.Server.Connection do
              state
              | protocol_mode: :legacy,
                legacy_status: :initialized,
-               legacy_protocol_version: initialize.protocol_version,
                legacy_client_info: initialize.client_info,
                legacy_client_capabilities: initialize.capabilities
            }}

@@ -8,7 +8,7 @@ defmodule MCP.Protocol do
 
   alias MCP.Protocol.Revision
 
-  @protocol_version "2026-07-28"
+  @protocol_version Revision.preferred()
   @jsonrpc_version "2.0"
 
   @type json_value ::
