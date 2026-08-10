@@ -30,6 +30,7 @@ mix deps.unlock --check-unused
 git diff --check
 jq empty conformance/scenarios.json
 jq empty conformance/compatibility-2025-11-25.json
+jq empty conformance/compatibility-2025-06-18.json
 ```
 
 Do not use sleeps to coordinate process tests. Start owned processes with
@@ -39,10 +40,11 @@ and assert termination with monitors.
 ## Official conformance
 
 The harness is pinned to `@modelcontextprotocol/conformance@0.2.0-alpha.11`.
-Start the server adapter:
+Select the exact revision and start the server adapter:
 
 ```bash
-mix run --no-halt conformance/server_adapter.exs 43001
+MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 \
+  mix run --no-halt conformance/server_adapter.exs 43001
 ```
 
 Then run both server release denominators:
@@ -67,9 +69,22 @@ npx --no-install conformance client \
   --spec-version 2026-07-28
 ```
 
+For the frozen November requirement set, explicitly pass the wire revision to
+the adapter because harness `0.2.0-alpha.11` does not forward the requirement
+revision to child-process environments:
+
+```bash
+npx --no-install conformance client \
+  --command 'env MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 ERL_LIBS=_build/dev/lib elixir conformance/client_adapter.exs' \
+  --requirements 2025-11-25
+```
+
+The pinned harness has no `2025-06-18` requirement set. The June ledger records
+that limitation separately from SDK-owned tri-version integration coverage.
+
 `conformance/scenarios.json` records the 2026 release matrix and
-`conformance/compatibility-2025-11-25.json` records the legacy compatibility
-denominator. Authorization-profile scenarios remain outside the SDK transport
+the two `conformance/compatibility-*.json` files record the legacy evidence and
+limitations. Authorization-profile scenarios remain outside the SDK transport
 scope. Do not replace the pin with `latest` in release evidence.
 
 ## Package inspection

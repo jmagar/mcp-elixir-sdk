@@ -177,7 +177,8 @@ defmodule MCPElixirSDK.MixProject do
       {"mix", ["deps.unlock", "--check-unused"]},
       {"git", ["diff", "--check"]},
       {"jq", ["empty", "conformance/scenarios.json"]},
-      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]}
+      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]},
+      {"jq", ["empty", "conformance/compatibility-2025-06-18.json"]}
     ]
     |> Enum.each(&run_command!/1)
   end

@@ -392,6 +392,8 @@ defmodule MCP.Client do
       subscriptions: %{}
     }
 
+    transport_spec = put_transport_protocol_version(transport_spec, state.protocol_version)
+
     case start_transport(transport_spec) do
       {:ok, module, pid} -> {:ok, %{state | transport_module: module, transport_pid: pid}}
       {:error, reason} -> {:stop, reason}
@@ -2132,6 +2134,15 @@ defmodule MCP.Client do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp put_transport_protocol_version(
+         {MCP.Transport.StreamableHTTP.Client, opts},
+         protocol_version
+       ) do
+    {MCP.Transport.StreamableHTTP.Client, Keyword.put(opts, :protocol_version, protocol_version)}
+  end
+
+  defp put_transport_protocol_version(transport_spec, _protocol_version), do: transport_spec
 
   defp build_client_info(%Implementation{} = impl), do: impl
 

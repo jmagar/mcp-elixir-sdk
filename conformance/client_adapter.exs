@@ -1,5 +1,7 @@
 #!/usr/bin/env elixir
 
+{:ok, _applications} = Application.ensure_all_started(:mcp_elixir_sdk)
+
 defmodule MCP.Conformance.ClientAdapter do
   @moduledoc false
 
@@ -98,6 +100,7 @@ defmodule MCP.Conformance.ClientAdapter do
 
   defp start_client(url) do
     protocol_version = System.get_env("MCP_CONFORMANCE_PROTOCOL_VERSION") || "2026-07-28"
+    {:ok, _revision} = MCP.Protocol.Revision.fetch(protocol_version)
 
     Client.start_link(
       transport: {MCP.Transport.StreamableHTTP.Client, url: url, headers: []},
