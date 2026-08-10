@@ -40,6 +40,22 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
              SecurityPolicy.validate_url(policy, "https://example.com/mcp")
   end
 
+  test "the documented localhost endpoint is treated as a loopback destination" do
+    policy = SecurityPolicy.gateway()
+
+    for host <- ["localhost", "LocalHost", "localhost.", "api.localhost"] do
+      assert {:ok, %URI{scheme: "http"}} =
+               SecurityPolicy.validate_url(policy, "http://#{host}:8080/mcp")
+    end
+
+    # A name that merely ends in the same letters is not loopback.
+    assert {:error, {:invalid_url, {:insecure_scheme, "http"}}} =
+             SecurityPolicy.validate_url(policy, "http://notlocalhost:8080/mcp")
+
+    assert {:error, {:invalid_url, {:insecure_scheme, "http"}}} =
+             SecurityPolicy.validate_url(policy, "http://localhost.example.com:8080/mcp")
+  end
+
   test "policy construction rejects non-positive bounds and unknown options" do
     assert {:error, {:invalid_security_policy, {:max_response_bytes, 0}}} =
              SecurityPolicy.new(max_response_bytes: 0)

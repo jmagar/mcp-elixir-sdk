@@ -69,7 +69,7 @@ defmodule MCP.Client do
   @default_notification_concurrency 32
   @default_server_request_concurrency 32
   @default_server_request_timeout 30_000
-  @protocol_version "2026-07-28"
+  @protocol_version Revision.preferred()
   @subscription_ack_method "notifications/subscriptions/acknowledged"
 
   # Client state is intentionally explicit so lifecycle ownership remains inspectable.
@@ -954,8 +954,12 @@ defmodule MCP.Client do
     end
   end
 
+  # Only a successful response continues the fallback ladder. Any other error
+  # than the unsupported-version code matched above is a real failure (auth,
+  # internal, transport) and must reach the generic error path instead of being
+  # rewritten into an empty result.
   defp finish_response(
-         %Response{result: result},
+         %Response{error: nil, result: result},
          from,
          {:initialize_fallback, _rest, _deadline},
          state
@@ -978,7 +982,7 @@ defmodule MCP.Client do
     end
   end
 
-  defp finish_response(%Response{result: result}, from, :initialize, state) do
+  defp finish_response(%Response{error: nil, result: result}, from, :initialize, state) do
     case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do
@@ -992,7 +996,12 @@ defmodule MCP.Client do
     end
   end
 
-  defp finish_response(%Response{result: result}, from, {:reinitialize, original}, state) do
+  defp finish_response(
+         %Response{error: nil, result: result},
+         from,
+         {:reinitialize, original},
+         state
+       ) do
     case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do

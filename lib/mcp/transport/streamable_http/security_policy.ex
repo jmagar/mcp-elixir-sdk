@@ -143,6 +143,18 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   end
 
   defp loopback?(host) do
+    loopback_name?(host) or loopback_address?(host)
+  end
+
+  # RFC 6761 reserves `localhost` (and any name under it) to resolve to a
+  # loopback address, so the documented `http://localhost:8080/mcp` endpoint is
+  # a loopback destination even though it is not an IP literal.
+  defp loopback_name?(host) do
+    normalized = host |> String.downcase() |> String.trim_trailing(".")
+    normalized == "localhost" or String.ends_with?(normalized, ".localhost")
+  end
+
+  defp loopback_address?(host) do
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, {127, _, _, _}} -> true
       {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
