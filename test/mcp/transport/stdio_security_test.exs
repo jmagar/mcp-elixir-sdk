@@ -26,6 +26,18 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert %{SecurityPolicy.default() | environment: :replace} == SecurityPolicy.gateway()
   end
 
+  test "client rejects malformed security policy structs" do
+    policy = %SecurityPolicy{max_frames_per_turn: 0}
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:invalid_security_policy, {:max_frames_per_turn, 0}}} =
+             Stdio.start_link(
+               owner: self(),
+               command: System.find_executable("true"),
+               security_policy: policy
+             )
+  end
+
   test "policy rejects invalid values" do
     assert {:error, {:invalid_security_policy, {:max_frame_bytes, 0}}} =
              SecurityPolicy.new(max_frame_bytes: 0)

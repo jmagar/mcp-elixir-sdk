@@ -350,7 +350,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defp security_policy(opts) do
     case Keyword.get(opts, :security_policy) do
       nil -> {:ok, SecurityPolicy.default()}
-      %SecurityPolicy{} = policy -> {:ok, policy}
+      %SecurityPolicy{} = policy -> SecurityPolicy.new(policy)
       policy_opts when is_list(policy_opts) -> SecurityPolicy.new(policy_opts)
       invalid -> {:error, {:invalid_security_policy, invalid}}
     end

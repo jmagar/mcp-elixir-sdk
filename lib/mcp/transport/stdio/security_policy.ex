@@ -43,8 +43,17 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   @spec gateway() :: t()
   def gateway, do: %__MODULE__{environment: :replace}
 
-  @spec new(keyword()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
-  def new(opts \\ []) when is_list(opts) do
+  @spec new(keyword() | t()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
+  def new(opts \\ [])
+
+  def new(%__MODULE__{} = policy) do
+    case validate(policy) do
+      :ok -> {:ok, policy}
+      {:error, reason} -> {:error, {:invalid_security_policy, reason}}
+    end
+  end
+
+  def new(opts) when is_list(opts) do
     unknown = Keyword.keys(opts) -- @keys
 
     with [] <- unknown,

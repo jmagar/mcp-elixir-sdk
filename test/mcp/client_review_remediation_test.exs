@@ -310,6 +310,18 @@ defmodule MCP.ClientReviewRemediationTest do
     assert {:error, {:close_failed, _reason}} = Connection.close(self())
   end
 
+  test "HTTP clients reject malformed security policy structs" do
+    policy = %SecurityPolicy{max_response_bytes: 0}
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:invalid_security_policy, {:max_response_bytes, 0}}} =
+             HTTPClient.start_link(
+               owner: self(),
+               url: "http://127.0.0.1:1",
+               security_policy: policy
+             )
+  end
+
   test "client and server close propagate transport close failures" do
     client =
       start_supervised!(
