@@ -27,6 +27,7 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     assert initialize_result["protocolVersion"] == @legacy_version
 
     send_message(client_transport, notification("notifications/initialized"))
+    BridgeTransport.sync(client_transport)
     _ = :sys.get_state(server)
     send_message(client_transport, notification("notifications/roots/list_changed"))
     send_message(client_transport, request(2, "tools/list", %{}))
@@ -320,6 +321,7 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     send_message(client_transport, initialize(1, capabilities))
     assert_receive {:mcp_message, %{"id" => 1, "result" => _}}, 1_000
     send_message(client_transport, notification("notifications/initialized"))
+    BridgeTransport.sync(client_transport)
     _ = :sys.get_state(server)
     {server, client_transport}
   end

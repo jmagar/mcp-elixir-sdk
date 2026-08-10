@@ -13,7 +13,10 @@ defmodule MCP.Test.FailableTransport do
   @impl true
   def close(pid), do: GenServer.stop(pid, :normal)
 
-  def inject(pid, message), do: GenServer.cast(pid, {:inject, message})
+  # Synchronous so a caller can rely on the message having reached the owner's
+  # mailbox before it observes the owner. A cast lets a later `:sys.get_state`
+  # on the owner overtake the injected message.
+  def inject(pid, message), do: GenServer.call(pid, {:inject, message})
   def fail(pid, reason), do: GenServer.call(pid, {:fail, reason})
 
   @impl true
@@ -38,9 +41,8 @@ defmodule MCP.Test.FailableTransport do
   def handle_call({:fail, reason}, _from, state),
     do: {:reply, :ok, %{state | failure: reason}}
 
-  @impl true
-  def handle_cast({:inject, message}, state) do
+  def handle_call({:inject, message}, _from, state) do
     send(state.owner, {:mcp_message, message})
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 end

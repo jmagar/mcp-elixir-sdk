@@ -59,6 +59,20 @@ defmodule MCP.Test.BridgeTransport do
     :exit, _ -> :ok
   end
 
+  @doc """
+  Blocks until every message already sent through `pid` has reached the peer
+  owner's mailbox.
+
+  `send_message/2` returns once the peer has been *cast* to, so a caller that
+  immediately inspects the peer's owner can overtake its own message. Draining
+  the peer closes that window.
+  """
+  def sync(pid) do
+    peer = GenServer.call(pid, :peer)
+    _ = :sys.get_state(peer)
+    :ok
+  end
+
   # --- GenServer ---
 
   @impl GenServer
@@ -73,6 +87,10 @@ defmodule MCP.Test.BridgeTransport do
 
   def handle_call({:set_owner, owner}, _from, state) do
     {:reply, :ok, %{state | owner: owner}}
+  end
+
+  def handle_call(:peer, _from, state) do
+    {:reply, state.peer, state}
   end
 
   def handle_call({:send_message, _message}, _from, %{closed: true} = state) do
