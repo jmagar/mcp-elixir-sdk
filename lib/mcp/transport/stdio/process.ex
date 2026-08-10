@@ -129,15 +129,14 @@ defmodule MCP.Transport.Stdio.Process do
   defp direct_children(pid) do
     path = "/proc/#{pid}/task/#{pid}/children"
 
-    case File.read(path) do
-      {:ok, contents} ->
-        contents
-        |> String.split()
-        |> Enum.flat_map(&parse_child_pid/1)
+    task_children =
+      case File.read(path) do
+        {:ok, contents} -> contents |> String.split() |> Enum.flat_map(&parse_child_pid/1)
+        {:error, _reason} -> []
+      end
 
-      {:error, _reason} ->
-        []
-    end
+    (task_children ++ process_table_children(pid))
+    |> Enum.uniq()
   end
 
   defp parse_child_pid(value) do
@@ -145,6 +144,31 @@ defmodule MCP.Transport.Stdio.Process do
       {child, ""} -> [child]
       _invalid -> []
     end
+  end
+
+  defp process_table_children(parent_pid) do
+    "/proc/[0-9]*/status"
+    |> Path.wildcard()
+    |> Enum.flat_map(fn path ->
+      with {:ok, status} <- File.read(path),
+           {pid, ""} <- status_field_integer(status, "Pid:"),
+           {^parent_pid, ""} <- status_field_integer(status, "PPid:") do
+        [pid]
+      else
+        _unavailable -> []
+      end
+    end)
+  end
+
+  defp status_field_integer(status, field) do
+    status
+    |> String.split("\n")
+    |> Enum.find_value(:error, fn line ->
+      case String.split(line, ~r/\s+/, trim: true) do
+        [^field, value] -> Integer.parse(value)
+        _other -> nil
+      end
+    end)
   end
 
   defp ensure_descendants_stopped({:error, _reason} = error, _descendants, _timeout), do: error

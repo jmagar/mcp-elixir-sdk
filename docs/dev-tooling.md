@@ -92,3 +92,24 @@ scope. Do not replace the pin with `latest` in release evidence.
 `mix hex.build` must succeed without generated docs or build output entering the
 archive. Inspect the resulting tarball before release and verify the README,
 license, changelog, full `docs/` package, and conformance ledger are present.
+
+## Actual-Unraid stdio cleanup probe
+
+The release probe is `test/runtime/unraid_stdio_cleanup.exs`. On 2026-08-10 it
+was run from the built Hex archive on `devbox` as user `jmagar`, Linux
+`6.18.38-Unraid`, inside a disposable `elixir:1.18.4` container with Docker
+`--init`. The host has no native Mix installation.
+
+The first run exposed that `/proc/<pid>/task/<pid>/children` alone did not find
+a descendant that created its own process group. `MCP.Transport.Stdio.Process`
+now cross-checks the complete `/proc/*/status` parent table before shutdown.
+After rebuilding the archive, the probe reported:
+
+```text
+unraid stdio cleanup passed root_pid=335 root_pgid=335 descendant_pid=415 descendant_pgid=415
+```
+
+The separate process-group IDs are significant: cleanup did not pass merely
+because erlexec signalled the root command's process group. The temporary
+container, package directory, and images pulled solely for the probe were
+removed afterward.
