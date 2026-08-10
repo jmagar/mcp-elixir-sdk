@@ -37,7 +37,12 @@ metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
 exist until the branch-finishing and publication workflows complete. Until
 then, use only the exact verified release commit reported with the candidate.
 
-Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
+Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
+is supported across `>= 0.5.0 and < 0.8.0`.
+
+**Platform support: Unix only.** `erlexec`, which supervises stdio subprocesses in
+process groups, is a required dependency whose NIF does not build on Windows, so
+the package does not compile there.
 
 ## Client
 

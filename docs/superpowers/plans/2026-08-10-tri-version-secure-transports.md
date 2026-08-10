@@ -305,6 +305,16 @@ git commit -m "feat(http): bound and harden upstream responses"
 - Produces: `MCP.Transport.Stdio.Process.start_link/1`, `write/2`, and `close/2` wrapping a platform backend; Unix uses erlexec process groups.
 - Stdio state stores `security_policy`, `process`, bounded `buffer`, and reader task.
 
+**Platform boundary:** `erlexec` is an unconditional (non-optional) dependency and
+its NIF builds only on Unix. That makes the whole SDK — not just the stdio client
+transport — un-compilable on Windows. It is deliberately *not* marked
+`optional: true`: for a library, an optional dependency is not installed
+transitively, so every Unix consumer would silently lose subprocess supervision
+unless they added `erlexec` themselves. Restoring Windows support requires a
+non-Unix subprocess backend behind `MCP.Transport.Stdio.Process`, not a
+dependency-metadata change. Until that exists Windows is unsupported outright:
+the dependency fails to compile, so no part of the SDK is reachable there.
+
 - [ ] **Step 1: Add erlexec 2.3 and write failing policy tests**
 
 Add `{:erlexec, "~> 2.3"}` and assert:

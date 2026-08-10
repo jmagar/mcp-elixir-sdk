@@ -222,6 +222,12 @@ The SDK supports Req `>= 0.5.0 and < 0.8.0`, allowing Phoenix's Req 0.5 lock to 
 Integration compiles against Phoenix's real lock and exercises the lowest and highest
 supported Req releases.
 
+This repository's CI resolves a single Req version — whatever `mix.lock` pins — so the
+declared floor is proven by the Phoenix integration worktree rather than by an SDK CI
+lane. Anything that would narrow the range (a Req API this SDK relies on that 0.5 lacks)
+must therefore be caught there; a green SDK build alone is not evidence that the floor
+still resolves.
+
 ## 8. Verification and conformance
 
 ### 8.1 Protocol matrix
@@ -295,6 +301,6 @@ no release coordinate is created before production evidence exists.
   <https://modelcontextprotocol.io/specification/2025-11-25/basic/transports>
 - MCP 2026-07-28 release and stateless lifecycle:
   <https://blog.modelcontextprotocol.io/posts/2026-07-28/>
-- Req 0.7 request, streaming, redirect, and retry options:
+- Req request, streaming, redirect, and retry options (0.5 through 0.7):
   <https://hexdocs.pm/req/Req.html>
 - Phoenix gateway contract: `../phoenix/docs/mcp-gateway/SPEC.md`

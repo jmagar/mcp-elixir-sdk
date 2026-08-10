@@ -95,15 +95,27 @@ license, changelog, full `docs/` package, and conformance ledger are present.
 
 ## Actual-Unraid stdio cleanup probe
 
-The release probe is `test/runtime/unraid_stdio_cleanup.exs`. On 2026-08-10 it
+The release probe is `test/runtime/unraid_stdio_cleanup.exs`, run as:
+
+```bash
+mix run --no-start test/runtime/unraid_stdio_cleanup.exs -- test/support/adversarial_stdio_server.exs
+```
+
+`--no-start` is required when `MCP_ERLEXEC_ALLOW_ROOT=1`: erlexec reads its root
+configuration at application start, so the probe must configure it before the
+application tree comes up.
+
+On 2026-08-10 it
 was run from the built Hex archive on `devbox` as user `jmagar`, Linux
 `6.18.38-Unraid`, inside a disposable `elixir:1.18.4` container with Docker
 `--init`. The host has no native Mix installation.
 
 The first run exposed that `/proc/<pid>/task/<pid>/children` alone did not find
 a descendant that created its own process group. The internal stdio process
-owner now cross-checks the complete `/proc/*/status` parent table before shutdown.
-After rebuilding the archive, the probe reported:
+owner now cross-checks the complete `/proc/*/stat` parent table before shutdown,
+capturing each descendant's parent and start time from a single read so a PID
+recycled mid-scan cannot be mistaken for a descendant. After rebuilding the
+archive, the probe reported:
 
 ```text
 unraid stdio cleanup passed root_pid=335 root_pgid=335 descendant_pid=415 descendant_pgid=415
