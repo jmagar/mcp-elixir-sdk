@@ -4,7 +4,7 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
   alias MCP.Transport.StreamableHTTP.Client
   alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
-  test "secure defaults bound requests and reject redirects and retries" do
+  test "secure defaults bound request timeouts and response sizes" do
     policy = SecurityPolicy.default()
 
     assert policy.connect_timeout == 5_000

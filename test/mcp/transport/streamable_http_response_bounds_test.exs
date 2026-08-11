@@ -146,9 +146,12 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
     secret = "sentinel-secret-response-body"
     url = start_response_server(secret, content_type: "application/json")
     client = start_supervised!({Client, owner: self(), url: url})
+    previous_level = Logger.level()
+    Logger.configure(level: :debug)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
 
     log =
-      capture_log(fn ->
+      capture_log([level: :debug], fn ->
         assert {:error, :json_decode_error} =
                  Client.send_message(client, %{
                    "jsonrpc" => "2.0",

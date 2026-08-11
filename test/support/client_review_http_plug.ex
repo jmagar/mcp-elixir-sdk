@@ -41,6 +41,8 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
 
       receive do
         :release_post -> :ok
+      after
+        2_000 -> :ok
       end
     end
 
