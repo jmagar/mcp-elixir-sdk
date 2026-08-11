@@ -125,3 +125,58 @@ The separate process-group IDs are significant: cleanup did not pass merely
 because erlexec signalled the root command's process group. The temporary
 container, package directory, and images pulled solely for the probe were
 removed afterward.
+
+## Sandboxed-upstream stdio probe
+
+`test/runtime/microsandbox_stdio_roundtrip.exs` runs a real third-party MCP
+server inside a [microsandbox](https://docs.microsandbox.dev/) microVM and
+drives it through this SDK's stdio transport:
+
+```bash
+mix run --no-start test/runtime/microsandbox_stdio_roundtrip.exs
+```
+
+Requires `msb` on `PATH` (or `MCP_MSB_BIN`) and a KVM-capable host. The first
+run needs network access: it creates the sandbox and installs
+`@modelcontextprotocol/server-everything` into it. Later runs reuse the warm
+sandbox. `MCP_MSB_SANDBOX` and `MCP_MSB_IMAGE` override the defaults.
+
+The probe exists because three properties cannot be shown by the unit suite:
+
+1. A sandbox is only a different `:command`/`:args`. The transport is unchanged,
+   which is what makes `SecurityPolicy`'s absolute-executable-plus-argv rule
+   compatible with containment wrappers.
+2. Normal close reaps the host launcher **and** the process inside the guest,
+   which the host-side `/proc` descendant sweep cannot see.
+3. A SIGKILLed BEAM — where `terminate/2` never runs — also leaves no orphan on
+   either side. `unraid_stdio_cleanup.exs` only covers the close path.
+
+It also pins two facts that are easy to regress into:
+
+- The shared `exec-port` must **survive** one upstream closing. erlexec
+  registers one per BEAM (`deps/erlexec/src/exec.erl:544`), so tearing it down
+  with a single upstream would kill every sibling upstream.
+- The microVM itself is **not** reclaimed by any teardown path. `msb create` is
+  persistent by design, so a consumer must stop it explicitly and use
+  `--idle-timeout` as the backstop for the SIGKILL case. The probe asserts the
+  VM is still running at the end so the obligation stays visible.
+
+On 2026-08-10 a run on Linux 6.17 with nested KVM reported:
+
+```text
+roundtrip passed server=mcp-servers/everything v2.0.0 era=2025-11-25 tools=13 sum="The sum of 17 and 25 is 42."
+normal close passed launcher=3781715 reaped, shared exec_port=3781658 survived
+sigkill cleanup passed beam=3781818 launcher=3781990 exec_port=3781936
+microvm survived both teardowns; consumers must stop it explicitly
+```
+
+The negotiated `2025-11-25` is incidental evidence for the fallback ladder: the
+reference server has no `2026-07-28` support, so the session was only reachable
+by walking down to a shared revision. Host teardown after SIGKILL is not
+instantaneous — `exec-port` observes a broken pipe rather than a signal — so the
+orphan assertions allow 60s.
+
+Every buffered `msb` call in the probe redirects stdin from `/dev/null`.
+Buffered `msb exec` drains stdin to EOF before running anything and an Erlang
+port never closes the child's stdin, so the pair deadlocks; the MCP launch path
+avoids this by using `msb exec --stream`.
