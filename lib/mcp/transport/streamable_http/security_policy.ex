@@ -57,6 +57,11 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   @spec gateway() :: t()
   def gateway, do: default()
 
+  @doc "Returns the effective body limit while response compression is disabled."
+  @spec response_limit(t()) :: pos_integer()
+  def response_limit(%__MODULE__{} = policy),
+    do: min(policy.max_response_bytes, policy.max_decoded_response_bytes)
+
   @spec new(keyword() | t()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
   def new(opts \\ [])
 

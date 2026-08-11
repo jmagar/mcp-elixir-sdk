@@ -42,7 +42,7 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
         # Compression is disabled, so the wire and decoded bodies are the same
         # byte stream. Enforce the stricter configured boundary now rather than
         # accepting a decoded-limit option that has no effect.
-        response_limit = min(policy.max_response_bytes, policy.max_decoded_response_bytes)
+        response_limit = SecurityPolicy.response_limit(policy)
 
         with :ok <- validate_content_length(response, response_limit),
              {:ok, body} <-

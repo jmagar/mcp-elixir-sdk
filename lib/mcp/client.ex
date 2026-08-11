@@ -93,6 +93,7 @@ defmodule MCP.Client do
     :tool_schema_index,
     :tool_schema_order,
     :tool_schema_limit,
+    :transport_failure,
     :pending_requests,
     :next_id,
     :request_timeout,
@@ -304,6 +305,9 @@ defmodule MCP.Client do
   @doc "Returns the current client status (`:ready` or `:closed`)."
   def status(client), do: GenServer.call(client, :get_status)
 
+  @doc "Returns the most recent transport cleanup failure, if one occurred."
+  def transport_failure(client), do: GenServer.call(client, :get_transport_failure)
+
   @doc "Returns the discovered server capabilities (after `connect/1`)."
   def server_capabilities(client), do: GenServer.call(client, :get_server_capabilities)
 
@@ -442,6 +446,9 @@ defmodule MCP.Client do
   def handle_call(:close, _from, state), do: do_close(state)
   def handle_call(:get_transport, _from, state), do: {:reply, state.transport_pid, state}
   def handle_call(:get_status, _from, state), do: {:reply, state.status, state}
+
+  def handle_call(:get_transport_failure, _from, state),
+    do: {:reply, state.transport_failure, state}
 
   def handle_call(:get_server_capabilities, _from, state),
     do: {:reply, state.server_capabilities, state}
@@ -618,6 +625,12 @@ defmodule MCP.Client do
   end
 
   def handle_info({:mcp_transport_closed, reason}, state) do
+    reason =
+      case state.transport_failure do
+        nil -> reason
+        cleanup_reason -> {:cleanup_failed, cleanup_reason, reason}
+      end
+
     state = fail_all_operations(state, {:transport_closed, reason})
 
     Enum.each(state.subscriptions, fn {_id, subscription} ->
@@ -626,6 +639,11 @@ defmodule MCP.Client do
     end)
 
     {:noreply, %{state | status: :closed, subscriptions: %{}}}
+  end
+
+  def handle_info({:mcp_transport_cleanup_failed, reason}, state) do
+    Logger.error("MCP transport cleanup failed: #{inspect(reason)}")
+    {:noreply, %{state | transport_failure: reason}}
   end
 
   def handle_info({:mcp_transport_stderr, data}, state) do

@@ -65,11 +65,26 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
           else: default_post_response(conn, message, opts)
 
       "subscriptions/listen" ->
-        if Keyword.has_key?(opts, :subscription_body),
-          do: stream_body(conn, Keyword.fetch!(opts, :subscription_body)),
-          else: default_post_response(conn, message, opts)
+        subscription_response(conn, message, opts)
 
       _method ->
+        default_post_response(conn, message, opts)
+    end
+  end
+
+  defp subscription_response(conn, message, opts) do
+    cond do
+      Keyword.has_key?(opts, :subscription_status) ->
+        Plug.Conn.send_resp(
+          conn,
+          Keyword.fetch!(opts, :subscription_status),
+          Keyword.fetch!(opts, :subscription_body)
+        )
+
+      Keyword.has_key?(opts, :subscription_body) ->
+        stream_body(conn, Keyword.fetch!(opts, :subscription_body))
+
+      true ->
         default_post_response(conn, message, opts)
     end
   end

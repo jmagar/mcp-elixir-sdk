@@ -310,6 +310,45 @@ defmodule MCP.ClientReviewRemediationTest do
     assert_receive {:mcp_subscription_transport_closed, 9, {:error, :event_too_large}}, 5_000
   end
 
+  test "subscription POST errors enforce the stricter decoded response bound" do
+    body = String.duplicate("x", 65)
+    %{url: url} = start_http_plug(subscription_status: 500, subscription_body: body)
+
+    {:ok, policy} =
+      SecurityPolicy.new(max_response_bytes: 1_000, max_decoded_response_bytes: 64)
+
+    client = start_supervised!({HTTPClient, owner: self(), url: url, security_policy: policy})
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 10,
+      "method" => "subscriptions/listen",
+      "params" => %{}
+    }
+
+    assert :ok = HTTPClient.open_subscription(client, message)
+
+    assert_receive {:mcp_subscription_transport_closed, 10, {:error, {:response_too_large, 64}}},
+                   5_000
+  end
+
+  test "client records and applies transport cleanup failure before closure" do
+    {client, transport} = start_legacy_client()
+    connect_legacy(client, transport)
+
+    request = Task.async(fn -> Client.list_tools(client) end)
+    assert_receive {:client_review_sent, ^transport, %{"method" => "tools/list"}, _}
+
+    send(client, {:mcp_transport_cleanup_failed, :escaped_process})
+    send(client, {:mcp_transport_closed, :normal})
+
+    assert {:error, {:transport_closed, {:cleanup_failed, :escaped_process, :normal}}} =
+             Task.await(request)
+
+    assert Client.transport_failure(client) == :escaped_process
+    assert Client.status(client) == :closed
+  end
+
   test "close APIs do not report success for the wrong process" do
     assert {:error, {:close_failed, _reason}} = Client.close(self())
     assert {:error, {:close_failed, _reason}} = HTTPClient.close(self())

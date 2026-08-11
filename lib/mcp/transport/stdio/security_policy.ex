@@ -1,6 +1,10 @@
 defmodule MCP.Transport.Stdio.SecurityPolicy do
   @moduledoc """
   Validated framing, diagnostics, environment, and shutdown policy for stdio.
+
+  Process-tree cleanup is cooperative: Linux descendants are identified by
+  ancestry and a per-launch inherited marker. A hostile command can discard
+  that marker, so untrusted executables require an external cgroup or sandbox.
   """
 
   defstruct max_frame_bytes: 1_000_000,
@@ -42,6 +46,10 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @spec gateway() :: t()
   def gateway, do: %__MODULE__{environment: :replace}
+
+  @doc "Describes the process-isolation guarantee supplied by this policy."
+  @spec containment_guarantee() :: :cooperative_process_tree_cleanup
+  def containment_guarantee, do: :cooperative_process_tree_cleanup
 
   @spec new(keyword() | t()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
   def new(opts \\ [])

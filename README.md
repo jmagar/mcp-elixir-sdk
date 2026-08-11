@@ -34,9 +34,9 @@ implementation tracks the pinned official schema revision documented in
 
 No production installation coordinate is currently advertised. The package
 metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
-exist until the branch-finishing and publication workflows complete. The
-candidate is therefore not an installable dependency until an immutable tag or
-published Hex coordinate is announced.
+exist until the branch-finishing and publication workflows complete. Evaluation
+may use an immutable Git SHA, but no published production coordinate is
+currently advertised.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
 is supported across `>= 0.5.0 and < 0.8.0`.

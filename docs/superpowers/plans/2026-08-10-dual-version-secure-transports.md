@@ -346,7 +346,7 @@ Reject before append when `byte_size(buffer) + byte_size(chunk)` exceeds the inc
 
 - [ ] **Step 6: Implement explicit environment and shutdown behavior**
 
-`gateway/0` uses replacement environment only. To preserve existing SDK startup calls, `default/0` inherits the environment; hardened consumers opt into `gateway/0` or explicit `environment: :replace`. Close stops writes, closes stdin, requests termination, waits for the configured 5-second deadline, then kills and confirms the entire process group. Report a surviving group as `{:error, :process_group_cleanup_failed}` rather than returning success.
+`gateway/0` uses replacement environment only. To preserve existing SDK startup calls, `default/0` inherits the environment; hardened consumers opt into `gateway/0` or explicit `environment: :replace`. Close stops writes, closes stdin, requests termination, waits for the configured 5-second deadline, then kills and confirms the process group plus cooperatively identified Linux descendants. Report a surviving identified process as `{:error, :process_group_cleanup_failed}` rather than returning success. This is not hostile-code isolation: an executable can discard inherited identity, so untrusted commands require an external cgroup or sandbox.
 
 - [ ] **Step 7: Run all stdio tests**
 

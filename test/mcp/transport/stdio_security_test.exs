@@ -24,6 +24,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert policy.stderr == :disable
     assert policy.environment == :replace
     assert policy.shutdown_timeout == 5_000
+    assert SecurityPolicy.containment_guarantee() == :cooperative_process_tree_cleanup
   end
 
   test "default policy inherits while gateway policy replaces the parent environment" do

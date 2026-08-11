@@ -1056,7 +1056,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         {:stream, %Req.Response{status: status} = response} ->
           case ResponseReader.consume(
                  response,
-                 security_policy.max_response_bytes,
+                 SecurityPolicy.response_limit(security_policy),
                  security_policy.receive_timeout,
                  security_policy.request_timeout
                ) do

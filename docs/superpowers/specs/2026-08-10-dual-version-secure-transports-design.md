@@ -189,13 +189,16 @@ The launcher owns an explicit process-management strategy rather than relying on
 1. stop accepting writes;
 2. request graceful termination;
 3. wait for confirmed direct-child exit up to the graceful deadline;
-4. terminate the configured process group/tree;
+4. terminate the configured process group and cooperatively identified tree;
 5. wait up to the forced deadline;
 6. report success or a structured cleanup failure.
 
 Platform adapters may use different primitives, but must expose identical observable
-semantics. Linux behavior must be tested on the actual Unraid runtime with a fixture that
-spawns descendants.
+semantics. The Unix adapter tracks Linux descendants through ancestry and an inherited
+per-launch marker; a hostile process can discard that identity, so this is not a sandbox
+boundary. Untrusted commands require a cgroup, container, or equivalent external
+containment. Cooperative Linux behavior must be tested on the actual Unraid runtime with
+a fixture that spawns descendants.
 
 ## 6. Compatibility and migration
 
@@ -251,7 +254,9 @@ POST/GET/DELETE policy parity.
 
 Stdio tests cover partial frames at and above the limit, stdout floods, malformed and
 non-JSON-RPC output, stderr floods and redaction, direct argv execution, environment
-isolation, graceful exit, forced exit, descendant cleanup, and cleanup failure reporting.
+isolation, graceful exit, forced exit, cooperative descendant cleanup, and cleanup failure
+reporting. The documented hostile-marker-removal boundary remains external containment's
+responsibility.
 
 ### 8.3 Phoenix integration
 
