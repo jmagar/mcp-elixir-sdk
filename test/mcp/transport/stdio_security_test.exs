@@ -151,11 +151,12 @@ defmodule MCP.Transport.StdioSecurityTest do
     # rather than flushing the buffer in one unbounded pass.
     _transport = start_transport("frame_burst_exit", max_frames_per_turn: 1)
 
-    ids = for _ <- 1..5, do: get_in(receive_message(), ["id"])
-    assert ids == [1, 2, 3, 4, 5]
+    events = for _ <- 1..6, do: receive_transport_event()
 
-    # The close notification must arrive only after the last frame.
-    assert_receive {:mcp_transport_closed, _reason}, 5_000
+    assert Enum.map(events, fn
+             {:frame, message} -> get_in(message, ["id"])
+             {:closed, _reason} -> :closed
+           end) == [1, 2, 3, 4, 5, :closed]
   end
 
   @tag @linux_only
@@ -193,6 +194,15 @@ defmodule MCP.Transport.StdioSecurityTest do
       {:mcp_message, message} -> message
     after
       5_000 -> flunk("timed out waiting for stdio frame")
+    end
+  end
+
+  defp receive_transport_event do
+    receive do
+      {:mcp_message, message} -> {:frame, message}
+      {:mcp_transport_closed, reason} -> {:closed, reason}
+    after
+      5_000 -> flunk("timed out waiting for a stdio transport event")
     end
   end
 

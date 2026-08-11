@@ -24,7 +24,7 @@ WP pin Global v2 · Methodology pin Global v1.
 | [ADR-005](0005-consumer-owned-subscription-supervision.md) | Use consumer-owned supervision for subscriptions | **Accepted** (2026-08-08) | — | — |
 | [ADR-006](0006-no-client-result-cache-in-2.0.md) | Do not cache MCP results in the 2.0 client | **Accepted** (2026-08-08) | — | — |
 | [ADR-007](0007-dual-protocol-era-support.md) | Support both 2025-11-25 and 2026-07-28 in the 2.0 SDK | **Accepted** (2026-08-09) | ADR-002 items 1 and 5; ADR-003 item 5 | — |
-| [ADR-008](0008-tri-version-secure-transports.md) | Dual-version protocol adapters and secure transport policies | **Accepted** (2026-08-10) | — | — |
+| [ADR-008](0008-dual-version-secure-transports.md) | Dual-version protocol adapters and secure transport policies | **Accepted** (2026-08-10) | — | — |
 
 **Next ADR number: ADR-009.**
 

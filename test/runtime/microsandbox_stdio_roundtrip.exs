@@ -87,7 +87,9 @@ defmodule MicrosandboxProbe do
 
   @doc "Whether any process inside the guest is still running the MCP server."
   def guest_server_running? do
-    case msb(["exec", @sandbox, "--", "sh", "-c", "ps -o args | grep #{@server} | grep -v grep"]) do
+    command = "(ps -A -o args 2>/dev/null || ps ax) | grep #{@server} | grep -v grep"
+
+    case msb(["exec", @sandbox, "--", "sh", "-c", command]) do
       {output, 0} -> String.contains?(output, @server)
       _none -> false
     end
@@ -98,7 +100,7 @@ defmodule MicrosandboxProbe do
     with {:ok, stat} <- File.read("/proc/#{os_pid}/stat"),
          # Field 4 is ppid, but the comm field (2) may itself contain spaces and
          # parentheses, so split after the final ')' rather than on whitespace.
-         [_comm, rest] <- String.split(stat, ") ", parts: 2),
+         {:ok, rest} <- stat_fields(stat),
          [_state, ppid | _] <- String.split(rest, " ") do
       String.to_integer(ppid)
     else
@@ -137,13 +139,20 @@ defmodule MicrosandboxProbe do
   defp zombie?(os_pid) do
     case File.read("/proc/#{os_pid}/stat") do
       {:ok, stat} ->
-        case String.split(stat, ") ", parts: 2) do
-          [_comm, rest] -> String.starts_with?(rest, "Z")
+        case stat_fields(stat) do
+          {:ok, rest} -> String.starts_with?(rest, "Z")
           _ -> false
         end
 
       _ ->
         false
+    end
+  end
+
+  defp stat_fields(stat) do
+    case stat |> :binary.matches(") ") |> List.last() do
+      {offset, 2} -> {:ok, binary_part(stat, offset + 2, byte_size(stat) - offset - 2)}
+      nil -> :error
     end
   end
 
@@ -299,7 +308,11 @@ run_parent = fn ->
       {:env, MicrosandboxProbe.child_beam_env(build)}
     ])
 
+  ready_deadline = System.monotonic_time(:millisecond) + 120_000
+
   await_ready = fn await_ready ->
+    remaining = max(ready_deadline - System.monotonic_time(:millisecond), 0)
+
     receive do
       {^port, {:data, {_flag, line}}} ->
         case Regex.run(~r/^READY beam=(\d+) launcher=(\d+) exec_port=(\d+)/, line) do
@@ -314,7 +327,7 @@ run_parent = fn ->
       {^port, {:exit_status, status}} ->
         raise "child probe exited (#{status}) before reporting READY"
     after
-      120_000 -> raise "child probe never reported READY"
+      remaining -> raise "child probe never reported READY"
     end
   end
 

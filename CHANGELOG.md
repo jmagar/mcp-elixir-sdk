@@ -44,6 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stdio descendant cleanup captures each process's parent and start time from a
   single `/proc/<pid>/stat` read, so a PID recycled during the scan cannot be
   signalled as a descendant.
+- Documented that process-tree cleanup covers explicit close and protocol
+  failure, while hostile commands still require OS containment for descendants
+  that escape their process group before a spontaneous root exit.
 - Closing a legacy Streamable HTTP session waits for the session DELETE that the
   security policy already bounds, instead of failing with `:close_failed` after
   an implicit five-second call timeout.

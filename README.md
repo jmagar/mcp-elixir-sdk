@@ -44,6 +44,13 @@ is supported across `>= 0.5.0 and < 0.8.0`.
 process groups, is a required dependency whose NIF does not build on Windows, so
 the package does not compile there.
 
+**Subprocess trust boundary.** Explicit close and protocol-violation shutdown
+terminate the process group and Linux descendants discovered before the root
+exits. If a hostile descendant creates a new session and the root process exits
+spontaneously before cleanup can identify it, the kernel reparents that process
+and the SDK cannot recover its ancestry. Gateways running untrusted commands
+must add an OS containment boundary such as a cgroup or sandbox.
+
 ## Client
 
 ```elixir

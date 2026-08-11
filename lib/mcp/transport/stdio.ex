@@ -261,6 +261,7 @@ defmodule MCP.Transport.Stdio do
 
   defp do_close(%{mode: :server, reader_pid: pid}) when is_pid(pid) do
     Process.exit(pid, :shutdown)
+    :ok
   end
 
   defp do_close(_state), do: :ok

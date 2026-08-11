@@ -107,7 +107,10 @@ launch.
 `MCP.Transport.Stdio.SecurityPolicy` bounds newline frames and stderr capture,
 controls environment inheritance, and fails closed on malformed or non-JSON-RPC
 stdout. The client subprocess owner launches absolute executable plus argv
-without a shell and terminates its process group and discovered Linux descendants.
+without a shell and terminates its process group and discovered Linux descendants
+on explicit close or protocol failure. This is not an OS sandbox: an escaped
+descendant can outlive a root that exits spontaneously, so hostile commands need
+a cgroup or equivalent external containment boundary.
 
 ### Streamable HTTP
 

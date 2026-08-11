@@ -70,7 +70,7 @@ assert {:ok, V2025_11_25} = Revision.fetch("2025-11-25")
 assert {:error, {:unsupported_protocol_version, "2025-06-18"}} = Revision.fetch("2025-06-18")
 assert {:error, {:unsupported_protocol_version, "bogus"}} = Revision.fetch("bogus")
 
-for adapter <- [V2025_11_25, V2025_06_18] do
+for adapter <- [V2025_11_25] do
   params = adapter.initialize_params(%{name: "client", version: "1"}, %{})
   assert params["protocolVersion"] == adapter.version()
   assert adapter.http_session?()
@@ -113,7 +113,7 @@ git commit -m "feat(protocol): add dual-version revision registry"
 - Modify: `lib/mcp/transport/streamable_http/plug.ex:450-610`
 - Modify: `lib/mcp/transport/streamable_http/legacy_session.ex`
 - Modify: `lib/mcp/transport/streamable_http/legacy_session_manager.ex`
-- Test: `test/mcp/tri_version_compatibility_test.exs`
+- Test: `test/mcp/dual_version_security_compatibility_test.exs`
 - Modify: `test/mcp/dual_protocol_compatibility_test.exs`
 - Modify: `test/mcp/server/legacy_protocol_hardening_test.exs`
 
@@ -127,18 +127,18 @@ git commit -m "feat(protocol): add dual-version revision registry"
 Cover this sequence:
 
 ```elixir
-assert Protocol.supported_versions() == [modern, november, june]
-assert initialize_for_explicit(june)["params"]["protocolVersion"] == june
-assert {:ok, %{protocol_version: june}} = connect_after_supported_versions([june])
-assert attempts_after_supported_versions([november, june]) == [modern, november]
+assert Protocol.supported_versions() == [modern, november]
+assert initialize_for_explicit(november)["params"]["protocolVersion"] == november
+assert {:ok, %{protocol_version: november}} = connect_after_supported_versions([november])
+assert attempts_after_supported_versions([november]) == [modern, november]
 ```
 
 Also assert that 401/403, TLS/network errors, malformed JSON, overflow, and timeout do not consume another fallback version.
 
 - [ ] **Step 2: Run focused tests and verify the June cases fail**
 
-Run: `mix test test/mcp/tri_version_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs --seed 0`  
-Expected: June selection/fallback and server initialization fail.
+Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs --seed 0`  
+Expected: dual-version selection, fallback, and server initialization pass.
 
 - [ ] **Step 3: Replace the single legacy constant with adapter selection**
 
@@ -157,14 +157,14 @@ On explicit legacy configuration or supported-version fallback, call `Revision.f
 
 - [ ] **Step 5: Run client, legacy server, and HTTP session tests**
 
-Run: `mix test test/mcp/tri_version_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs test/mcp/client_review_remediation_test.exs test/mcp/server/legacy_protocol_hardening_test.exs test/mcp/transport/legacy_session_hardening_test.exs --seed 0`  
+Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs test/mcp/client_review_remediation_test.exs test/mcp/server/legacy_protocol_hardening_test.exs test/mcp/transport/legacy_session_hardening_test.exs --seed 0`  
 Expected: all pass.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add lib/mcp/client.ex lib/mcp/server/legacy_dispatch.ex lib/mcp/transport/streamable_http/plug.ex lib/mcp/transport/streamable_http/legacy_session.ex lib/mcp/transport/streamable_http/legacy_session_manager.ex test/mcp
-git commit -m "feat(protocol): negotiate all three MCP revisions"
+git commit -m "feat(protocol): negotiate both MCP revisions"
 ```
 
 ### Task 3: Validated HTTP Security Policy
@@ -358,7 +358,7 @@ git add mix.exs mix.lock lib/mcp/transport/stdio.ex lib/mcp/transport/stdio test
 git commit -m "feat(stdio): enforce bounded secure subprocess policies"
 ```
 
-### Task 6: Three-Version Conformance Adapters and Evidence
+### Task 6: Dual-Version Conformance Adapters and Evidence
 
 **Files:**
 - Modify: `conformance/client_adapter.exs`
@@ -408,10 +408,10 @@ Run:
 
 ```bash
 jq empty conformance/scenarios.json conformance/compatibility-2025-11-25.json
-mix run conformance/client_adapter.exs </dev/null
+mix compile --warnings-as-errors
 ```
 
-Expected: JSON validates; adapter exits only according to its documented stdin contract, with no compile error.
+Expected: JSON validates and the adapter compiles without warnings. A runtime adapter smoke test must pass a started loopback server URL as its final argument.
 
 - [ ] **Step 7: Commit**
 
@@ -431,7 +431,7 @@ git commit -m "test(conformance): prove all supported MCP revisions"
 - Modify: `docs/sdk-2.0/contracts.md`
 - Modify: `docs/sdk-2.0/types.md`
 - Modify: `docs/sdk-2.0/runtime-models.md`
-- Create: `docs/adr/0008-tri-version-secure-transports.md`
+- Create: `docs/adr/0008-dual-version-secure-transports.md`
 - Modify: `docs/adr/README.md`
 - Modify: `mix.exs`
 
@@ -440,7 +440,7 @@ git commit -m "test(conformance): prove all supported MCP revisions"
 
 - [ ] **Step 1: Write doctest/public-surface assertions where executable**
 
-Add tests or doctests verifying the README examples compile with all three explicit versions and both policy constructors.
+Add tests or doctests verifying the README examples compile with both explicit versions and both policy constructors.
 
 - [ ] **Step 2: Update architecture, contracts, types, and ADR**
 
@@ -450,7 +450,7 @@ Replace every two-version union with:
 @type protocol_version :: "2026-07-28" | "2025-11-25"
 ```
 
-Document transport limits, failure tags, environment/stderr behavior, and why the three revisions remain isolated.
+Document transport limits, failure tags, environment/stderr behavior, and why the two revisions remain isolated.
 
 - [ ] **Step 3: Update README without claiming an unreleased coordinate**
 

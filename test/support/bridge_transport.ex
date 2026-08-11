@@ -68,9 +68,7 @@ defmodule MCP.Test.BridgeTransport do
   the peer closes that window.
   """
   def sync(pid) do
-    peer = GenServer.call(pid, :peer)
-    _ = :sys.get_state(peer)
-    :ok
+    GenServer.call(pid, :sync)
   end
 
   # --- GenServer ---
@@ -89,8 +87,17 @@ defmodule MCP.Test.BridgeTransport do
     {:reply, :ok, %{state | owner: owner}}
   end
 
-  def handle_call(:peer, _from, state) do
-    {:reply, state.peer, state}
+  def handle_call(:sync, _from, state) do
+    :ok = GenServer.call(state.peer, :barrier)
+    {:reply, :ok, state}
+  end
+
+  def handle_call(:barrier, _from, state) do
+    if state.owner do
+      _ = :sys.get_state(state.owner)
+    end
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:send_message, _message}, _from, %{closed: true} = state) do

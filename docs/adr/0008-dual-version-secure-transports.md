@@ -28,6 +28,9 @@ group plus Linux descendant cleanup.
 
 - Gateway consumers can use the protocol engine and transports without copying
   policy logic, while ordinary SDK consumers may customize validated limits.
+- Process-tree cleanup is complete for explicit close and protocol failure, but
+  does not replace OS containment for a descendant that escapes its group before
+  a spontaneous root exit; untrusted commands require a cgroup or sandbox.
 - Version strings remain binaries and cannot create atoms.
 - The November frozen client `sse-retry` scenario negotiates `2025-03-26`, which
   remains outside the declared support set and is a recorded

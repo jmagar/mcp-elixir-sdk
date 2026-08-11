@@ -245,47 +245,41 @@ defmodule MCP.DualProtocolCompatibilityTest do
   end
 
   test "the SDK client completes a legacy session over real Streamable HTTP" do
-    for version <- [@legacy_version] do
-      config =
-        MCPPlug.init(
-          server_mod: StatelessHandler,
-          server_opts: [server_info: %{name: "legacy-http-server", version: "2.0.0"}],
-          enable_json_response: true
-        )
+    version = @legacy_version
 
-      bandit =
-        start_supervised!(
-          {Bandit, plug: {MCPPlug, config}, ip: {127, 0, 0, 1}, port: 0},
-          id: {:legacy_compat_bandit, version}
-        )
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        server_opts: [server_info: %{name: "legacy-http-server", version: "2.0.0"}],
+        enable_json_response: true
+      )
 
-      {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
+    bandit =
+      start_supervised!(
+        {Bandit, plug: {MCPPlug, config}, ip: {127, 0, 0, 1}, port: 0},
+        id: :legacy_compat_bandit
+      )
 
-      client =
-        start_supervised!(
-          {Client,
-           transport:
-             {MCP.Transport.StreamableHTTP.Client,
-              url: "http://127.0.0.1:#{port}/mcp", protocol_version: version},
-           protocol_version: version,
-           client_info: %{name: "legacy-sdk-client", version: "2.0.0"}},
-          id: {:legacy_compat_client, version}
-        )
+    {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
 
-      assert {:ok, %{protocol_version: ^version}} = Client.connect(client)
-      assert [{session_id, _session}] = MCPPlug.legacy_sessions(config)
-      assert is_binary(session_id)
-      assert {:ok, %{"tools" => tools}} = Client.list_tools(client)
-      assert Enum.any?(tools, &(&1["name"] == "whoami"))
-      assert :ok = Client.close(client)
-      assert MCPPlug.legacy_sessions(config) == []
+    client =
+      start_supervised!(
+        {Client,
+         transport:
+           {MCP.Transport.StreamableHTTP.Client,
+            url: "http://127.0.0.1:#{port}/mcp", protocol_version: version},
+         protocol_version: version,
+         client_info: %{name: "legacy-sdk-client", version: "2.0.0"}},
+        id: :legacy_compat_client
+      )
 
-      # Stop this iteration's listener and client before the next one starts.
-      # Leaving them supervised would keep every previous server bound to its
-      # ephemeral port for the rest of the test and mask per-iteration cleanup.
-      stop_supervised!({:legacy_compat_client, version})
-      stop_supervised!({:legacy_compat_bandit, version})
-    end
+    assert {:ok, %{protocol_version: ^version}} = Client.connect(client)
+    assert [{session_id, _session}] = MCPPlug.legacy_sessions(config)
+    assert is_binary(session_id)
+    assert {:ok, %{"tools" => tools}} = Client.list_tools(client)
+    assert Enum.any?(tools, &(&1["name"] == "whoami"))
+    assert :ok = Client.close(client)
+    assert MCPPlug.legacy_sessions(config) == []
   end
 
   test "default HTTP client falls back from discovery to a legacy server session" do

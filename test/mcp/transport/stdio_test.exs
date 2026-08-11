@@ -107,6 +107,14 @@ defmodule MCP.Transport.StdioTest do
     end
   end
 
+  describe "server mode" do
+    test "close returns the transport contract result" do
+      {:ok, transport} = Stdio.start_link(owner: self(), mode: :server)
+
+      assert :ok = Stdio.close(transport)
+    end
+  end
+
   describe "line buffering" do
     test "handles rapid sequential messages" do
       transport = start_echo_transport()
