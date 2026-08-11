@@ -83,11 +83,12 @@ Each operation has one end-to-end deadline covering transport work, schema
 refresh, and any MRTR resolver invocation. Cache hints are returned to the
 caller but results are never cached by the SDK.
 
-For stdio diagnostics, set transport `stderr: :capture` and provide the client
-an explicit `stderr_handler:` pid or one-argument function. Captured data is
-bounded by the stdio policy and is never logged automatically. Cleanup failures
-are available through `MCP.Client.transport_failure/1`; pending operations fail
-with `{:transport_closed, {:cleanup_failed, cleanup_reason, close_reason}}`.
+For stdio diagnostics, set transport
+`security_policy: [stderr: :capture]` and provide the client an explicit
+`stderr_handler:` pid or one-argument function. Captured data is bounded by the
+stdio policy and is never logged automatically. Cleanup failures are available
+through `MCP.Client.transport_failure/1`; pending operations fail with
+`{:transport_closed, {:cleanup_failed, cleanup_reason, close_reason}}`.
 
 ### Client subscriptions
 
