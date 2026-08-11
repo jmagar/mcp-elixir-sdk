@@ -1,5 +1,9 @@
 # Dual-Version Secure Transports Implementation Plan
 
+**Status:** Completed by PR #2. This retained plan is historical implementation
+evidence; unchecked step markers describe the original execution sequence, not
+outstanding release work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Support MCP `2025-11-25` and `2026-07-28` with version-isolated lifecycles, bounded HTTP and stdio transports, complete conformance evidence, Phoenix verification, and an immutable 2.0 release candidate coordinate.
@@ -49,7 +53,6 @@ Existing orchestration modules remain responsible for orchestration only:
 **Files:**
 - Create: `lib/mcp/protocol/revision.ex`
 - Create: `lib/mcp/protocol/legacy_adapter.ex`
-- Create: `lib/mcp/protocol/legacy/v2025_06_18.ex`
 - Create: `lib/mcp/protocol/legacy/v2025_11_25.ex`
 - Modify: `lib/mcp/protocol.ex:9-29`
 - Test: `test/mcp/protocol/revision_test.exs`
@@ -58,7 +61,7 @@ Existing orchestration modules remain responsible for orchestration only:
 **Interfaces:**
 - Produces: `MCP.Protocol.Revision.supported/0 :: [String.t(), ...]`
 - Produces: `MCP.Protocol.Revision.fetch/1 :: {:ok, :stateless | module()} | {:error, {:unsupported_protocol_version, String.t()}}`
-- Produces: legacy adapter callbacks `version/0`, `initialize_params/2`, `validate_initialize_result/1`, `http_session?/0`, and `project_capabilities/1`.
+- Produces: legacy adapter callbacks `version/0`, `initialize_params/2`, `validate_initialize_result/1`, and `project_capabilities/1`.
 
 - [ ] **Step 1: Write registry and adapter contract tests**
 
@@ -73,7 +76,6 @@ assert {:error, {:unsupported_protocol_version, "bogus"}} = Revision.fetch("bogu
 for adapter <- [V2025_11_25] do
   params = adapter.initialize_params(%{name: "client", version: "1"}, %{})
   assert params["protocolVersion"] == adapter.version()
-  assert adapter.http_session?()
 end
 ```
 
@@ -82,7 +84,7 @@ end
 Run: `mix test test/mcp/protocol/revision_test.exs --seed 0`  
 Expected: compilation failure because `MCP.Protocol.Revision` does not exist.
 
-- [ ] **Step 3: Implement the behavior, registry, and two explicit adapters**
+- [ ] **Step 3: Implement the behavior, registry, and the explicit `2025-11-25` adapter**
 
 Use binary-keyed compile-time maps:
 

@@ -79,7 +79,7 @@ npx --no-install conformance client \
 ```
 
 `conformance/scenarios.json` records the 2026 release matrix and
-the two `conformance/compatibility-*.json` files record the legacy evidence and
+`conformance/compatibility-2025-11-25.json` records the legacy evidence and
 limitations. Authorization-profile scenarios remain outside the SDK transport
 scope. Do not replace the pin with `latest` in release evidence.
 

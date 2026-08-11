@@ -127,6 +127,15 @@ defmodule MCP.Transport.Stdio do
     {:noreply, consume_stderr(state, data)}
   end
 
+  def handle_info(
+        {:stdio_process, process, :cleanup_failed, reason},
+        %{process: process} = state
+      ) do
+    Logger.error("MCP Stdio cleanup failed after subprocess exit: #{inspect(reason)}")
+    send(state.owner, {:mcp_transport_cleanup_failed, reason})
+    {:noreply, state}
+  end
+
   def handle_info({:stdio_process, process, :closed, reason}, %{process: process} = state) do
     # A subprocess that writes a burst and exits leaves the tail of that burst
     # buffered behind a frame-turn boundary, and this notification is already

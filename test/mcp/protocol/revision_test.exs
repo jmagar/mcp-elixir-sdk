@@ -27,7 +27,6 @@ defmodule MCP.Protocol.RevisionTest do
     assert params["protocolVersion"] == V2025_11_25.version()
     assert params["clientInfo"] == %{"name" => "client", "version" => "1.0.0"}
     assert params["capabilities"] == %{}
-    assert V2025_11_25.http_session?()
 
     assert :ok =
              V2025_11_25.validate_initialize_result(%{

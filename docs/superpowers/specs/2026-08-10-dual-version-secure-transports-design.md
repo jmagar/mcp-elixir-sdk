@@ -1,6 +1,6 @@
 # Dual-Version Protocol and Secure Transports Design
 
-**Status:** Approved design, pending implementation plan  
+**Status:** Implemented by PR #2
 **Date:** 2026-08-10  
 **Scope:** `mcp_elixir_sdk` 2.0 client/server protocol support, HTTP and stdio
 transport security, conformance evidence, Phoenix integration, and release identity
@@ -296,4 +296,5 @@ no release coordinate is created before production evidence exists.
   <https://blog.modelcontextprotocol.io/posts/2026-07-28/>
 - Req request, streaming, redirect, and retry options (0.5 through 0.7):
   <https://hexdocs.pm/req/Req.html>
-- Phoenix gateway contract: `../phoenix/docs/mcp-gateway/SPEC.md`
+- Phoenix gateway contract (external integration document):
+  <https://github.com/dinglebear-ai/phoenix/blob/0c2d4c7c6968c34b4f1f49580eec10d6804433ca/docs/mcp-gateway/SPEC.md>

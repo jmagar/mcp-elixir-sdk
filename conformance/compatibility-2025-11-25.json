@@ -7,7 +7,7 @@
     "status": "passed",
     "scenarios": 33,
     "checks": {"passed": 81, "failed": 0, "warnings": 0},
-    "command": "MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 mix run --no-halt conformance/server_adapter.exs 43001 & npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2025-11-25"
+    "command": "sh -c 'set -eu; MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 mix run --no-halt conformance/server_adapter.exs 43001 & server_pid=$!; trap \"kill $server_pid 2>/dev/null || true; wait $server_pid 2>/dev/null || true\" EXIT INT TERM; ready=; for attempt in 1 2 3 4 5 6 7 8 9 10; do if curl -sS -o /dev/null http://127.0.0.1:43001/mcp; then ready=1; break; fi; sleep 1; done; test \"$ready\" = 1; npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2025-11-25'"
   },
   "client": {
     "profile": "requirements:2025-11-25",

@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lossless JSON Schema 2020-12, complete JSON structured-content values, W3C
   trace metadata, and schema-directed routing headers.
 - Pinned official conformance adapters, scenario ledger, and CI release gates.
-  The official November server denominator is 81/81; the legacy ledgers record
-  exact client scenarios and the official harness's absent June denominator.
+  The official November server denominator is 81/81; its compatibility ledger
+  records exact client scenarios, while regression tests explicitly reject the
+  unsupported `2025-06-18` revision.
 
 ### Changed
 

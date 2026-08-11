@@ -34,8 +34,9 @@ implementation tracks the pinned official schema revision documented in
 
 No production installation coordinate is currently advertised. The package
 metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
-exist until the branch-finishing and publication workflows complete. Until
-then, use only the exact verified release commit reported with the candidate.
+exist until the branch-finishing and publication workflows complete. The
+candidate is therefore not an installable dependency until an immutable tag or
+published Hex coordinate is announced.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
 is supported across `>= 0.5.0 and < 0.8.0`.
@@ -44,12 +45,12 @@ is supported across `>= 0.5.0 and < 0.8.0`.
 process groups, is a required dependency whose NIF does not build on Windows, so
 the package does not compile there.
 
-**Subprocess trust boundary.** Explicit close and protocol-violation shutdown
-terminate the process group and Linux descendants discovered before the root
-exits. If a hostile descendant creates a new session and the root process exits
-spontaneously before cleanup can identify it, the kernel reparents that process
-and the SDK cannot recover its ancestry. Gateways running untrusted commands
-must add an OS containment boundary such as a cgroup or sandbox.
+**Subprocess trust boundary.** Explicit close, protocol-violation shutdown, and
+natural root exit terminate the process group and sweep Linux descendants that
+inherit the wrapper's per-launch cleanup marker, including descendants that
+create a new session. A hostile program can deliberately discard inherited
+identity before spawning. Gateways running untrusted commands must therefore
+add an OS containment boundary such as a cgroup or sandbox.
 
 ## Client
 

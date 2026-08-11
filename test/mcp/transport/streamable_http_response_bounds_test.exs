@@ -100,6 +100,15 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
     assert {:ok, "1234"} = ResponseReader.consume(response, 4, 100)
   end
 
+  test "request enforces the stricter decoded response limit" do
+    url = start_response_server(String.duplicate("x", 65), content_type: "application/json")
+
+    {:ok, policy} =
+      SecurityPolicy.new(max_response_bytes: 1_000, max_decoded_response_bytes: 64)
+
+    assert {:error, {:response_too_large, 64}} = ResponseReader.request([url: url], policy)
+  end
+
   test "idle timeout cancels the response" do
     {response, ref} = async_response()
 

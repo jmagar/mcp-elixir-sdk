@@ -12,6 +12,5 @@ defmodule MCP.Protocol.LegacyAdapter do
   @callback initialize_params(map() | struct(), map() | struct()) :: map()
   @callback validate_initialize_result(initialize_result()) ::
               :ok | {:error, {:unexpected_protocol_version, term()}}
-  @callback http_session?() :: boolean()
   @callback project_capabilities(map() | struct()) :: map() | struct()
 end

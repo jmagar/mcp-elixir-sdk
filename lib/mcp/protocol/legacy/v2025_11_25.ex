@@ -29,9 +29,6 @@ defmodule MCP.Protocol.Legacy.V2025_11_25 do
     do: {:error, {:unexpected_protocol_version, Map.get(result, "protocolVersion")}}
 
   @impl true
-  def http_session?, do: true
-
-  @impl true
   def project_capabilities(capabilities), do: capabilities
 
   defp wire_map(value), do: value |> Jason.encode!() |> Jason.decode!()

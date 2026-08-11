@@ -3,7 +3,7 @@ defmodule MCP.Transport.Stdio.Process do
 
   use GenServer
 
-  defstruct [:owner, :exec_pid, :os_pid, :policy, closed?: false]
+  defstruct [:owner, :exec_pid, :os_pid, :policy, :cleanup_marker, closed?: false]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -21,11 +21,19 @@ defmodule MCP.Transport.Stdio.Process do
     args = Keyword.get(opts, :args, [])
     env = Keyword.get(opts, :env, [])
     policy = Keyword.fetch!(opts, :security_policy)
+    cleanup_marker = cleanup_marker()
 
     with :ok <- validate_command(command, args, env),
          {:ok, exec_pid, os_pid} <-
-           :exec.run([command | args], process_options(policy, env)) do
-      {:ok, %__MODULE__{owner: owner, exec_pid: exec_pid, os_pid: os_pid, policy: policy}}
+           :exec.run([command | args], process_options(policy, env, cleanup_marker)) do
+      {:ok,
+       %__MODULE__{
+         owner: owner,
+         exec_pid: exec_pid,
+         os_pid: os_pid,
+         policy: policy,
+         cleanup_marker: cleanup_marker
+       }}
     else
       {:error, reason} -> {:stop, {:process_start_failed, reason}}
     end
@@ -45,7 +53,7 @@ defmodule MCP.Transport.Stdio.Process do
   end
 
   def handle_call(:close, _from, state) do
-    descendants = descendants(state.os_pid)
+    descendants = cleanup_identities(state)
     _ = :exec.send(state.exec_pid, :eof)
 
     result =
@@ -55,7 +63,11 @@ defmodule MCP.Transport.Stdio.Process do
         {:error, reason} -> {:error, {:process_shutdown_failed, reason}}
         _exit_status -> :ok
       end
-      |> ensure_descendants_stopped(descendants, state.policy.shutdown_timeout)
+      |> ensure_processes_stopped(
+        descendants,
+        state.cleanup_marker,
+        state.policy.shutdown_timeout
+      )
 
     {:stop, :normal, result, %{state | closed?: true}}
   end
@@ -73,6 +85,19 @@ defmodule MCP.Transport.Stdio.Process do
 
   def handle_info({:DOWN, os_pid, :process, exec_pid, reason}, state)
       when os_pid == state.os_pid and exec_pid == state.exec_pid do
+    cleanup_result =
+      ensure_processes_stopped(
+        :ok,
+        cleanup_identities(state),
+        state.cleanup_marker,
+        state.policy.shutdown_timeout
+      )
+
+    if match?({:error, _}, cleanup_result) do
+      {:error, cleanup_reason} = cleanup_result
+      send(state.owner, {:stdio_process, self(), :cleanup_failed, cleanup_reason})
+    end
+
     send(state.owner, {:stdio_process, self(), :closed, normalize_exit(reason)})
     {:stop, :normal, %{state | closed?: true}}
   end
@@ -98,7 +123,7 @@ defmodule MCP.Transport.Stdio.Process do
 
   defp valid_env?(_other), do: false
 
-  defp process_options(policy, env) do
+  defp process_options(policy, env, cleanup_marker) do
     kill_timeout_seconds = max(div(policy.shutdown_timeout + 999, 1_000), 1)
 
     [
@@ -109,7 +134,7 @@ defmodule MCP.Transport.Stdio.Process do
       {:group, 0},
       :kill_group,
       {:kill_timeout, kill_timeout_seconds},
-      {:env, environment(policy.environment, env)}
+      {:env, environment(policy.environment, env, cleanup_marker)}
     ]
   end
 
@@ -117,8 +142,13 @@ defmodule MCP.Transport.Stdio.Process do
   defp stderr_option(:console), do: {:stderr, :print}
   defp stderr_option(:disable), do: {:stderr, :null}
 
-  defp environment(:replace, env), do: [:clear | env]
-  defp environment(:inherit, env), do: env
+  defp environment(:replace, env, cleanup_marker), do: [:clear | env] ++ [cleanup_marker]
+  defp environment(:inherit, env, cleanup_marker), do: env ++ [cleanup_marker]
+
+  defp cleanup_marker do
+    suffix = :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
+    {"MCP_STDIO_CLEANUP_#{suffix}", "1"}
+  end
 
   defp normalize_exit(:normal), do: :normal
   defp normalize_exit({:exit_status, status}), do: {:exit_status, :exec.status(status)}
@@ -131,6 +161,35 @@ defmodule MCP.Transport.Stdio.Process do
     |> descendants_from(children)
     |> Enum.uniq()
     |> Enum.map(&{&1, Map.get(start_times, &1)})
+  end
+
+  defp cleanup_identities(state) do
+    Enum.uniq(descendants(state.os_pid) ++ marked_processes(state.cleanup_marker))
+  end
+
+  defp marked_processes({key, value}) do
+    marker = key <> "=" <> value
+
+    "/proc/[0-9]*/environ"
+    |> Path.wildcard()
+    |> Enum.reduce([], fn path, identities ->
+      with {:ok, environment} <- File.read(path),
+           true <- marker_in_environment?(environment, marker),
+           pid_text <- path |> Path.dirname() |> Path.basename(),
+           {pid, ""} <- Integer.parse(pid_text),
+           {:ok, stat} <- File.read("/proc/#{pid}/stat"),
+           fields when is_list(fields) <- stat_fields(stat) do
+        [{pid, Enum.at(fields, 19)} | identities]
+      else
+        _unavailable_or_unmarked -> identities
+      end
+    end)
+  end
+
+  defp marker_in_environment?(environment, marker) do
+    environment
+    |> :binary.split(<<0>>, [:global])
+    |> Enum.member?(marker)
   end
 
   defp descendants_from(pid, children) do
@@ -169,28 +228,25 @@ defmodule MCP.Transport.Stdio.Process do
     end
   end
 
-  defp ensure_descendants_stopped({:error, reason}, descendants, timeout) do
-    case ensure_descendants_stopped(:ok, descendants, timeout) do
+  defp ensure_processes_stopped({:error, reason}, identities, marker, timeout) do
+    case ensure_processes_stopped(:ok, identities, marker, timeout) do
       :ok -> {:error, reason}
       {:error, cleanup_reason} -> {:error, {reason, cleanup_reason}}
     end
   end
 
-  defp ensure_descendants_stopped(:ok, [], _timeout), do: :ok
+  defp ensure_processes_stopped(:ok, identities, marker, timeout) do
+    identities = Enum.uniq(identities ++ marked_processes(marker))
+    signal_alive(identities, :sigterm)
 
-  defp ensure_descendants_stopped(:ok, descendants, timeout) do
-    signal_alive(descendants, :sigterm)
+    _ = wait_until_stopped(identities, min(timeout, 500))
+    remaining = Enum.uniq(identities ++ marked_processes(marker))
+    signal_alive(remaining, :sigkill)
 
-    if wait_until_stopped(descendants, min(timeout, 1_000)) do
+    if wait_until_stopped(remaining, 1_000) and marked_processes(marker) == [] do
       :ok
     else
-      signal_alive(descendants, :sigkill)
-
-      if wait_until_stopped(descendants, 1_000) do
-        :ok
-      else
-        {:error, :process_group_cleanup_failed}
-      end
+      {:error, :process_group_cleanup_failed}
     end
   end
 

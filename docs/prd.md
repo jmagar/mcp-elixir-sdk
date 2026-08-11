@@ -44,7 +44,8 @@ The protocol uses JSON-RPC 2.0 over stateful connections with capability negotia
 - **GenServer** provides lifecycle management for stateful MCP sessions
 - **OTP supervision** provides fault tolerance for long-lived connections
 - **Streams** handle SSE event streams naturally
-- **Ports** provide native subprocess management for stdio transport
+- **erlexec** provides Unix subprocess supervision and process-group shutdown
+  for client-mode stdio transport
 - **Plug/Bandit** can serve Streamable HTTP transport (optional dep)
 
 ### 2.3 Why a Separate Package?

@@ -13,7 +13,7 @@ defmodule MCP.Transport.StdioSecurityTest do
                 else: [skip: "Linux-only process-tree test"]
 
   @fixture Path.expand("../../support/adversarial_stdio_server.exs", __DIR__)
-  @late_fixture Path.expand("../../support/late_descendant_stdio.sh", __DIR__)
+  @escaped_fixture Path.expand("../../support/escaped_descendant_stdio.py", __DIR__)
 
   test "gateway defaults bound frames, close malformed output, and isolate diagnostics" do
     policy = SecurityPolicy.gateway()
@@ -108,14 +108,33 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   @tag @linux_only
-  test "close kills a descendant spawned during termination" do
+  test "natural subprocess exit cleans an escaped descendant" do
+    transport =
+      start_command_transport(
+        System.find_executable("python3"),
+        [@escaped_fixture, "natural_exit"],
+        shutdown_timeout: 500
+      )
+
+    assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
+    assert_receive {:mcp_transport_closed, :normal}, 5_000
+    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+    refute Process.alive?(transport)
+  end
+
+  @tag @linux_only
+  test "close kills an escaped descendant spawned during termination" do
     pid_file =
       Path.join(System.tmp_dir!(), "mcp-late-descendant-#{System.unique_integer([:positive])}")
 
     on_exit(fn -> File.rm(pid_file) end)
 
     transport =
-      start_command_transport("/bin/sh", [@late_fixture, pid_file], shutdown_timeout: 500)
+      start_command_transport(
+        System.find_executable("python3"),
+        [@escaped_fixture, "late_exit", pid_file],
+        shutdown_timeout: 500
+      )
 
     assert_receive {:mcp_message, %{"result" => %{"ready" => true}}}, 5_000
     assert :ok = Stdio.close(transport)

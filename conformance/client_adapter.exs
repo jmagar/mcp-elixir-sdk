@@ -110,7 +110,7 @@ defmodule MCP.Conformance.ClientAdapter do
         {MCP.Transport.StreamableHTTP.Client,
          url: url, headers: [], security_policy: security_policy},
       protocol_version: protocol_version,
-      client_info: %{name: "mcp_elixir_sdk_conformance", version: "2.0.0-dev.2"},
+      client_info: %{name: "mcp_elixir_sdk_conformance", version: "2.0.0-rc.1"},
       client_capabilities: %{
         "sampling" => %{},
         "elicitation" => %{},

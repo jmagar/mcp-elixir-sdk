@@ -35,7 +35,7 @@ protocol_version = System.get_env("MCP_CONFORMANCE_PROTOCOL_VERSION") || "2026-0
 plug =
   MCP.Transport.StreamableHTTP.Plug.new(
     server_mod: MCP.Conformance.ServerHandler,
-    server_opts: [server_info: %{name: "mcp-elixir-sdk", version: "2.0.0-dev.2"}],
+    server_opts: [server_info: %{name: "mcp-elixir-sdk", version: "2.0.0-rc.1"}],
     enable_json_response: false,
     protocol_version: protocol_version,
     subscription_registry: MCP.Conformance.SubscriptionRegistry,

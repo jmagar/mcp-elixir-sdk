@@ -39,11 +39,16 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
         {:stream, response}
 
       {:ok, %Req.Response{} = response} ->
-        with :ok <- validate_content_length(response, policy.max_response_bytes),
+        # Compression is disabled, so the wire and decoded bodies are the same
+        # byte stream. Enforce the stricter configured boundary now rather than
+        # accepting a decoded-limit option that has no effect.
+        response_limit = min(policy.max_response_bytes, policy.max_decoded_response_bytes)
+
+        with :ok <- validate_content_length(response, response_limit),
              {:ok, body} <-
                consume_messages(
                  response,
-                 policy.max_response_bytes,
+                 response_limit,
                  policy.receive_timeout,
                  deadline,
                  0,

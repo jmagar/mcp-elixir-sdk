@@ -176,10 +176,12 @@ empty registry, successful deletion, or session-not-found response.
 
 ## M3 — Stdio transport
 
-`MCP.Transport.Stdio` owns either a port-backed subprocess or an IO device plus
-a frame buffer. It forwards complete newline-delimited JSON messages to its
-owner. In S2, subscriptions do not create new stdio channels; multiple streams
-are multiplexed by JSON-RPC ID, so correlation belongs above framing.
+`MCP.Transport.Stdio` owns either an internal Unix `erlexec` process wrapper or
+an IO device plus a frame buffer. The wrapper applies environment policy,
+process-group shutdown, and bounded cleanup before reporting closure. Stdio
+forwards complete newline-delimited JSON messages to its owner. In S2,
+subscriptions do not create new stdio channels; multiple streams are
+multiplexed by JSON-RPC ID, so correlation belongs above framing.
 
 ## M4 — Immutable server configuration
 
