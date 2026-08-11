@@ -2,7 +2,7 @@
   "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
   "protocolVersion": "2025-11-25",
   "verifiedOn": "2026-08-11",
-  "reviewedCommit": "f330a1eddf60b373bb63ccb8d1e059b2f52880bc",
+  "reviewedCommit": "cb916c5cc6031ad69799676ab4cb928441ce5daf",
   "server": {
     "profile": "requirements:2025-11-25",
     "status": "passed",
