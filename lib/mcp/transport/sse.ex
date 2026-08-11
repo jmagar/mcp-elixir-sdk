@@ -30,6 +30,9 @@ defmodule MCP.Transport.SSE do
 
   @type parser :: %{buffer: binary(), max_event_bytes: pos_integer()}
 
+  @event_delimiters ["\r\n\r\n", "\n\n"]
+  @event_delimiter_prefixes ["\r", "\r\n", "\r\n\r", "\n"]
+
   @doc """
   Encodes an SSE event map into a string suitable for streaming.
 
@@ -249,11 +252,12 @@ defmodule MCP.Transport.SSE do
 
         extract_bounded_events(rest, events, limit)
 
-      :nomatch when byte_size(buffer) > limit ->
-        {:error, :event_too_large}
-
       :nomatch ->
-        {:ok, Enum.reverse(events), buffer}
+        if byte_size(buffer) > limit and not pending_delimiter_prefix?(buffer, limit) do
+          {:error, :event_too_large}
+        else
+          {:ok, Enum.reverse(events), buffer}
+        end
     end
   end
 
@@ -271,5 +275,17 @@ defmodule MCP.Transport.SSE do
   # Events are separated by a blank line. Compliant producers may terminate
   # lines with either LF or CRLF, so both delimiters must be recognised — and
   # the delimiter length preserved — or a CRLF stream never yields an event.
-  defp match_event_delimiter(buffer), do: :binary.match(buffer, ["\r\n\r\n", "\n\n"])
+  defp match_event_delimiter(buffer), do: :binary.match(buffer, @event_delimiters)
+
+  defp pending_delimiter_prefix?(buffer, limit) do
+    buffer_size = byte_size(buffer)
+
+    Enum.any?(@event_delimiter_prefixes, fn prefix ->
+      prefix_size = byte_size(prefix)
+      event_size = buffer_size - prefix_size
+
+      event_size >= 0 and event_size <= limit and
+        binary_part(buffer, event_size, prefix_size) == prefix
+    end)
+  end
 end

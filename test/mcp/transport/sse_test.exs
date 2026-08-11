@@ -160,6 +160,24 @@ defmodule MCP.Transport.SSETest do
       assert event.data == "split"
     end
 
+    test "accepts an exact-limit event when its LF delimiter is split across chunks" do
+      parser = SSE.new_parser(max_event_bytes: 8)
+
+      assert {:ok, [], parser} = SSE.feed(parser, "data: 12\n")
+      assert {:ok, [event], parser} = SSE.feed(parser, "\n")
+      assert event.data == "12"
+      assert parser.buffer == ""
+    end
+
+    test "accepts an exact-limit event when its CRLF delimiter is split across chunks" do
+      parser = SSE.new_parser(max_event_bytes: 8)
+
+      assert {:ok, [], parser} = SSE.feed(parser, "data: 12\r\n\r")
+      assert {:ok, [event], parser} = SSE.feed(parser, "\n")
+      assert event.data == "12"
+      assert parser.buffer == ""
+    end
+
     test "the unbounded parser also splits CRLF-terminated events" do
       parser = SSE.new_parser()
 
