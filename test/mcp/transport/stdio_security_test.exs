@@ -143,7 +143,7 @@ defmodule MCP.Transport.StdioSecurityTest do
         {StdioProcess,
          owner: self(),
          command: System.find_executable("elixir"),
-         args: [@fixture, "frame_burst_exit"],
+         args: [@fixture, "frame_burst"],
          env: [],
          security_policy: policy}
       )
@@ -151,11 +151,12 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert_receive {:stdio_process, ^process, :stdout, data}, 5_000
     assert data != ""
 
+    monitor = Process.monitor(process)
     state = :sys.get_state(process)
     send(process, {:DOWN, state.os_pid, :process, state.exec_pid, :normal})
 
     assert_receive {:stdio_process, ^process, :closed, :normal}, 5_000
-    refute Process.alive?(process)
+    assert_receive {:DOWN, ^monitor, :process, ^process, :normal}, 5_000
   end
 
   @tag @linux_only
