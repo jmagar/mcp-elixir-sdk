@@ -13,7 +13,9 @@ defmodule MCP.ClientReviewRemediationTest do
   }
 
   alias MCP.Transport.StreamableHTTP.Client, as: HTTPClient
+  alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
+  @modern_version "2026-07-28"
   @legacy_version "2025-11-25"
 
   test "connect is serialized and cached for a legacy client" do
@@ -111,6 +113,22 @@ defmodule MCP.ClientReviewRemediationTest do
                transport: {ClientReviewTransport, observer: self()},
                protocol_version: @legacy_version,
                client_capabilities: %{"sampling" => %{}}
+             )
+  end
+
+  test "captured stdio diagnostics require an explicit high-level client handler" do
+    client =
+      start_supervised!(
+        {Client, transport: {ClientReviewTransport, observer: self()}, stderr_handler: self()}
+      )
+
+    send(client, {:mcp_transport_stderr, "bounded diagnostic"})
+    assert_receive {:mcp_transport_stderr, "bounded diagnostic"}
+
+    assert {:error, {:invalid_stderr_handler, :log_it}} =
+             Client.start_link(
+               transport: {ClientReviewTransport, observer: self()},
+               stderr_handler: :log_it
              )
   end
 
@@ -226,6 +244,152 @@ defmodule MCP.ClientReviewRemediationTest do
     refute Enum.any?(headers, &match?({"mcp-session-id", _}, &1))
   end
 
+  test "malformed initialize response never poisons the next HTTP session" do
+    recovery_agent = start_supervised!({Agent, fn -> %{} end})
+
+    %{url: url} =
+      start_http_plug(
+        malformed_initialize_once?: true,
+        recovery_agent: recovery_agent
+      )
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert {:error, :non_protocol_json} =
+             HTTPClient.send_message(transport, initialize_request(1))
+
+    assert_receive {:client_review_http_post, first_headers, %{"id" => 1}}
+    refute List.keymember?(first_headers, "mcp-session-id", 0)
+    assert :sys.get_state(transport).session_id == nil
+
+    assert :ok = HTTPClient.send_message(transport, initialize_request(2))
+    assert_receive {:client_review_http_post, second_headers, %{"id" => 2}}
+    refute List.keymember?(second_headers, "mcp-session-id", 0)
+  end
+
+  test "only a matching successful initialize response can bind an HTTP session" do
+    for override <- [:wrong_id, :notification, :error, :incomplete] do
+      %{url: url} = start_http_plug(initialize_override: override)
+
+      transport =
+        start_supervised!(
+          {HTTPClient, owner: self(), url: url, protocol_version: @legacy_version},
+          id: {HTTPClient, override}
+        )
+
+      result = HTTPClient.send_message(transport, initialize_request(10))
+
+      if override in [:error, :incomplete],
+        do: assert(result == :ok),
+        else: assert(result == {:error, {:mismatched_response_id, 10}})
+
+      assert :sys.get_state(transport).session_id == nil
+    end
+  end
+
+  test "a modern initialize response ignores an unexpected session header" do
+    %{url: url} = start_http_plug(initialize_protocol_version: @modern_version)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @modern_version})
+
+    assert :ok = HTTPClient.send_message(transport, initialize_request(1, @modern_version))
+    assert :sys.get_state(transport).session_id == nil
+
+    notification = %{"jsonrpc" => "2.0", "method" => "notifications/progress"}
+    assert :ok = HTTPClient.send_message(transport, notification)
+    assert_receive {:client_review_http_post, headers, ^notification}
+    refute List.keymember?(headers, "mcp-session-id", 0)
+  end
+
+  test "an HTTP session binding is immutable until explicit reset" do
+    %{url: url} = start_http_plug(stream?: true)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
+    assert_receive {:client_review_stream_chunked, stream_request}
+    assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
+
+    assert {:error, :session_already_bound} =
+             GenServer.call(transport, {:bind_session, "second", @legacy_version})
+
+    assert :sys.get_state(transport).session_id == "first"
+    send(stream_request, :release_stream)
+  end
+
+  test "truncated initialize SSE response cannot bind an HTTP session" do
+    body = "data: #{Jason.encode!(initialize_result(1))}"
+    %{url: url} = start_http_plug(initialize_sse_body: body)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert {:error, :truncated_sse_event} =
+             HTTPClient.send_message(transport, initialize_request(1))
+
+    assert :sys.get_state(transport).session_id == nil
+  end
+
+  test "HTTP policy rejects work beyond the concurrent request limit" do
+    %{url: url} = start_http_plug(block_post?: true)
+
+    transport =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: [max_concurrent_requests: 1]}
+      )
+
+    first =
+      Task.async(fn ->
+        HTTPClient.send_message(transport, %{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/list"
+        })
+      end)
+
+    assert_receive {:client_review_post_blocked, request}
+
+    assert {:error, :request_limit_reached} =
+             HTTPClient.send_message(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 2,
+               "method" => "tools/list"
+             })
+
+    send(request, :release_post)
+    assert :ok = Task.await(first)
+  end
+
+  test "HTTP policy rejects subscriptions beyond the concurrent stream limit" do
+    %{url: url} = start_http_plug(block_subscription?: true)
+
+    transport =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: [max_subscriptions: 1]}
+      )
+
+    assert :ok =
+             HTTPClient.open_subscription(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 1,
+               "method" => "subscriptions/listen"
+             })
+
+    assert_receive {:client_review_stream_chunked, request}
+
+    assert {:error, :subscription_limit_reached} =
+             HTTPClient.open_subscription(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 2,
+               "method" => "subscriptions/listen"
+             })
+
+    send(request, :release_stream)
+  end
+
   test "legacy SSE is delivered incrementally before the response closes" do
     %{url: url} = start_http_plug(stream?: true)
     client = start_supervised!({HTTPClient, owner: self(), url: url})
@@ -240,18 +404,25 @@ defmodule MCP.ClientReviewRemediationTest do
     send(stream_request, :release_stream)
   end
 
-  test "close returns locally while session DELETE proceeds best effort" do
-    %{url: url} = start_http_plug()
+  test "explicit close waits for bounded session DELETE completion" do
+    %{url: url} = start_http_plug(stream?: true)
     client = start_supervised!({HTTPClient, owner: self(), url: url})
 
     assert :ok = HTTPClient.send_message(client, initialize_request(1))
     assert_receive {:mcp_message, %{"id" => 1}}
+    assert_receive {:client_review_stream_chunked, stream_request}
 
-    started = System.monotonic_time(:millisecond)
-    assert :ok = HTTPClient.close(client)
-    assert System.monotonic_time(:millisecond) - started < 250
+    close = Task.async(fn -> HTTPClient.close(client) end)
     assert_receive {:client_review_delete, request}, 500
+
+    # Without this the test passes under the old best-effort behaviour too: it
+    # would only prove close eventually returns :ok, not that it waited for the
+    # DELETE it issued.
+    refute Task.yield(close, 50)
+
     send(request, :release_delete)
+    assert :ok = Task.await(close, 1_000)
+    send(stream_request, :release_stream)
   end
 
   test "legacy SSE retry exhaustion is reported to the owner" do
@@ -270,10 +441,95 @@ defmodule MCP.ClientReviewRemediationTest do
                    1_000
   end
 
+  test "legacy GET SSE enforces the configured event bound" do
+    body = "data: " <> String.duplicate("x", 80) <> "\n\n"
+    %{url: url} = start_http_plug(stream?: true, stream_body: body)
+    {:ok, policy} = SecurityPolicy.new(max_sse_event_bytes: 32)
+
+    client =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: policy, legacy_sse_retry_limit: 0}
+      )
+
+    assert :ok = HTTPClient.send_message(client, initialize_request(1))
+    assert_receive {:mcp_message, %{"id" => 1}}
+
+    assert_receive {:mcp_legacy_sse_failed, {:retry_exhausted, {:error, :event_too_large}}},
+                   5_000
+  end
+
+  test "subscription POST SSE enforces the configured event bound" do
+    body = "data: " <> String.duplicate("x", 80) <> "\n\n"
+    %{url: url} = start_http_plug(subscription_body: body)
+    {:ok, policy} = SecurityPolicy.new(max_sse_event_bytes: 32)
+    client = start_supervised!({HTTPClient, owner: self(), url: url, security_policy: policy})
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 9,
+      "method" => "subscriptions/listen",
+      "params" => %{}
+    }
+
+    assert :ok = HTTPClient.open_subscription(client, message)
+    assert_receive {:mcp_subscription_transport_closed, 9, {:error, :event_too_large}}, 5_000
+  end
+
+  test "subscription POST errors enforce the stricter decoded response bound" do
+    body = String.duplicate("x", 65)
+    %{url: url} = start_http_plug(subscription_status: 500, subscription_body: body)
+
+    {:ok, policy} =
+      SecurityPolicy.new(max_response_bytes: 1_000, max_decoded_response_bytes: 64)
+
+    client = start_supervised!({HTTPClient, owner: self(), url: url, security_policy: policy})
+
+    message = %{
+      "jsonrpc" => "2.0",
+      "id" => 10,
+      "method" => "subscriptions/listen",
+      "params" => %{}
+    }
+
+    assert :ok = HTTPClient.open_subscription(client, message)
+
+    assert_receive {:mcp_subscription_transport_closed, 10, {:error, {:response_too_large, 64}}},
+                   5_000
+  end
+
+  test "client records and applies transport cleanup failure before closure" do
+    {client, transport} = start_legacy_client()
+    connect_legacy(client, transport)
+
+    request = Task.async(fn -> Client.list_tools(client) end)
+    assert_receive {:client_review_sent, ^transport, %{"method" => "tools/list"}, _}
+
+    send(client, {:mcp_transport_cleanup_failed, :escaped_process})
+    send(client, {:mcp_transport_closed, :normal})
+
+    assert {:error, {:transport_closed, {:cleanup_failed, :escaped_process, :normal}}} =
+             Task.await(request)
+
+    assert Client.transport_failure(client) == :escaped_process
+    assert Client.status(client) == :closed
+  end
+
   test "close APIs do not report success for the wrong process" do
     assert {:error, {:close_failed, _reason}} = Client.close(self())
     assert {:error, {:close_failed, _reason}} = HTTPClient.close(self())
     assert {:error, {:close_failed, _reason}} = Connection.close(self())
+  end
+
+  test "HTTP clients reject malformed security policy structs" do
+    policy = %SecurityPolicy{max_response_bytes: 0}
+    Process.flag(:trap_exit, true)
+
+    assert {:error, {:invalid_security_policy, {:max_response_bytes, 0}}} =
+             HTTPClient.start_link(
+               owner: self(),
+               url: "http://127.0.0.1:1",
+               security_policy: policy
+             )
   end
 
   test "client and server close propagate transport close failures" do
@@ -323,13 +579,13 @@ defmodule MCP.ClientReviewRemediationTest do
                     _}
   end
 
-  defp initialize_request(id) do
+  defp initialize_request(id, protocol_version \\ @legacy_version) do
     %{
       "jsonrpc" => "2.0",
       "id" => id,
       "method" => "initialize",
       "params" => %{
-        "protocolVersion" => @legacy_version,
+        "protocolVersion" => protocol_version,
         "capabilities" => %{},
         "clientInfo" => %{"name" => "review", "version" => "1"}
       }
@@ -357,7 +613,7 @@ defmodule MCP.ClientReviewRemediationTest do
     }
   end
 
-  defp start_http_plug(opts \\ []) do
+  defp start_http_plug(opts) do
     bandit =
       start_supervised!(
         {Bandit,

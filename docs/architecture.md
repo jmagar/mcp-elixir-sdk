@@ -1,15 +1,16 @@
 # Architecture
 
-MCP Elixir SDK 2.0 is an OTP-native dual-era implementation of MCP
-`2025-11-25` and `2026-07-28`. Stateless 2026 dispatch remains sessionless;
-legacy 2025 traffic uses an isolated initialize/session adapter. There is no
+MCP Elixir SDK 2.0 is an OTP-native dual-version implementation of MCP
+`2025-11-25` and `2026-07-28`. Stateless 2026 dispatch remains
+sessionless; the legacy revision uses an explicit initialize/session adapter. There is no
 client-side result cache or mutable per-request handler configuration.
 
 ## Protocol selection
 
-Clients prefer `2026-07-28` discovery and make one bounded fallback to the
-`2025-11-25` initialize handshake when discovery is unavailable or the server
-advertises only the legacy revision. Servers choose a mode on the first valid
+Clients prefer `2026-07-28` discovery and use a bounded fallback to
+`2025-11-25` only for version/lifecycle incompatibility.
+Authentication, TLS, malformed-response, overflow, and timeout failures never
+advance fallback. Servers choose a mode on the first valid
 request. A connection never changes modes.
 
 The 2026 path validates per-request metadata and routes directly to stateless
@@ -99,9 +100,17 @@ implement descriptor-aware sends and explicit subscription open/cancel hooks.
 ### Stdio and in-process
 
 `MCP.Server.Connection` owns one transport endpoint and multiplexes independent
-requests and long-lived subscriptions. It is not a protocol session: no
-initialize state or negotiated identity exists. Stdio identity is fixed at
-launch.
+requests and long-lived subscriptions. In the stateless era it has no
+initialize state; in the legacy era it enforces the initialized lifecycle
+selected by its enclosing transport/session. Stdio identity is fixed at launch.
+
+`MCP.Transport.Stdio.SecurityPolicy` bounds newline frames and stderr capture,
+controls environment inheritance, and fails closed on malformed or non-JSON-RPC
+stdout. The client subprocess owner launches absolute executable plus argv
+without a shell and terminates its process group and discovered Linux descendants
+on explicit close, protocol failure, or natural root exit when descendants
+retain inherited cleanup identity. This is not an OS sandbox, so hostile commands need
+a cgroup or equivalent external containment boundary.
 
 ### Streamable HTTP
 
@@ -117,7 +126,11 @@ subscriptions retain only their individual response stream.
 `MCP.Transport.StreamableHTTP.Client` emits `MCP-Protocol-Version`,
 `Mcp-Method`, method-appropriate `Mcp-Name`, and validated `Mcp-Param-*`
 headers. SSE response parsing supports interleaved notifications, final
-results, comments, and chunk boundaries.
+results, comments, and chunk boundaries. `SecurityPolicy.gateway/0` validates
+the endpoint, permits plaintext only on loopback, and applies finite connect,
+receive, request, body, SSE, concurrent-request, and subscription limits.
+Redirects, retries, and response compression are fixed-disabled transport
+invariants rather than configurable policy fields.
 
 ## Subscriptions
 

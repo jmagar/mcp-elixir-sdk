@@ -218,7 +218,9 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
   end
 
   test "timed out POST and GET waiters are removed inside the session" do
-    {:ok, session} = LegacySession.start(BlockingLegacyHandler, [test_pid: self()], [])
+    {:ok, session} =
+      LegacySession.start(BlockingLegacyHandler, [test_pid: self()], [], @legacy_version)
+
     on_exit(fn -> stop_session(session) end)
     initialize_direct(session)
 
@@ -239,7 +241,9 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
   end
 
   test "request-scoped notification buffering is bounded" do
-    {:ok, session} = LegacySession.start(BlockingLegacyHandler, [test_pid: self()], [])
+    {:ok, session} =
+      LegacySession.start(BlockingLegacyHandler, [test_pid: self()], [], @legacy_version)
+
     on_exit(fn -> stop_session(session) end)
     initialize_direct(session)
 

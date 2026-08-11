@@ -20,6 +20,9 @@ port =
     _ -> 3001
   end
 
+protocol_version = System.get_env("MCP_CONFORMANCE_PROTOCOL_VERSION") || "2026-07-28"
+{:ok, _revision} = MCP.Protocol.Revision.fetch(protocol_version)
+
 {:ok, _registry} =
   Registry.start_link(keys: :duplicate, name: MCP.Conformance.SubscriptionRegistry)
 
@@ -32,9 +35,9 @@ port =
 plug =
   MCP.Transport.StreamableHTTP.Plug.new(
     server_mod: MCP.Conformance.ServerHandler,
-    server_opts: [server_info: %{name: "mcp-elixir-sdk", version: "2.0.0-dev.2"}],
+    server_opts: [server_info: %{name: "mcp-elixir-sdk", version: "2.0.0-rc.1"}],
     enable_json_response: false,
-    protocol_version: "2026-07-28",
+    protocol_version: protocol_version,
     subscription_registry: MCP.Conformance.SubscriptionRegistry,
     subscription_supervisor: MCP.Conformance.SubscriptionSupervisor,
     subscription_endpoint: MCP.Conformance.ServerHandler,

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0-dev.2] - Unreleased
+## [2.0.0-rc.1] - Unreleased
 
 ### Added
 
@@ -21,10 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lossless JSON Schema 2020-12, complete JSON structured-content values, W3C
   trace metadata, and schema-directed routing headers.
 - Pinned official conformance adapters, scenario ledger, and CI release gates.
-  The official 2025 server requirements denominator is covered; client
-  compatibility evidence currently combines the official initialize scenario
-  with the local cross-transport matrix rather than claiming a full official
-  client denominator.
+  The official November server denominator is 81/81; its compatibility ledger
+  records exact client scenarios, while regression tests explicitly reject the
+  unsupported `2025-06-18` revision.
 
 ### Changed
 
@@ -37,12 +36,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The request deadline now covers transport send, schema refresh, and MRTR
   resolver work. Callback failures are isolated to their request.
 
+### Fixed
+
+- SSE parsing recognises `\r\n\r\n` event delimiters. CRLF-terminated streams
+  previously yielded no events and were eventually rejected as oversized.
+- Stdout frames buffered at a frame-turn boundary are delivered when the
+  subprocess exits instead of being dropped by the close notification.
+- Stdio descendant cleanup captures each process's parent and start time from a
+  single `/proc/<pid>/stat` read, so a PID recycled during the scan cannot be
+  signalled as a descendant.
+- Documented that process-tree cleanup covers explicit close and protocol
+  failure, while hostile commands still require OS containment for descendants
+  that escape their process group before a spontaneous root exit.
+- Closing a legacy Streamable HTTP session waits for the session DELETE that the
+  security policy already bounds, instead of failing with `:close_failed` after
+  an implicit five-second call timeout.
+- A JSON-RPC error other than `-32022` returned to `initialize` reaches the
+  caller unchanged rather than being reported as an invalid initialize result.
+- `http://localhost/...` endpoints validate as loopback under the default
+  Streamable HTTP security policy, matching the documented example.
+
 ### Removed (original 2.0 cutover; legacy removals superseded above)
 
 - The original cutover removed initialize/session handling, legacy resource
   subscriptions, held-open server requests, and protocol negotiation. The
   `2025-11-25` portions of that removal are restored by the dual-era
-  compatibility entry above; revisions older than `2025-11-25` remain absent.
+  compatibility entry above; older revisions remain absent.
 - Client result caching. Cache metadata remains visible to consumers.
 
 ### Security
@@ -54,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and reclaimed on idle/absolute expiry or endpoint shutdown.
 - Request metadata, routing headers, extension values, cache policy, queue
   bounds, and tool routing annotations are validated at their boundaries.
+- Streamable HTTP rejects redirects and unsafe URLs, bounds bodies and SSE
+  events before decode, and enforces connect/receive/request deadlines. Stdio
+  bounds frames and diagnostics, fails closed on non-protocol stdout, and owns
+  process-group plus descendant cleanup.
 
 ## [1.1.0] - 2026-07-12
 

@@ -1,8 +1,8 @@
 defmodule MCPElixirSDK.MixProject do
   use Mix.Project
 
-  @version "2.0.0-dev.2"
-  @source_url "https://github.com/JohnSmall/mcp-elixir-sdk"
+  @version "2.0.0-rc.1"
+  @source_url "https://github.com/jmagar/mcp-elixir-sdk"
 
   def project do
     [
@@ -81,6 +81,9 @@ defmodule MCPElixirSDK.MixProject do
         ],
         "docs/adr/0007-dual-protocol-era-support.md": [
           title: "ADR-007 Dual Protocol Support"
+        ],
+        "docs/adr/0008-dual-version-secure-transports.md": [
+          title: "ADR-008 Dual-Version Secure Transports"
         ]
       ],
       groups_for_extras: [
@@ -100,7 +103,8 @@ defmodule MCPElixirSDK.MixProject do
           "docs/adr/0004-immutable-handler-launch-configuration.md",
           "docs/adr/0005-consumer-owned-subscription-supervision.md",
           "docs/adr/0006-no-client-result-cache-in-2.0.md",
-          "docs/adr/0007-dual-protocol-era-support.md"
+          "docs/adr/0007-dual-protocol-era-support.md",
+          "docs/adr/0008-dual-version-secure-transports.md"
         ],
         Reference: ["CHANGELOG.md", "LICENSE", "usage-rules.md"]
       ],
@@ -117,7 +121,10 @@ defmodule MCPElixirSDK.MixProject do
         Protocol: [
           MCP.Protocol,
           MCP.Protocol.Error,
-          MCP.Protocol.Methods
+          MCP.Protocol.Methods,
+          MCP.Protocol.Revision,
+          MCP.Protocol.LegacyAdapter,
+          MCP.Protocol.Legacy.V2025_11_25
         ],
         Capabilities: ~r/MCP\.Protocol\.Capabilities\..*/,
         Messages: ~r/MCP\.Protocol\.Messages\..*/,
@@ -125,8 +132,12 @@ defmodule MCPElixirSDK.MixProject do
         Transport: [
           MCP.Transport,
           MCP.Transport.Stdio,
+          MCP.Transport.Stdio.Process,
+          MCP.Transport.Stdio.SecurityPolicy,
           MCP.Transport.SSE,
           MCP.Transport.StreamableHTTP.Client,
+          MCP.Transport.StreamableHTTP.ResponseReader,
+          MCP.Transport.StreamableHTTP.SecurityPolicy,
           MCP.Transport.StreamableHTTP.LegacySessionManager,
           MCP.Transport.StreamableHTTP.Plug
         ]
@@ -141,9 +152,10 @@ defmodule MCPElixirSDK.MixProject do
     [
       {:jason, "~> 1.4"},
       {:elixir_uuid, "~> 1.2"},
+      {:erlexec, "~> 2.3"},
 
       # Optional: Streamable HTTP transport
-      {:req, "~> 0.7", optional: true},
+      {:req, ">= 0.5.0 and < 0.8.0", optional: true},
       {:plug, "~> 1.16", optional: true},
       {:bandit, "~> 1.5", optional: true},
 

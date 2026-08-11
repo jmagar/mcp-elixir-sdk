@@ -156,7 +156,7 @@ growth rather than merely bounding the final worker queue.
 
 For 2025 HTTP, the client transport also owns a supervised GET SSE listener
 bound to the negotiated session ID. Closing stops the listener before issuing
-a best-effort DELETE. Session expiry or exhausted listener retries are surfaced
+a bounded synchronous DELETE. Session expiry or exhausted listener retries are surfaced
 to the owner; a terminal listener exit is never treated as continued healthy
 delivery.
 
@@ -176,10 +176,12 @@ empty registry, successful deletion, or session-not-found response.
 
 ## M3 — Stdio transport
 
-`MCP.Transport.Stdio` owns either a port-backed subprocess or an IO device plus
-a frame buffer. It forwards complete newline-delimited JSON messages to its
-owner. In S2, subscriptions do not create new stdio channels; multiple streams
-are multiplexed by JSON-RPC ID, so correlation belongs above framing.
+`MCP.Transport.Stdio` owns either an internal Unix `erlexec` process wrapper or
+an IO device plus a frame buffer. The wrapper applies environment policy,
+process-group shutdown, and bounded cleanup before reporting closure. Stdio
+forwards complete newline-delimited JSON messages to its owner. In S2,
+subscriptions do not create new stdio channels; multiple streams are
+multiplexed by JSON-RPC ID, so correlation belongs above framing.
 
 ## M4 — Immutable server configuration
 

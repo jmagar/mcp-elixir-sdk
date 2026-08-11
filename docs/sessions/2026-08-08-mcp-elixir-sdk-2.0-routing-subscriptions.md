@@ -3,8 +3,8 @@ date: 2026-08-08 22:53:04 EDT
 repo: git@github.com:jmagar/mcp-elixir-sdk.git
 branch: codex/mcp-routing-headers
 head: 332235c28423246299b8f837330e35247b43b5d1
-working directory: /home/jmagar/workspace/mcp-elixir-sdk
-worktree: /home/jmagar/workspace/mcp-elixir-sdk
+working directory: repository root
+worktree: primary repository checkout
 ---
 
 # MCP Elixir SDK 2.0 routing and subscriptions
@@ -20,7 +20,7 @@ The session forked and published the SDK, implemented the 2026-07-28 standard an
 ## Sequence of Events
 
 1. Reviewed the upstream SDK and confirmed that it already uses OTP but lacks the intended 2.0 stateless-core work.
-2. Forked the SDK into `/home/jmagar/workspace/mcp-elixir-sdk`, created `codex/mcp-routing-headers`, and established a test-first slice plan.
+2. Forked the SDK, created `codex/mcp-routing-headers`, and established a test-first slice plan.
 3. Implemented routing headers, schema-driven `Mcp-Param-*` handling, bounded schema descriptors, identity-aware server validation, and one-shot refresh behavior.
 4. Added normative specifications, contracts, types, runtime models, the meta-plan, and ADRs for immutable handler configuration, consumer-owned subscription supervision, and no result cache.
 5. Implemented subscription codecs and supervised client/server workers with bounded queues and publication filtering.

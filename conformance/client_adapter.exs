@@ -1,5 +1,7 @@
 #!/usr/bin/env elixir
 
+{:ok, _applications} = Application.ensure_all_started(:mcp_elixir_sdk)
+
 defmodule MCP.Conformance.ClientAdapter do
   @moduledoc false
 
@@ -98,11 +100,17 @@ defmodule MCP.Conformance.ClientAdapter do
 
   defp start_client(url) do
     protocol_version = System.get_env("MCP_CONFORMANCE_PROTOCOL_VERSION") || "2026-07-28"
+    {:ok, _revision} = MCP.Protocol.Revision.fetch(protocol_version)
+
+    {:ok, security_policy} =
+      MCP.Transport.StreamableHTTP.SecurityPolicy.new(allow_non_loopback_http: true)
 
     Client.start_link(
-      transport: {MCP.Transport.StreamableHTTP.Client, url: url, headers: []},
+      transport:
+        {MCP.Transport.StreamableHTTP.Client,
+         url: url, headers: [], security_policy: security_policy},
       protocol_version: protocol_version,
-      client_info: %{name: "mcp_elixir_sdk_conformance", version: "2.0.0-dev.2"},
+      client_info: %{name: "mcp_elixir_sdk_conformance", version: "2.0.0-rc.1"},
       client_capabilities: %{
         "sampling" => %{},
         "elicitation" => %{},

@@ -40,6 +40,7 @@ defmodule MCP.Server.Dispatch do
   alias MCP.Protocol.Error
   alias MCP.Protocol.Messages.{Discover, MRTR, Notification, Request, Tools}
   alias MCP.Protocol.Meta
+  alias MCP.Protocol.Revision
   alias MCP.Server.ToolContext
 
   require Logger
@@ -48,7 +49,7 @@ defmodule MCP.Server.Dispatch do
   # scope. `resultType` "complete" is the Result base requirement (schema.ts:658).
   @default_cache_defaults {0, "public"}
 
-  @stateless_protocol_version "2026-07-28"
+  @stateless_protocol_version Revision.preferred()
 
   @doc "The protocol version this stateless core targets."
   def protocol_version, do: @stateless_protocol_version

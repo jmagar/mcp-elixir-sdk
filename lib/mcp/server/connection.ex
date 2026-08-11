@@ -72,7 +72,7 @@ defmodule MCP.Server.Connection do
 
   # --- Public API ---
 
-  @doc "Starts the stateless connection and its transport."
+  @doc "Starts a protocol-era connection and its transport."
   def start_link(opts) do
     {gen_opts, server_opts} = Keyword.split(opts, [:name])
     GenServer.start_link(__MODULE__, server_opts, gen_opts)

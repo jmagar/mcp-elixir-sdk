@@ -21,6 +21,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
 
   test "the SDK advertises both supported protocol eras in preference order" do
     assert Protocol.supported_versions() == [@stateless_version, @legacy_version]
+
     assert Protocol.protocol_version() == @stateless_version
   end
 
@@ -243,9 +244,11 @@ defmodule MCP.DualProtocolCompatibilityTest do
     assert Jason.decode!(wrong_version.resp_body)["error"]["code"] == -32_022
   end
 
-  test "the SDK client completes a 2025 session over real Streamable HTTP" do
-    plug =
-      MCPPlug.new(
+  test "the SDK client completes a legacy session over real Streamable HTTP" do
+    version = @legacy_version
+
+    config =
+      MCPPlug.init(
         server_mod: StatelessHandler,
         server_opts: [server_info: %{name: "legacy-http-server", version: "2.0.0"}],
         enable_json_response: true
@@ -253,7 +256,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
 
     bandit =
       start_supervised!(
-        {Bandit, plug: plug, ip: {127, 0, 0, 1}, port: 0},
+        {Bandit, plug: {MCPPlug, config}, ip: {127, 0, 0, 1}, port: 0},
         id: :legacy_compat_bandit
       )
 
@@ -264,15 +267,19 @@ defmodule MCP.DualProtocolCompatibilityTest do
         {Client,
          transport:
            {MCP.Transport.StreamableHTTP.Client,
-            url: "http://127.0.0.1:#{port}/mcp", protocol_version: @legacy_version},
-         protocol_version: @legacy_version,
+            url: "http://127.0.0.1:#{port}/mcp", protocol_version: version},
+         protocol_version: version,
          client_info: %{name: "legacy-sdk-client", version: "2.0.0"}},
         id: :legacy_compat_client
       )
 
-    assert {:ok, %{protocol_version: @legacy_version}} = Client.connect(client)
+    assert {:ok, %{protocol_version: ^version}} = Client.connect(client)
+    assert [{session_id, _session}] = MCPPlug.legacy_sessions(config)
+    assert is_binary(session_id)
     assert {:ok, %{"tools" => tools}} = Client.list_tools(client)
     assert Enum.any?(tools, &(&1["name"] == "whoami"))
+    assert :ok = Client.close(client)
+    assert MCPPlug.legacy_sessions(config) == []
   end
 
   test "default HTTP client falls back from discovery to a legacy server session" do

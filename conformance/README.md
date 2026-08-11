@@ -8,8 +8,7 @@ These adapters target MCP `2026-07-28` and `2025-11-25` with the pinned harness
 - `client_adapter.exs` drives the SDK client from the scenario and context
   environment variables supplied by the harness.
 - `scenarios.json` is the 2026 machine-readable release ledger.
-- `compatibility-2025-11-25.json` records the 2025 server denominator and the
-  separately measured client compatibility evidence.
-
+- `compatibility-2025-11-25.json` records the November server denominator and
+  the exact client scenarios, exclusions, warnings, and remaining blocker.
 Use the exact commands in `docs/dev-tooling.md`. Harness-only diagnostic tools
 are test fixtures, not public SDK behavior.

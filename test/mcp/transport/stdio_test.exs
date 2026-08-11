@@ -107,6 +107,25 @@ defmodule MCP.Transport.StdioTest do
     end
   end
 
+  describe "server mode" do
+    test "close returns the transport contract result" do
+      {:ok, transport} = Stdio.start_link(owner: self(), mode: :server)
+
+      assert :ok = Stdio.close(transport)
+    end
+
+    test "server mode accepts bounded framing policy configuration" do
+      assert {:ok, transport} =
+               Stdio.start_link(
+                 owner: self(),
+                 mode: :server,
+                 security_policy: [max_frame_bytes: 64]
+               )
+
+      assert :ok = Stdio.close(transport)
+    end
+  end
+
   describe "line buffering" do
     test "handles rapid sequential messages" do
       transport = start_echo_transport()

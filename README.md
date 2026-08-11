@@ -1,16 +1,17 @@
 # MCP Elixir SDK
 
 An OTP-native Elixir client and server SDK for the Model Context Protocol. The
-2.0 line supports both the stateful `2025-11-25` and stateless `2026-07-28`
-protocol revisions over stdio/in-process and Streamable HTTP transports.
+unreleased 2.0 line supports stateful `2025-11-25` plus
+stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 
-> `2.0.0-dev.2` is a prerelease. Its handler API is a breaking cutover from
+> `2.0.0-rc.1` is a release candidate. Its handler API is a breaking cutover from
 > 1.x, while its wire protocol remains compatible with `2025-11-25` peers.
 
 ## What 2.0 provides
 
-- Dual protocol selection: clients prefer `2026-07-28` and perform one bounded
-  fallback to the `2025-11-25` initialize handshake when the peer requires it.
+- Dual-version selection: clients prefer `2026-07-28`, then perform bounded
+  fallback to `2025-11-25` only for lifecycle/version
+  incompatibility signals.
 - Version-isolated lifecycles: 2026 requests use `server/discover` and
   per-request metadata; 2025 requests use initialize/initialized and a session.
 - OTP ownership: clients and stdio connections are GenServers; long-lived
@@ -22,6 +23,8 @@ protocol revisions over stdio/in-process and Streamable HTTP transports.
 - Lossless JSON Schema 2020-12 maps and full JSON structured-content values.
 - Bounded request deadlines, isolated resolver/notification callbacks, and no
   client-side result cache.
+- Configurable HTTP and stdio security policies with gateway-hardened presets,
+  bounded bodies/frames, redirects disabled, and process-tree cleanup.
 
 The authoritative design package is in [`docs/sdk-2.0`](docs/sdk-2.0). The
 implementation tracks the pinned official schema revision documented in
@@ -29,20 +32,25 @@ implementation tracks the pinned official schema revision documented in
 
 ## Installation
 
-Until 2.0 is released, pin an immutable Git commit. The development branch is
-mutable and is not suitable for reproducible builds:
+No production installation coordinate is currently advertised. The package
+metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
+exist until the branch-finishing and publication workflows complete. Evaluation
+may use an immutable Git SHA, but no published production coordinate is
+currently advertised.
 
-```elixir
-def deps do
-  [
-    {:mcp_elixir_sdk,
-     github: "jmagar/mcp-elixir-sdk",
-     ref: "3fa6dce07fdf3e1e471d0e742100a34a3b3488cb"}
-  ]
-end
-```
+Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
+is supported across `>= 0.5.0 and < 0.8.0`.
 
-Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
+**Platform support: Unix only.** `erlexec`, which supervises stdio subprocesses in
+process groups, is a required dependency whose NIF does not build on Windows, so
+the package does not compile there.
+
+**Subprocess trust boundary.** Explicit close, protocol-violation shutdown, and
+natural root exit terminate the process group and sweep Linux descendants that
+inherit the wrapper's per-launch cleanup marker, including descendants that
+create a new session. A hostile program can deliberately discard inherited
+identity before spawning. Gateways running untrusted commands must therefore
+add an OS containment boundary such as a cgroup or sandbox.
 
 ## Client
 
@@ -67,13 +75,20 @@ Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies.
 :ok = MCP.Client.close(client)
 ```
 
-`connect/2` prefers `server/discover`. If the peer reports only `2025-11-25`
-support (or does not implement discovery), it initializes a legacy session and
-sends `notifications/initialized`. Pass `protocol_version: "2025-11-25"` to
-start directly in that mode.
+`connect/2` prefers `server/discover`. If the peer requires a legacy lifecycle,
+it tries `2025-11-25`, initializes a session, and sends
+`notifications/initialized`. Pass that legacy version through
+`protocol_version:` to start directly in that mode.
 Each operation has one end-to-end deadline covering transport work, schema
 refresh, and any MRTR resolver invocation. Cache hints are returned to the
 caller but results are never cached by the SDK.
+
+For stdio diagnostics, set transport
+`security_policy: [stderr: :capture]` and provide the client an explicit
+`stderr_handler:` pid or one-argument function. Captured data is bounded by the
+stdio policy and is never logged automatically. Cleanup failures are available
+through `MCP.Client.transport_failure/1`; pending operations fail with
+`{:transport_closed, {:cleanup_failed, cleanup_reason, close_reason}}`.
 
 ### Client subscriptions
 

@@ -28,6 +28,11 @@ defmodule MCP.Transport.SSE do
           optional(:retry) => non_neg_integer()
         }
 
+  @type parser :: %{buffer: binary(), max_event_bytes: pos_integer()}
+
+  @event_delimiters ["\r\n\r\n", "\n\n"]
+  @event_delimiter_prefixes ["\r", "\r\n", "\r\n\r", "\n"]
+
   @doc """
   Encodes an SSE event map into a string suitable for streaming.
 
@@ -94,6 +99,7 @@ defmodule MCP.Transport.SSE do
       Enum.reduce(lines, %{}, fn line, acc ->
         parse_field(line, acc)
       end)
+      |> finalize_data()
 
     if map_size(event) == 0 do
       {:error, :empty_event}
@@ -114,8 +120,19 @@ defmodule MCP.Transport.SSE do
       {events, parser} = MCP.Transport.SSE.feed(parser, chunk1)
       {events, parser} = MCP.Transport.SSE.feed(parser, chunk2)
   """
-  @spec new_parser() :: binary()
-  def new_parser, do: ""
+  @spec new_parser(keyword()) :: binary() | parser()
+  def new_parser(opts \\ [])
+  def new_parser([]), do: ""
+
+  def new_parser(opts) when is_list(opts) do
+    max_event_bytes = Keyword.fetch!(opts, :max_event_bytes)
+
+    if is_integer(max_event_bytes) and max_event_bytes > 0 do
+      %{buffer: "", max_event_bytes: max_event_bytes}
+    else
+      raise ArgumentError, ":max_event_bytes must be a positive integer"
+    end
+  end
 
   @doc """
   Feeds data to a stream parser and returns any complete events.
@@ -127,6 +144,17 @@ defmodule MCP.Transport.SSE do
   def feed(buffer, data) when is_binary(buffer) and is_binary(data) do
     combined = buffer <> data
     extract_events(combined, [])
+  end
+
+  @spec feed(parser(), binary()) ::
+          {:ok, [event()], parser()} | {:error, :event_too_large}
+  def feed(%{buffer: buffer, max_event_bytes: limit} = parser, data) when is_binary(data) do
+    combined = buffer <> data
+
+    case extract_bounded_events(combined, [], limit) do
+      {:ok, events, remainder} -> {:ok, events, %{parser | buffer: remainder}}
+      {:error, :event_too_large} = error -> error
+    end
   end
 
   # --- Private helpers ---
@@ -179,28 +207,85 @@ defmodule MCP.Transport.SSE do
   end
 
   defp apply_field("data", value, acc) do
-    case Map.get(acc, :data) do
-      nil -> Map.put(acc, :data, value)
-      existing -> Map.put(acc, :data, existing <> "\n" <> value)
-    end
+    Map.update(acc, :data_lines, [value], &[value | &1])
   end
 
   defp apply_field(_unknown, _value, acc), do: acc
 
+  defp finalize_data(%{data_lines: lines} = event) do
+    event
+    |> Map.delete(:data_lines)
+    |> Map.put(:data, lines |> Enum.reverse() |> Enum.join("\n"))
+  end
+
+  defp finalize_data(event), do: event
+
   defp extract_events(buffer, events) do
-    # Events are separated by blank lines (\n\n)
-    case String.split(buffer, "\n\n", parts: 2) do
-      [event_text, rest] ->
+    case split_event(buffer) do
+      {:ok, event_text, rest} ->
         case decode_event(event_text) do
           {:ok, event} ->
-            extract_events(rest, events ++ [event])
+            extract_events(rest, [event | events])
 
           {:error, _} ->
             extract_events(rest, events)
         end
 
-      [_incomplete] ->
-        {events, buffer}
+      :incomplete ->
+        {Enum.reverse(events), buffer}
     end
+  end
+
+  defp extract_bounded_events(buffer, events, limit) do
+    case match_event_delimiter(buffer) do
+      {position, _size} when position > limit ->
+        {:error, :event_too_large}
+
+      {_position, _size} = match ->
+        {:ok, event_text, rest} = split_event(buffer, match)
+
+        events =
+          case decode_event(event_text) do
+            {:ok, event} -> [event | events]
+            {:error, _reason} -> events
+          end
+
+        extract_bounded_events(rest, events, limit)
+
+      :nomatch ->
+        if byte_size(buffer) > limit and not pending_delimiter_prefix?(buffer, limit) do
+          {:error, :event_too_large}
+        else
+          {:ok, Enum.reverse(events), buffer}
+        end
+    end
+  end
+
+  defp split_event(buffer), do: split_event(buffer, match_event_delimiter(buffer))
+
+  defp split_event(_buffer, :nomatch), do: :incomplete
+
+  # `:binary.match/2` returns {Position, Length}: the position is the byte size
+  # of the event text, and the length is the delimiter's own size.
+  defp split_event(buffer, {position, size}) do
+    <<event_text::binary-size(^position), _delimiter::binary-size(^size), rest::binary>> = buffer
+    {:ok, event_text, rest}
+  end
+
+  # Events are separated by a blank line. Compliant producers may terminate
+  # lines with either LF or CRLF, so both delimiters must be recognised — and
+  # the delimiter length preserved — or a CRLF stream never yields an event.
+  defp match_event_delimiter(buffer), do: :binary.match(buffer, @event_delimiters)
+
+  defp pending_delimiter_prefix?(buffer, limit) do
+    buffer_size = byte_size(buffer)
+
+    Enum.any?(@event_delimiter_prefixes, fn prefix ->
+      prefix_size = byte_size(prefix)
+      event_size = buffer_size - prefix_size
+
+      event_size >= 0 and event_size <= limit and
+        binary_part(buffer, event_size, prefix_size) == prefix
+    end)
   end
 end

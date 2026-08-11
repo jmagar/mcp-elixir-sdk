@@ -1,6 +1,6 @@
 defmodule MCP.Server.LegacyDispatch do
   @moduledoc """
-  Version-isolated dispatcher for the stateful MCP 2025-11-25 protocol era.
+  Version-isolated dispatcher for stateful MCP protocol revisions.
 
   The connection/session owner enforces the initialize state machine. This
   module adapts legacy request envelopes to the immutable, context-bearing
@@ -10,6 +10,7 @@ defmodule MCP.Server.LegacyDispatch do
 
   alias MCP.Protocol.Capabilities.{LoggingCapabilities, ResourceCapabilities}
   alias MCP.Protocol.Messages.{Initialize, Request}
+  alias MCP.Protocol.Revision
   alias MCP.Server.{Dispatch, ToolContext}
 
   require Logger
@@ -25,26 +26,31 @@ defmodule MCP.Server.LegacyDispatch do
   @spec protocol_version() :: String.t()
   def protocol_version, do: @protocol_version
 
+  @spec protocol_versions() :: [String.t(), ...]
+  def protocol_versions, do: Enum.filter(Revision.supported(), &Revision.legacy?/1)
+
   @spec initialize(Request.t(), map()) :: {:ok, map(), Initialize.Params.t()} | {:error, map()}
   def initialize(%Request{id: id, params: params}, config) do
     initialize = Initialize.Params.from_map(params || %{})
 
-    if initialize.protocol_version == @protocol_version do
+    with {:ok, adapter} <- Revision.fetch(initialize.protocol_version),
+         true <- adapter != :stateless do
       result =
         Initialize.Result.to_map(%Initialize.Result{
-          protocol_version: @protocol_version,
-          capabilities: legacy_capabilities(config),
+          protocol_version: adapter.version(),
+          capabilities: adapter.project_capabilities(legacy_capabilities(config)),
           server_info: config.server_info,
           instructions: config.instructions
         })
 
       {:ok, success(id, result), initialize}
     else
-      {:error,
-       error(id, -32_022, "Unsupported protocol version", %{
-         "requested" => initialize.protocol_version,
-         "supported" => [@protocol_version, Dispatch.protocol_version()]
-       })}
+      _unsupported ->
+        {:error,
+         error(id, -32_022, "Unsupported protocol version", %{
+           "requested" => initialize.protocol_version,
+           "supported" => Revision.supported()
+         })}
     end
   rescue
     exception in [ArgumentError, KeyError, FunctionClauseError] ->

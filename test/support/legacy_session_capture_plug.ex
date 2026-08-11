@@ -6,7 +6,11 @@ defmodule MCP.Test.LegacySessionCapturePlug do
   def init(opts), do: opts
 
   @impl true
-  def call(%Plug.Conn{method: "GET"} = conn, _opts), do: Plug.Conn.send_resp(conn, 404, "")
+  def call(%Plug.Conn{method: "GET"} = conn, _opts) do
+    conn
+    |> Plug.Conn.put_resp_content_type("text/event-stream")
+    |> Plug.Conn.send_resp(200, ": connected\n\n")
+  end
 
   def call(%Plug.Conn{method: "DELETE"} = conn, _opts), do: Plug.Conn.send_resp(conn, 200, "")
 

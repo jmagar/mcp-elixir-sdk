@@ -35,7 +35,8 @@ For 2026 Streamable HTTP:
   exists.
 - Only `subscriptions/listen` owns a long-lived notification response stream.
 
-For 2025 Streamable HTTP, initialize mints `Mcp-Session-Id`; later POST and GET
+For `2025-11-25` Streamable HTTP, initialize mints
+`Mcp-Session-Id`; later POST and GET
 requests require it, GET carries queued server messages as SSE, and DELETE
 closes the session. Handler configuration and the identity binding are created
 at initialize; the identity factory is then re-evaluated on every POST, GET,
@@ -149,6 +150,13 @@ stdio launch opts  -> fixed identity      -> ToolContext.identity -> handler
   every session-bound HTTP request must authenticate as the same principal or
   fail with 403 before dispatch.
 - Stdio/in-process may resolve a launch-static identity once.
+- HTTP clients reject redirects, retries, unsafe endpoint URLs, oversized
+  finite bodies, oversized SSE events, and receive/request deadline overruns
+  with structured transport errors before decoding.
+- Stdio clients reject oversized or malformed/non-JSON-RPC stdout, keep stderr
+  outside the protocol channel, and apply the configured environment and
+  process-tree shutdown policy. Captured stderr is never logged automatically;
+  high-level clients receive it only through an explicit `:stderr_handler`.
 - `params`, tool `arguments`, `_meta`, and routing headers are never identity
   sources.
 - `MCP.Server.Dispatch` only accepts a preconstructed `ToolContext`; it does not
@@ -178,9 +186,11 @@ context-bearing handler callback is required for every identity-capable method.
 The 2.0 path never falls back to a legacy callback arity.
 
 The 2026 path rejects `initialize`. The client prefers `server/discover`, then
-makes one bounded fallback to a 2025 initialize only when discovery is missing
-or the peer's unsupported-version response (including an HTTP 400 carrying
-that JSON-RPC error) advertises 2025. Explicit legacy configuration initializes
+falls back to a 2025 initialize only when discovery is missing or the peer's
+unsupported-version response (including an HTTP 400 carrying that JSON-RPC
+error) advertises 2025. The fallback attempts the supported legacy revision,
+`2025-11-25`, at most once
+and bounded by the connect deadline. Explicit legacy configuration initializes
 directly. An expired legacy HTTP session permits one reinitialize-and-retry;
 the retry cannot recurse. Other errors never trigger fallback.
 
@@ -317,6 +327,7 @@ invalidation, bounds, and unknown-scope behavior.
 | Handler domain error | Handler-provided MCP error | Yes |
 | Tool execution error intended for model | Successful result with `isError: true` | Yes |
 | Transport closes with pending calls | `{:error, {:transport_closed, reason}}` | Maybe |
+| Transport cleanup fails before close | `{:error, {:transport_closed, {:cleanup_failed, cleanup_reason, close_reason}}}`; `MCP.Client.transport_failure/1` returns `cleanup_reason` | Maybe |
 | Client request timeout | `{:error, :timeout}` | Maybe |
 | Subscription queue overflow | Subscription terminates; other work continues | Already established |
 | MRTR/notification callback raises or times out | Operation/callback fails; client GenServer remains responsive | Maybe |

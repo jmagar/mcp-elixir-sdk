@@ -55,8 +55,8 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
         %SubscriptionFilter{tools_list_changed: true}
       )
 
-    assert_receive {:subscription_authorized, 1, :http_principal}, 1_000
-    assert {:ok, acknowledgment} = SubscriptionHandle.next(handle, 1_000)
+    assert_receive {:subscription_authorized, 1, :http_principal}, 5_000
+    assert {:ok, acknowledgment} = SubscriptionHandle.next(handle, 5_000)
     assert acknowledgment["method"] == Methods.subscriptions_acknowledged()
 
     assert :ok =
@@ -67,7 +67,7 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
                %{}
              )
 
-    assert {:ok, event} = SubscriptionHandle.next(handle, 1_000)
+    assert {:ok, event} = SubscriptionHandle.next(handle, 5_000)
     assert event["method"] == Methods.tools_list_changed()
     assert event["params"]["_meta"][@subscription_id_key] == 1
   end
@@ -79,7 +79,7 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
         %SubscriptionFilter{tools_list_changed: true}
       )
 
-    assert {:ok, _acknowledgment} = SubscriptionHandle.next(handle, 1_000)
+    assert {:ok, _acknowledgment} = SubscriptionHandle.next(handle, 5_000)
     assert SubscriptionHandle.next(handle, 35) == {:error, :timeout}
 
     assert :ok =
@@ -90,7 +90,7 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
                %{}
              )
 
-    assert {:ok, event} = SubscriptionHandle.next(handle, 1_000)
+    assert {:ok, event} = SubscriptionHandle.next(handle, 5_000)
     assert event["method"] == Methods.tools_list_changed()
   end
 

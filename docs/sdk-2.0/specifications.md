@@ -67,9 +67,9 @@ Every slice preserves these invariants:
 
 ## S7 — Dual protocol-era compatibility
 
-- Clients MUST prefer `2026-07-28` and make at most one fallback to
-  `2025-11-25` when discovery is unavailable or the server advertises it.
-- Explicit `protocol_version: "2025-11-25"` MUST initialize directly.
+- Clients MUST prefer `2026-07-28` and use bounded fallback to `2025-11-25`
+  only for explicit version/lifecycle incompatibility.
+- Explicit selection of the legacy revision MUST initialize directly.
 - A server connection/session MUST select exactly one protocol era and reject
   mixed-era traffic.
 - Legacy HTTP MUST implement initialize/initialized, `Mcp-Session-Id`, POST,
@@ -78,7 +78,8 @@ Every slice preserves these invariants:
   and reclaimed by idle/absolute expiry. Failed initialize MUST NOT publish or
   retain a session.
 - A current HTTP client MUST treat a conforming HTTP 400 unsupported-version
-  JSON-RPC response as eligible for its single fallback, and MUST perform one
+  JSON-RPC response as eligible for one fallback attempt to `2025-11-25`, and
+  MUST perform one
   bounded reinitialization after an expired-session HTTP 404.
 - Legacy server/client surfaces MUST cover ping, roots, sampling, elicitation,
   resource subscriptions, logging, progress, and list-change notifications.

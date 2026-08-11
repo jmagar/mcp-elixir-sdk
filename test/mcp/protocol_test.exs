@@ -172,6 +172,20 @@ defmodule MCP.ProtocolTest do
       map = %{"jsonrpc" => "2.0", "method" => "notifications/initialized"}
       assert {:ok, %Notification{}} = Protocol.decode_message(map)
     end
+
+    test "rejects ambiguous envelopes and invalid method or id types" do
+      invalid = [
+        %{"jsonrpc" => "2.0", "id" => 1, "result" => %{}, "error" => %{}},
+        %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping", "result" => %{}},
+        %{"jsonrpc" => "2.0", "id" => true, "method" => "ping"},
+        %{"jsonrpc" => "2.0", "id" => 1, "method" => 42},
+        %{"jsonrpc" => "2.0", "method" => %{"not" => "a string"}}
+      ]
+
+      for envelope <- invalid do
+        assert {:error, %Error{code: -32_600}} = Protocol.decode_message(envelope)
+      end
+    end
   end
 
   describe "encode!/1" do

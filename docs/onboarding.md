@@ -2,7 +2,7 @@
 
 > **Archived 1.x onboarding record.** The initialization/session lifecycle
 > below is historical 1.x design material, not the current 2.0 implementation.
-> Version 2.0 again supports the `2025-11-25` wire lifecycle through its
+> Version 2.0 supports the `2025-11-25` wire lifecycle through an
 > isolated compatibility layer. New contributors must use the [current README](../README.md),
 > [architecture](architecture.md), and
 > [development tooling guide](dev-tooling.md) for SDK 2.0.
@@ -133,19 +133,23 @@ Key rules:
 ```
 Client Process                          Server Subprocess
     |                                         |
-    +-- Port.open({:spawn_executable, ...}) --+
+    +-- erlexec process wrapper -------------+
     |                                         |
     +-- Write: JSON + "\n" to stdin --------->|
     |                                         |
     |<-------- Read: JSON + "\n" from stdout--+
     |                                         |
-    +-- stderr: captured/logged, NOT protocol |
+    +-- stderr: disabled or bounded capture   |
 ```
 
 - Newline-delimited JSON-RPC messages
 - Messages MUST NOT contain embedded newlines
-- Server subprocess started via Erlang Port
-- For server mode: read from stdin, write to stdout (we ARE the subprocess)
+- On Unix, client subprocesses are owned by the supervised erlexec wrapper;
+  process-tree cleanup is cooperative and hostile commands need an external
+  cgroup or sandbox.
+- Captured stderr is opt-in and owner-directed; it is never logged by default.
+- For server mode: bounded chunks are read from stdin and framed by newline;
+  writes go to stdout (we ARE the subprocess).
 
 ### Streamable HTTP Transport
 
@@ -201,7 +205,9 @@ lib/mcp/
   # === Transport Layer ===
   transport.ex                       # Transport behaviour
   transport/
-    stdio.ex                         # Port-based stdin/stdout transport
+    stdio.ex                         # MCP framing and client/server stdio orchestration
+    stdio/
+      process.ex                     # Unix erlexec subprocess/process-group wrapper
     sse.ex                           # SSE parsing/encoding utilities
     streamable_http/
       client.ex                      # HTTP POST + SSE client transport (Req)
@@ -225,7 +231,10 @@ lib/mcp/
 Each MCP client and server session is a GenServer. State includes transport, capabilities, pending requests, and an incrementing request ID counter.
 
 ### Transport as Separate Process
-The transport (stdio Port, HTTP client) runs in its own process and sends decoded messages to the owning GenServer via `send(owner, {:mcp_message, decoded_map})`.
+The transport runs in its own process and sends decoded messages to the owning
+GenServer via `send(owner, {:mcp_message, decoded_map})`. On Unix, client-mode
+stdio delegates subprocess ownership and process-group shutdown to an internal
+`erlexec` wrapper; server-mode stdio reads the current process's IO device.
 
 ### Request/Response Matching
 Outgoing requests store `{from, timeout_ref}` in `pending_requests` map keyed by ID. When a response arrives with a matching ID, `GenServer.reply/2` resolves the caller. Timeouts use `Process.send_after/3`.

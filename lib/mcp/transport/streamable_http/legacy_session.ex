@@ -17,10 +17,18 @@ defmodule MCP.Transport.StreamableHTTP.LegacySession do
             event_waiter: nil,
             closed?: false
 
-  @type session :: %{required(:server) => pid(), required(:transport) => pid()}
+  @type session :: %{
+          required(:server) => pid(),
+          required(:transport) => pid(),
+          required(:protocol_version) => String.t()
+        }
 
-  @spec start(module(), keyword(), keyword()) :: {:ok, session()} | {:error, term()}
-  def start(handler_module, handler_opts, server_opts) do
+  @spec start(module(), keyword(), keyword(), String.t()) ::
+          {:ok, session()} | {:error, term()}
+  # The revision is always supplied by the caller. A default here would silently
+  # bind a session to one revision, and `validate_session_protocol/2` in the plug
+  # would then reject every later request on it as a protocol mismatch.
+  def start(handler_module, handler_opts, server_opts, protocol_version) do
     case GenServer.start(__MODULE__, []) do
       {:ok, transport} ->
         case GenServer.start(
@@ -31,7 +39,7 @@ defmodule MCP.Transport.StreamableHTTP.LegacySession do
                ] ++ server_opts
              ) do
           {:ok, server} ->
-            {:ok, %{server: server, transport: transport}}
+            {:ok, %{server: server, transport: transport, protocol_version: protocol_version}}
 
           {:error, reason} ->
             close(transport)
@@ -44,7 +52,7 @@ defmodule MCP.Transport.StreamableHTTP.LegacySession do
   end
 
   @doc false
-  def start_linked(handler_module, handler_opts, server_opts) do
+  def start_linked(handler_module, handler_opts, server_opts, protocol_version) do
     case GenServer.start_link(__MODULE__, []) do
       {:ok, transport} ->
         case Connection.start_link(
@@ -54,7 +62,7 @@ defmodule MCP.Transport.StreamableHTTP.LegacySession do
                ] ++ server_opts
              ) do
           {:ok, server} ->
-            {:ok, %{server: server, transport: transport}}
+            {:ok, %{server: server, transport: transport, protocol_version: protocol_version}}
 
           {:error, reason} ->
             close(transport)

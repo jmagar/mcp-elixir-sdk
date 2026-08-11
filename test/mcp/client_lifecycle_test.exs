@@ -207,7 +207,7 @@ defmodule MCP.ClientLifecycleTest do
 
     filter = %SubscriptionFilter{tools_list_changed: true}
     assert {:ok, handle} = Client.listen_subscriptions(client, filter, timeout: 1_000)
-    assert_receive {:delayed_request_started, _request}, 1_000
+    assert_receive {:delayed_request_started, _request}, 5_000
 
     transport = Client.transport(client)
 

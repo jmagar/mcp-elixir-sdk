@@ -1,28 +1,30 @@
 {
   "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
   "protocolVersion": "2025-11-25",
-  "verifiedOn": "2026-08-09",
+  "verifiedOn": "2026-08-11",
+  "reviewedCommit": "f92ad7a3d19128b82e244198342725dfc25a8035",
   "server": {
     "profile": "requirements:2025-11-25",
     "status": "passed",
-    "checks": {
-      "passed": 81,
-      "failed": 0,
-      "warnings": 0
-    },
-    "command": "npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2025-11-25"
+    "scenarios": 33,
+    "checks": {"passed": 81, "failed": 0, "warnings": 0},
+    "command": "sh -c 'set -eu; MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 mix run --no-halt conformance/server_adapter.exs 43001 & server_pid=$!; trap \"kill $server_pid 2>/dev/null || true; wait $server_pid 2>/dev/null || true\" EXIT INT TERM; ready=; for attempt in 1 2 3 4 5 6 7 8 9 10; do if curl -sS -o /dev/null http://127.0.0.1:43001/mcp; then ready=1; break; fi; sleep 1; done; test \"$ready\" = 1; npx --no-install conformance server --url http://127.0.0.1:43001/mcp --requirements 2025-11-25'"
   },
   "client": {
-    "officialInitializeScenario": {
-      "passed": 1,
-      "failed": 0
-    },
-    "sdkIntegrationCoverage": [
-      "explicit 2025-11-25 selection",
-      "2026 discovery fallback to a 2025-11-25 server",
-      "legacy request and notification shapes",
-      "HTTP session lifecycle and SSE server requests"
+    "profile": "requirements:2025-11-25",
+    "command": "npx --no-install conformance client --command 'env MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 ERL_LIBS=_build/dev/lib elixir conformance/client_adapter.exs' --requirements 2025-11-25",
+    "requiredNonAuthorizationScenarios": [
+      {"name": "initialize", "status": "passed", "checks": {"passed": 1, "failed": 0, "warnings": 0}},
+      {"name": "tools_call", "status": "passed", "checks": {"passed": 2, "failed": 0, "warnings": 0}},
+      {"name": "elicitation-sep1034-client-defaults", "status": "passed", "checks": {"passed": 5, "failed": 0, "warnings": 0}},
+      {"name": "sse-retry", "status": "partial", "checks": {"passed": 0, "failed": 1, "warnings": 0}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared support set; the adapter exits after rejecting that initialize version."}
     ],
-    "authorizationProfile": "excluded: authentication is owned by the embedding transport pipeline"
+    "requiredAuthorizationScenarios": {
+      "count": 14,
+      "status": "excluded",
+      "reason": "OAuth authorization is owned by the embedding transport pipeline and is not implemented by this SDK."
+    },
+    "status": "incomplete",
+    "releaseBlocker": "The required non-authorization client denominator is not fully passing because sse-retry requires an undeclared older wire revision."
   }
 }

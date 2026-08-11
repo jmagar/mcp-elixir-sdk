@@ -3,8 +3,8 @@ date: 2026-08-10 02:16:19 EDT
 repo: git@github.com:jmagar/mcp-elixir-sdk.git
 branch: main
 head: bf2d4ef8124de342dc7de5a1d3607cd9d2fd2ffa
-working directory: /home/jmagar/workspace/mcp-elixir-sdk
-worktree: /home/jmagar/workspace/mcp-elixir-sdk
+working directory: repository root
+worktree: primary repository checkout
 pr: "#1 feat: complete MCP 2.0 dual-protocol SDK (https://github.com/jmagar/mcp-elixir-sdk/pull/1)"
 beads: mcp-elixir-sdk-7yz, mcp-elixir-sdk-7yz.1, mcp-elixir-sdk-7yz.2, mcp-elixir-sdk-7yz.3, mcp-elixir-sdk-7yz.4, mcp-elixir-sdk-7yz.5, mcp-elixir-sdk-7yz.6, mcp-elixir-sdk-7yz.7, mcp-elixir-sdk-7yz.8, mcp-elixir-sdk-7yz.9
 ---
@@ -22,7 +22,7 @@ The session turned the fork into a dual-era MCP client/server SDK with OTP super
 ## Sequence of Events
 
 1. Reviewed the earlier MCP Elixir SDK work and established that the existing SDK used OTP but lacked the intended 2.0 protocol surface and evidence.
-2. Forked and cloned the SDK into `/home/jmagar/workspace/mcp-elixir-sdk`, then organized implementation into test-first slices.
+2. Forked and cloned the SDK, then organized implementation into test-first slices.
 3. Added specifications, contracts, types, runtime models, ADRs, architecture, tooling guidance, and a progress ledger, including a retroactive record for the first slice.
 4. Implemented 2026 routing headers, subscriptions, extension capability negotiation, JSON Schema 2020-12 preservation, client/server wiring, release hardening, and official conformance adapters.
 5. Added ADRs for immutable handler configuration, consumer-owned subscription supervision, and the absence of a client result cache.

@@ -31,6 +31,8 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   end
 
   @doc false
+  @spec lookup(GenServer.server(), term(), String.t(), term()) ::
+          {:ok, LegacySession.session()} | {:error, :identity_mismatch} | :error
   def lookup(manager, endpoint_id, session_id, identity) do
     GenServer.call(manager, {:lookup, endpoint_id, session_id, identity})
   end
@@ -68,7 +70,13 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
 
     with {:ok, endpoint_owner} <- resolve_endpoint_owner(Keyword.fetch!(limits, :endpoint_owner)),
          :ok <- capacity_available(state, endpoint_id, identity_fingerprint, limits),
-         {:ok, session} <- LegacySession.start_linked(handler_module, handler_opts, server_opts) do
+         {:ok, session} <-
+           LegacySession.start_linked(
+             handler_module,
+             handler_opts,
+             server_opts,
+             Keyword.fetch!(limits, :protocol_version)
+           ) do
       session_id = UUID.uuid4()
 
       entry = %{

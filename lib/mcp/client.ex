@@ -14,7 +14,7 @@ defmodule MCP.Client do
         client_info: %{name: "my_app", version: "1.0.0"}
       )
 
-      {:ok, info}  = MCP.Client.connect(client)          # server/discover probe
+      {:ok, info}  = MCP.Client.connect(client)          # selects the configured era
       {:ok, tools} = MCP.Client.list_tools(client)
       {:ok, out}   = MCP.Client.call_tool(client, "my_tool", %{"arg" => "val"})
 
@@ -36,6 +36,10 @@ defmodule MCP.Client do
     * `:protocol_version` — advertised version (default: the stateless core's)
     * `:notification_handler` — pid or `(method, params -> any)` for server
       notifications
+    * `:stderr_handler` — opt-in pid or `(binary -> any)` for bounded captured
+      stdio diagnostics; diagnostics are never logged by default
+    * `:stderr_handler_concurrency` — isolated diagnostic callback concurrency
+      (default: 1)
     * `:on_input_required` — `(input_requests -> input_responses)` MRTR resolver
     * `:request_timeout` — default request timeout in ms (default: 30_000)
     * `:tool_schema_limit` — maximum cached tool schemas (default: 1,024)
@@ -59,6 +63,7 @@ defmodule MCP.Client do
   alias MCP.Protocol.Messages.{Discover, Initialize, MRTR, Notification, Request, Response}
   alias MCP.Protocol.Messages.Subscriptions.{AcknowledgedParams, ListenParams, ListenResult}
   alias MCP.Protocol.Methods
+  alias MCP.Protocol.Revision
   alias MCP.Protocol.ToolRouting
   alias MCP.Protocol.Types.{Implementation, SubscriptionFilter}
 
@@ -68,10 +73,12 @@ defmodule MCP.Client do
   @default_notification_concurrency 32
   @default_server_request_concurrency 32
   @default_server_request_timeout 30_000
-  @protocol_version "2026-07-28"
-  @legacy_protocol_version "2025-11-25"
+  @default_stderr_handler_concurrency 1
+  @protocol_version Revision.preferred()
   @subscription_ack_method "notifications/subscriptions/acknowledged"
 
+  # Client state is intentionally explicit so lifecycle ownership remains inspectable.
+  # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
   defstruct [
     :transport_module,
     :transport_pid,
@@ -80,8 +87,10 @@ defmodule MCP.Client do
     :client_info,
     :client_capabilities,
     :protocol_version,
+    :legacy_adapter,
     :status,
     :notification_handler,
+    :stderr_handler,
     :on_input_required,
     :request_handlers,
     :legacy_ready,
@@ -90,11 +99,13 @@ defmodule MCP.Client do
     :tool_schema_index,
     :tool_schema_order,
     :tool_schema_limit,
+    :transport_failure,
     :pending_requests,
     :next_id,
     :request_timeout,
     :task_supervisor,
     :notification_supervisor,
+    :diagnostic_supervisor,
     :server_request_supervisor,
     :server_request_timeout,
     :subscription_supervisor,
@@ -119,8 +130,9 @@ defmodule MCP.Client do
   end
 
   @doc """
-  Probes the server via `server/discover` (the stateless replacement for the
-  removed `initialize` handshake).
+  Connects using `server/discover` for the stateless era or the
+  initialize/initialized handshake for the legacy era. A preferred stateless
+  client may make one bounded legacy fallback on explicit incompatibility.
 
   Returns `{:ok, %{server_info:, server_capabilities:, protocol_version:,
   instructions:}}`.
@@ -301,6 +313,9 @@ defmodule MCP.Client do
   @doc "Returns the current client status (`:ready` or `:closed`)."
   def status(client), do: GenServer.call(client, :get_status)
 
+  @doc "Returns the most recent transport cleanup failure, if one occurred."
+  def transport_failure(client), do: GenServer.call(client, :get_transport_failure)
+
   @doc "Returns the discovered server capabilities (after `connect/1`)."
   def server_capabilities(client), do: GenServer.call(client, :get_server_capabilities)
 
@@ -328,11 +343,14 @@ defmodule MCP.Client do
   @impl GenServer
   def init(opts) do
     tool_schema_limit = Keyword.get(opts, :tool_schema_limit, 1_024)
+    protocol_version = Keyword.get(opts, :protocol_version, @protocol_version)
 
-    if is_integer(tool_schema_limit) and tool_schema_limit >= 0 do
+    with true <- is_integer(tool_schema_limit) and tool_schema_limit >= 0,
+         {:ok, _revision} <- Revision.fetch(protocol_version) do
       init_with_schema_limit(opts, tool_schema_limit)
     else
-      {:stop, {:invalid_tool_schema_limit, tool_schema_limit}}
+      false -> {:stop, {:invalid_tool_schema_limit, tool_schema_limit}}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
@@ -346,6 +364,12 @@ defmodule MCP.Client do
 
     {:ok, notification_supervisor} =
       Task.Supervisor.start_link(max_children: notification_concurrency)
+
+    stderr_handler_concurrency =
+      Keyword.get(opts, :stderr_handler_concurrency, @default_stderr_handler_concurrency)
+
+    {:ok, diagnostic_supervisor} =
+      Task.Supervisor.start_link(max_children: stderr_handler_concurrency)
 
     server_request_concurrency =
       Keyword.get(opts, :server_request_concurrency, @default_server_request_concurrency)
@@ -367,8 +391,10 @@ defmodule MCP.Client do
       client_info: build_client_info(Keyword.get(opts, :client_info, default_info())),
       client_capabilities: client_capabilities,
       protocol_version: Keyword.get(opts, :protocol_version, @protocol_version),
+      legacy_adapter: legacy_adapter(Keyword.get(opts, :protocol_version, @protocol_version)),
       status: :ready,
       notification_handler: Keyword.get(opts, :notification_handler),
+      stderr_handler: Keyword.get(opts, :stderr_handler),
       on_input_required: Keyword.get(opts, :on_input_required),
       request_handlers: request_handlers,
       legacy_ready: false,
@@ -381,6 +407,7 @@ defmodule MCP.Client do
       request_timeout: Keyword.get(opts, :request_timeout, @default_request_timeout),
       task_supervisor: task_supervisor,
       notification_supervisor: notification_supervisor,
+      diagnostic_supervisor: diagnostic_supervisor,
       server_request_supervisor: server_request_supervisor,
       server_request_timeout:
         Keyword.get(opts, :server_request_timeout, @default_server_request_timeout),
@@ -389,6 +416,8 @@ defmodule MCP.Client do
         Keyword.get(opts, :subscription_queue_limit, @default_subscription_queue_limit),
       subscriptions: %{}
     }
+
+    transport_spec = put_transport_protocol_version(transport_spec, state.protocol_version)
 
     case start_transport(transport_spec) do
       {:ok, module, pid} -> {:ok, %{state | transport_module: module, transport_pid: pid}}
@@ -434,6 +463,9 @@ defmodule MCP.Client do
   def handle_call(:get_transport, _from, state), do: {:reply, state.transport_pid, state}
   def handle_call(:get_status, _from, state), do: {:reply, state.status, state}
 
+  def handle_call(:get_transport_failure, _from, state),
+    do: {:reply, state.transport_failure, state}
+
   def handle_call(:get_server_capabilities, _from, state),
     do: {:reply, state.server_capabilities, state}
 
@@ -442,11 +474,8 @@ defmodule MCP.Client do
   def handle_call(_request, _from, %{status: :closed} = state),
     do: {:reply, {:error, :closed}, state}
 
-  def handle_call(
-        _request,
-        _from,
-        %{protocol_version: @legacy_protocol_version, legacy_ready: false} = state
-      ),
+  def handle_call(_request, _from, %{legacy_adapter: adapter, legacy_ready: false} = state)
+      when not is_nil(adapter),
       do: {:reply, {:error, :not_ready}, state}
 
   def handle_call({:list_tools, opts, timeout}, from, state),
@@ -548,8 +577,9 @@ defmodule MCP.Client do
   def handle_call(
         {:listen_subscriptions, _filter, _opts},
         _from,
-        %{protocol_version: @legacy_protocol_version} = state
-      ),
+        %{legacy_adapter: adapter} = state
+      )
+      when not is_nil(adapter),
       do: {:reply, {:error, :stateless_protocol_required}, state}
 
   def handle_call({:listen_subscriptions, filter, opts}, from, state) do
@@ -611,6 +641,12 @@ defmodule MCP.Client do
   end
 
   def handle_info({:mcp_transport_closed, reason}, state) do
+    reason =
+      case state.transport_failure do
+        nil -> reason
+        cleanup_reason -> {:cleanup_failed, cleanup_reason, reason}
+      end
+
     state = fail_all_operations(state, {:transport_closed, reason})
 
     Enum.each(state.subscriptions, fn {_id, subscription} ->
@@ -619,6 +655,40 @@ defmodule MCP.Client do
     end)
 
     {:noreply, %{state | status: :closed, subscriptions: %{}}}
+  end
+
+  def handle_info({:mcp_transport_cleanup_failed, reason}, state) do
+    Logger.error("MCP transport cleanup failed: #{inspect(reason)}")
+    {:noreply, %{state | transport_failure: reason}}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: nil} = state) do
+    # Captured stderr is sensitive upstream-owned data. The transport exposes
+    # it to direct owners, but the high-level client never persists it to logs.
+    _data = data
+    {:noreply, state}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: handler} = state)
+      when is_pid(handler) do
+    send(handler, {:mcp_transport_stderr, data})
+    {:noreply, state}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: handler} = state)
+      when is_function(handler, 1) do
+    case Task.Supervisor.start_child(state.diagnostic_supervisor, fn -> handler.(data) end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, :max_children} ->
+        Logger.warning("MCP stderr handler saturated; diagnostic dropped")
+
+      {:error, reason} ->
+        Logger.warning("MCP stderr handler unavailable: #{inspect(reason)}")
+    end
+
+    {:noreply, state}
   end
 
   def handle_info({:mcp_legacy_sse_failed, reason}, state) do
@@ -832,9 +902,9 @@ defmodule MCP.Client do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     case supported_protocol_version(data) do
-      @legacy_protocol_version when remaining > 0 ->
-        state = %{state | protocol_version: @legacy_protocol_version}
-        send_initialize(state, operation.from, remaining)
+      version when is_binary(version) and remaining > 0 and version != @protocol_version ->
+        state = select_protocol(state, version)
+        resume_initialize(state, operation.from, remaining, deadline)
 
       version when is_binary(version) and remaining > 0 ->
         state = %{state | protocol_version: version}
@@ -862,8 +932,8 @@ defmodule MCP.Client do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      state = %{state | protocol_version: @legacy_protocol_version}
-      send_initialize(state, operation.from, remaining)
+      state = select_protocol(state, first_legacy_revision())
+      resume_initialize(state, operation.from, remaining, deadline)
     else
       GenServer.reply(operation.from, {:error, :timeout})
       {:noreply, state}
@@ -919,6 +989,35 @@ defmodule MCP.Client do
   defp finish_response_with_operation(response, operation, state),
     do: finish_response(response, operation.from, operation.kind, state)
 
+  defp finish_response(
+         %Response{error: %Error{code: -32_022}},
+         from,
+         {:initialize_fallback, [version | rest], deadline},
+         state
+       ) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      state = select_protocol(state, version)
+      send_initialize(state, from, remaining, {:initialize_fallback, rest, deadline})
+    else
+      GenServer.reply(from, {:error, :timeout})
+      {:noreply, state}
+    end
+  end
+
+  # Only a successful response continues the fallback ladder. Any other error
+  # than the unsupported-version code matched above is a real failure (auth,
+  # internal, transport) and must reach the generic error path instead of being
+  # rewritten into an empty result.
+  defp finish_response(
+         %Response{error: nil, result: result},
+         from,
+         {:initialize_fallback, _rest, _deadline},
+         state
+       ),
+       do: finish_response(%Response{result: result}, from, :initialize, state)
+
   # server/discover result → capability probe reply.
   defp finish_response(%Response{error: error}, from, {:discover, _retried?}, state)
        when error != nil do
@@ -935,8 +1034,8 @@ defmodule MCP.Client do
     end
   end
 
-  defp finish_response(%Response{result: result}, from, :initialize, state) do
-    case decode_initialize_result(result) do
+  defp finish_response(%Response{error: nil, result: result}, from, :initialize, state) do
+    case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do
           :ok -> complete_initialize(from, initialize, state)
@@ -949,8 +1048,13 @@ defmodule MCP.Client do
     end
   end
 
-  defp finish_response(%Response{result: result}, from, {:reinitialize, original}, state) do
-    case decode_initialize_result(result) do
+  defp finish_response(
+         %Response{error: nil, result: result},
+         from,
+         {:reinitialize, original},
+         state
+       ) do
+    case decode_initialize_result(result, state) do
       {:ok, initialize} ->
         case send_notification(state, Methods.initialized(), nil) do
           :ok -> retry_after_reinitialize(from, initialize, original, state)
@@ -1108,12 +1212,32 @@ defmodule MCP.Client do
         state = %{state | connect_waiters: waiting, connect_result: nil, legacy_ready: false}
 
         if legacy_protocol?(state) do
-          send_initialize(state, waiter.from, remaining)
+          resume_initialize(state, waiter.from, remaining, now + remaining)
         else
           send_rpc(state, waiter.from, Methods.discover(), %{}, {:discover, false}, [], remaining)
         end
     end
   end
+
+  # Every path that selects a legacy revision goes through here so the remaining
+  # ladder is always carried. Sending a plain `:initialize` instead would strand
+  # negotiation on the selected revision when the peer answers -32022.
+  defp resume_initialize(state, from, remaining, deadline) do
+    case remaining_legacy_revisions(state.protocol_version) do
+      [] -> send_initialize(state, from, remaining)
+      rest -> send_initialize(state, from, remaining, {:initialize_fallback, rest, deadline})
+    end
+  end
+
+  defp remaining_legacy_revisions(protocol_version) do
+    legacy_revisions()
+    |> Enum.drop_while(&(&1 != protocol_version))
+    |> Enum.drop(1)
+  end
+
+  defp first_legacy_revision, do: List.first(legacy_revisions())
+
+  defp legacy_revisions, do: Enum.filter(Revision.supported(), &Revision.legacy?/1)
 
   defp rollback_initialize(from, reason, state) do
     reset_transport_session(state)
@@ -1156,19 +1280,24 @@ defmodule MCP.Client do
 
   defp recover_expired_session(operation, state) do
     remaining = operation.deadline - System.monotonic_time(:millisecond)
-    reset_transport_session(state)
     state = %{state | legacy_ready: false}
 
-    if remaining > 0 do
-      original =
-        operation
-        |> Map.drop([:timeout_ref, :transport_ref, :transport_pid])
-        |> Map.put(:recovery_attempted, true)
+    case reset_transport_session(state) do
+      :ok when remaining > 0 ->
+        original =
+          operation
+          |> Map.drop([:timeout_ref, :transport_ref, :transport_pid])
+          |> Map.put(:recovery_attempted, true)
 
-      send_initialize(state, operation.from, remaining, {:reinitialize, original})
-    else
-      GenServer.reply(operation.from, {:error, :timeout})
-      {:noreply, state}
+        send_initialize(state, operation.from, remaining, {:reinitialize, original})
+
+      :ok ->
+        GenServer.reply(operation.from, {:error, :timeout})
+        {:noreply, state}
+
+      {:error, reason} ->
+        GenServer.reply(operation.from, {:error, {:session_reset_failed, reason}})
+        {:noreply, state}
     end
   end
 
@@ -1179,7 +1308,7 @@ defmodule MCP.Client do
       :ok
     end
   catch
-    :exit, _reason -> :ok
+    :exit, reason -> {:error, {:transport_exit, reason}}
   end
 
   defp connect_operation?({:discover, _retried?}), do: true
@@ -1291,8 +1420,8 @@ defmodule MCP.Client do
       String.contains?(detail, "mcp-param-")
   end
 
-  defp tools_from_result(%{"tools" => tools}, state)
-       when state.protocol_version == @legacy_protocol_version and is_list(tools),
+  defp tools_from_result(%{"tools" => tools}, %{legacy_adapter: adapter})
+       when not is_nil(adapter) and is_list(tools),
        do: {:ok, tools}
 
   defp tools_from_result(result, _state) when is_map(result) do
@@ -1911,7 +2040,7 @@ defmodule MCP.Client do
   # Every request carries the per-request _meta the stateless server needs in
   # place of the removed handshake (SEP-2575): protocol version + client
   # identity/capabilities. `server/discover` also carries it harmlessly.
-  defp with_meta(params, state) when state.protocol_version == @legacy_protocol_version,
+  defp with_meta(params, %{legacy_adapter: adapter}) when not is_nil(adapter),
     do: params
 
   defp with_meta(params, state) do
@@ -2133,6 +2262,15 @@ defmodule MCP.Client do
     end
   end
 
+  defp put_transport_protocol_version(
+         {MCP.Transport.StreamableHTTP.Client, opts},
+         protocol_version
+       ) do
+    {MCP.Transport.StreamableHTTP.Client, Keyword.put(opts, :protocol_version, protocol_version)}
+  end
+
+  defp put_transport_protocol_version(transport_spec, _protocol_version), do: transport_spec
+
   defp build_client_info(%Implementation{} = impl), do: impl
 
   defp build_client_info(map) when is_map(map) do
@@ -2171,7 +2309,14 @@ defmodule MCP.Client do
              :server_request_timeout,
              @default_server_request_timeout
            ),
+         :ok <-
+           validate_positive_option(
+             opts,
+             :stderr_handler_concurrency,
+             @default_stderr_handler_concurrency
+           ),
          :ok <- validate_client_capabilities(opts),
+         :ok <- validate_stderr_handler(opts),
          do: validate_callback_configuration(opts)
   end
 
@@ -2200,6 +2345,9 @@ defmodule MCP.Client do
 
   defp invalid_option_error(:server_request_timeout), do: :invalid_server_request_timeout
 
+  defp invalid_option_error(:stderr_handler_concurrency),
+    do: :invalid_stderr_handler_concurrency
+
   defp validate_client_capabilities(opts) do
     capabilities = Keyword.get(opts, :client_capabilities, %ClientCapabilities{})
     _encoded = capabilities |> normalize_client_capabilities() |> ClientCapabilities.to_map()
@@ -2207,6 +2355,14 @@ defmodule MCP.Client do
   rescue
     exception in [ArgumentError, FunctionClauseError] ->
       {:error, {:invalid_client_capabilities, Exception.message(exception)}}
+  end
+
+  defp validate_stderr_handler(opts) do
+    case Keyword.get(opts, :stderr_handler) do
+      nil -> :ok
+      handler when is_pid(handler) or is_function(handler, 1) -> :ok
+      invalid -> {:error, {:invalid_stderr_handler, invalid}}
+    end
   end
 
   defp validate_callback_configuration(opts) do
@@ -2229,7 +2385,7 @@ defmodule MCP.Client do
   end
 
   defp validate_callback_capabilities(opts, capabilities, handlers) do
-    if Keyword.get(opts, :protocol_version, @protocol_version) == @legacy_protocol_version do
+    if Revision.legacy?(Keyword.get(opts, :protocol_version, @protocol_version)) do
       [
         {Methods.sampling_create_message(), capabilities.sampling},
         {Methods.roots_list(), capabilities.roots},
@@ -2335,32 +2491,39 @@ defmodule MCP.Client do
   defp decode_discover_result(_result, _protocol_version), do: {:error, :result_must_be_an_object}
 
   defp send_initialize(state, from, timeout, kind \\ :initialize) do
-    params =
-      Initialize.Params.to_map(%Initialize.Params{
-        protocol_version: @legacy_protocol_version,
-        capabilities: state.client_capabilities,
-        client_info: state.client_info
-      })
+    params = state.legacy_adapter.initialize_params(state.client_info, state.client_capabilities)
 
     send_rpc(state, from, Methods.initialize(), params, kind, [], timeout)
   end
 
-  defp decode_initialize_result(result) when is_map(result) do
+  defp decode_initialize_result(result, state) when is_map(result) do
     initialize = Initialize.Result.from_map(result)
 
-    if initialize.protocol_version == @legacy_protocol_version do
-      {:ok, initialize}
-    else
-      {:error, {:unsupported_protocol_version, initialize.protocol_version}}
+    case state.legacy_adapter.validate_initialize_result(result) do
+      :ok ->
+        {:ok, initialize}
+
+      {:error, {:unexpected_protocol_version, version}} ->
+        {:error, {:unsupported_protocol_version, version}}
     end
   rescue
     error in [ArgumentError, KeyError, FunctionClauseError] ->
       {:error, Exception.message(error)}
   end
 
-  defp decode_initialize_result(_result), do: {:error, :result_must_be_an_object}
+  defp decode_initialize_result(_result, _state), do: {:error, :result_must_be_an_object}
 
-  defp legacy_protocol?(state), do: state.protocol_version == @legacy_protocol_version
+  defp legacy_protocol?(state), do: not is_nil(state.legacy_adapter)
+
+  defp legacy_adapter(version) do
+    case Revision.fetch(version) do
+      {:ok, adapter} when adapter != :stateless -> adapter
+      _other -> nil
+    end
+  end
+
+  defp select_protocol(state, version),
+    do: %{state | protocol_version: version, legacy_adapter: legacy_adapter(version)}
 
   defp maybe_put_request_state(params, result) do
     if Map.has_key?(result, "requestState") do
