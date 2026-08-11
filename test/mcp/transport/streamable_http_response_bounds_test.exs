@@ -142,6 +142,28 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
              Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
   end
 
+  test "malformed JSON-RPC envelopes are rejected before owner delivery" do
+    invalid = [
+      %{"jsonrpc" => "2.0", "id" => 1, "result" => %{}, "error" => %{}},
+      %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping", "result" => %{}},
+      %{"jsonrpc" => "2.0", "id" => true, "method" => "ping"}
+    ]
+
+    for {envelope, index} <- Enum.with_index(invalid) do
+      url = start_response_server(Jason.encode!(envelope), content_type: "application/json")
+      client = start_supervised!({Client, owner: self(), url: url}, id: {Client, index})
+
+      assert {:error, {:invalid_json_rpc, -32_600}} =
+               Client.send_message(client, %{
+                 "jsonrpc" => "2.0",
+                 "id" => index,
+                 "method" => "ping"
+               })
+
+      refute_receive {:mcp_message, ^envelope}, 50
+    end
+  end
+
   test "malformed successful response content never enters transport logs" do
     secret = "sentinel-secret-response-body"
     url = start_response_server(secret, content_type: "application/json")

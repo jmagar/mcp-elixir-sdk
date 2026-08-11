@@ -73,16 +73,13 @@ defmodule MCP.Protocol do
           {:ok, Request.t() | Response.t() | Notification.t()} | {:error, Error.t()}
   def decode_message(%{"jsonrpc" => "2.0"} = map) do
     cond do
-      # Response: has "id" and ("result" or "error")
-      Map.has_key?(map, "id") and (Map.has_key?(map, "result") or Map.has_key?(map, "error")) ->
+      response_envelope?(map) ->
         decode_response(map)
 
-      # Request: has "id" and "method"
-      Map.has_key?(map, "id") and Map.has_key?(map, "method") ->
+      request_envelope?(map) ->
         {:ok, decode_request(map)}
 
-      # Notification: has "method" but no "id"
-      Map.has_key?(map, "method") and not Map.has_key?(map, "id") ->
+      notification_envelope?(map) ->
         {:ok, decode_notification(map)}
 
       true ->
@@ -93,6 +90,25 @@ defmodule MCP.Protocol do
   def decode_message(_map) do
     {:error, Error.invalid_request("Missing or invalid jsonrpc version")}
   end
+
+  defp response_envelope?(map) do
+    Map.has_key?(map, "id") and valid_response_id?(map["id"]) and
+      not Map.has_key?(map, "method") and
+      Map.has_key?(map, "result") != Map.has_key?(map, "error")
+  end
+
+  defp request_envelope?(map) do
+    Map.has_key?(map, "id") and valid_request_id?(map["id"]) and is_binary(map["method"]) and
+      not Map.has_key?(map, "result") and not Map.has_key?(map, "error")
+  end
+
+  defp notification_envelope?(map) do
+    not Map.has_key?(map, "id") and is_binary(map["method"]) and
+      not Map.has_key?(map, "result") and not Map.has_key?(map, "error")
+  end
+
+  defp valid_request_id?(id), do: is_integer(id) or is_binary(id)
+  defp valid_response_id?(id), do: is_nil(id) or valid_request_id?(id)
 
   defp decode_request(map) do
     %Request{

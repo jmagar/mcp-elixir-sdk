@@ -135,6 +135,30 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   @tag @linux_only
+  test "a subprocess DOWN releases an outstanding stdout callback before stopping" do
+    {:ok, policy} = SecurityPolicy.new(shutdown_timeout: 500)
+
+    process =
+      start_supervised!(
+        {StdioProcess,
+         owner: self(),
+         command: System.find_executable("elixir"),
+         args: [@fixture, "frame_burst_exit"],
+         env: [],
+         security_policy: policy}
+      )
+
+    assert_receive {:stdio_process, ^process, :stdout, data}, 5_000
+    assert data != ""
+
+    state = :sys.get_state(process)
+    send(process, {:DOWN, state.os_pid, :process, state.exec_pid, :normal})
+
+    assert_receive {:stdio_process, ^process, :closed, :normal}, 5_000
+    refute Process.alive?(process)
+  end
+
+  @tag @linux_only
   test "close kills an escaped descendant spawned during termination" do
     pid_file =
       Path.join(System.tmp_dir!(), "mcp-late-descendant-#{System.unique_integer([:positive])}")

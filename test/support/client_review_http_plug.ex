@@ -91,7 +91,13 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
       true ->
         conn
         |> Plug.Conn.put_resp_header("mcp-session-id", "review-session")
-        |> respond(200, initialize_result(message["id"]))
+        |> respond(
+          200,
+          initialize_result(
+            message["id"],
+            Keyword.get(opts, :initialize_protocol_version, @legacy_version)
+          )
+        )
     end
   end
 
@@ -206,7 +212,11 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
     end
   end
 
-  defp initialize_override(:wrong_id, message), do: initialize_result(message["id"] + 1)
+  defp initialize_override(:wrong_id, %{"id" => id}) when is_integer(id),
+    do: initialize_result(id + 1)
+
+  defp initialize_override(:wrong_id, %{"id" => id}) when is_binary(id),
+    do: initialize_result(id <> "-wrong")
 
   defp initialize_override(:notification, _message),
     do: %{"jsonrpc" => "2.0", "method" => "notifications/progress", "params" => %{}}
@@ -225,12 +235,12 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
       "result" => %{"protocolVersion" => @legacy_version}
     }
 
-  defp initialize_result(id) do
+  defp initialize_result(id, protocol_version \\ @legacy_version) do
     %{
       "jsonrpc" => "2.0",
       "id" => id,
       "result" => %{
-        "protocolVersion" => @legacy_version,
+        "protocolVersion" => protocol_version,
         "capabilities" => %{},
         "serverInfo" => %{"name" => "review", "version" => "1"}
       }

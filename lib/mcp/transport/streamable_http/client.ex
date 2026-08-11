@@ -807,11 +807,12 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         end
       end)
 
-    case {successful_initialize?, get_header(headers, "mcp-session-id")} do
-      {true, session_id} when is_binary(session_id) ->
+    case {Revision.legacy?(protocol_version), successful_initialize?,
+          get_header(headers, "mcp-session-id")} do
+      {true, true, session_id} when is_binary(session_id) ->
         GenServer.call(transport, {:bind_session, session_id, protocol_version})
 
-      _no_successful_session ->
+      _no_successful_legacy_session ->
         :ok
     end
   end

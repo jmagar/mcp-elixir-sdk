@@ -15,6 +15,7 @@ defmodule MCP.ClientReviewRemediationTest do
   alias MCP.Transport.StreamableHTTP.Client, as: HTTPClient
   alias MCP.Transport.StreamableHTTP.SecurityPolicy
 
+  @modern_version "2026-07-28"
   @legacy_version "2025-11-25"
 
   test "connect is serialized and cached for a legacy client" do
@@ -285,6 +286,21 @@ defmodule MCP.ClientReviewRemediationTest do
 
       assert :sys.get_state(transport).session_id == nil
     end
+  end
+
+  test "a modern initialize response ignores an unexpected session header" do
+    %{url: url} = start_http_plug(initialize_protocol_version: @modern_version)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @modern_version})
+
+    assert :ok = HTTPClient.send_message(transport, initialize_request(1, @modern_version))
+    assert :sys.get_state(transport).session_id == nil
+
+    notification = %{"jsonrpc" => "2.0", "method" => "notifications/progress"}
+    assert :ok = HTTPClient.send_message(transport, notification)
+    assert_receive {:client_review_http_post, headers, ^notification}
+    refute List.keymember?(headers, "mcp-session-id", 0)
   end
 
   test "an HTTP session binding is immutable until explicit reset" do
@@ -563,13 +579,13 @@ defmodule MCP.ClientReviewRemediationTest do
                     _}
   end
 
-  defp initialize_request(id) do
+  defp initialize_request(id, protocol_version \\ @legacy_version) do
     %{
       "jsonrpc" => "2.0",
       "id" => id,
       "method" => "initialize",
       "params" => %{
-        "protocolVersion" => @legacy_version,
+        "protocolVersion" => protocol_version,
         "capabilities" => %{},
         "clientInfo" => %{"name" => "review", "version" => "1"}
       }

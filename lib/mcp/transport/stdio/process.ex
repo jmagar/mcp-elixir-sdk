@@ -125,6 +125,8 @@ defmodule MCP.Transport.Stdio.Process do
   @impl GenServer
   def handle_info({:DOWN, os_pid, :process, exec_pid, reason}, state)
       when os_pid == state.os_pid and exec_pid == state.exec_pid do
+    reply_stdout(state.stdout_from)
+    state = %{state | stdout_from: nil, pending_stdout_bytes: 0}
     deadline = cleanup_deadline(state.policy.shutdown_timeout)
 
     cleanup_result =
