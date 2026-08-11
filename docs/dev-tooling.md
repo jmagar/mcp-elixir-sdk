@@ -101,9 +101,8 @@ mix run --no-start test/runtime/unraid_stdio_cleanup.exs -- test/support/adversa
 configuration at application start, so the probe must configure it before the
 application tree comes up.
 
-On 2026-08-10 it
-was run from the built Hex archive on `devbox` as user `jmagar`, Linux
-`6.18.38-Unraid`, inside a disposable `elixir:1.18.4` container with Docker
+On 2026-08-10 it was run from the built Hex archive on an Unraid development
+host, Linux `6.18.38-Unraid`, inside a disposable `elixir:1.18.4` container with Docker
 `--init`. The host has no native Mix installation.
 
 The first run exposed that `/proc/<pid>/task/<pid>/children` alone did not find
