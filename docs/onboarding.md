@@ -133,19 +133,23 @@ Key rules:
 ```
 Client Process                          Server Subprocess
     |                                         |
-    +-- Port.open({:spawn_executable, ...}) --+
+    +-- erlexec process wrapper -------------+
     |                                         |
     +-- Write: JSON + "\n" to stdin --------->|
     |                                         |
     |<-------- Read: JSON + "\n" from stdout--+
     |                                         |
-    +-- stderr: captured/logged, NOT protocol |
+    +-- stderr: disabled or bounded capture   |
 ```
 
 - Newline-delimited JSON-RPC messages
 - Messages MUST NOT contain embedded newlines
-- Server subprocess started via Erlang Port
-- For server mode: read from stdin, write to stdout (we ARE the subprocess)
+- On Unix, client subprocesses are owned by the supervised erlexec wrapper;
+  process-tree cleanup is cooperative and hostile commands need an external
+  cgroup or sandbox.
+- Captured stderr is opt-in and owner-directed; it is never logged by default.
+- For server mode: bounded chunks are read from stdin and framed by newline;
+  writes go to stdout (we ARE the subprocess).
 
 ### Streamable HTTP Transport
 

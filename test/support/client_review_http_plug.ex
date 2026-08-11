@@ -36,6 +36,14 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
     test_pid = Keyword.fetch!(opts, :test_pid)
     send(test_pid, {:client_review_http_post, conn.req_headers, message})
 
+    if Keyword.get(opts, :block_post?) do
+      send(test_pid, {:client_review_post_blocked, self()})
+
+      receive do
+        :release_post -> :ok
+      end
+    end
+
     handle_post(conn, message, opts)
   end
 
@@ -45,19 +53,29 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
         discover_response(conn, message, opts)
 
       "initialize" ->
-        update_recovery_counter(opts, :initializes)
+        initialize_count = update_recovery_counter(opts, :initializes)
 
-        conn
-        |> Plug.Conn.put_resp_header("mcp-session-id", "review-session")
-        |> respond(200, %{
-          "jsonrpc" => "2.0",
-          "id" => message["id"],
-          "result" => %{
-            "protocolVersion" => @legacy_version,
-            "capabilities" => %{},
-            "serverInfo" => %{"name" => "review", "version" => "1"}
-          }
-        })
+        cond do
+          body = Keyword.get(opts, :initialize_sse_body) ->
+            conn
+            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+            |> stream_body(body)
+
+          override = Keyword.get(opts, :initialize_override) ->
+            conn
+            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+            |> respond(200, initialize_override(override, message))
+
+          Keyword.get(opts, :malformed_initialize_once?) == true and initialize_count == 1 ->
+            conn
+            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+            |> respond(200, [])
+
+          true ->
+            conn
+            |> Plug.Conn.put_resp_header("mcp-session-id", "review-session")
+            |> respond(200, initialize_result(message["id"]))
+        end
 
       "tools/list" ->
         if Keyword.has_key?(opts, :recovery),
@@ -74,6 +92,9 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
 
   defp subscription_response(conn, message, opts) do
     cond do
+      Keyword.get(opts, :block_subscription?) ->
+        stream(conn, opts)
+
       Keyword.has_key?(opts, :subscription_status) ->
         Plug.Conn.send_resp(
           conn,
@@ -178,6 +199,37 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
           {count, Map.put(counters, key, count)}
         end)
     end
+  end
+
+  defp initialize_override(:wrong_id, message), do: initialize_result(message["id"] + 1)
+
+  defp initialize_override(:notification, _message),
+    do: %{"jsonrpc" => "2.0", "method" => "notifications/progress", "params" => %{}}
+
+  defp initialize_override(:error, message),
+    do: %{
+      "jsonrpc" => "2.0",
+      "id" => message["id"],
+      "error" => %{"code" => -32_022, "message" => "unsupported"}
+    }
+
+  defp initialize_override(:incomplete, message),
+    do: %{
+      "jsonrpc" => "2.0",
+      "id" => message["id"],
+      "result" => %{"protocolVersion" => @legacy_version}
+    }
+
+  defp initialize_result(id) do
+    %{
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "result" => %{
+        "protocolVersion" => @legacy_version,
+        "capabilities" => %{},
+        "serverInfo" => %{"name" => "review", "version" => "1"}
+      }
+    }
   end
 
   defp respond(conn, status, body) do

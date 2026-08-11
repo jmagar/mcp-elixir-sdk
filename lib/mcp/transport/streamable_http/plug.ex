@@ -912,10 +912,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   defp matching_header(_name, value, value), do: :ok
 
-  defp matching_header(name, header_value, body_value) do
-    {:error,
-     {:routing_mismatch, "#{name} #{inspect(header_value)} != body value #{inspect(body_value)}"}}
-  end
+  defp matching_header(name, _header_value, _body_value),
+    do: {:error, {:routing_mismatch, "#{name} does not match request body"}}
 
   defp check_name_header(conn, method, params)
        when method in ["tools/call", "prompts/get", "resources/read"] do

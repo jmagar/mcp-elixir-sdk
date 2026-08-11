@@ -6,40 +6,37 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   outside loopback destinations.
   """
 
-  defstruct redirect: :reject,
-            retry: false,
-            connect_timeout: 5_000,
+  defstruct connect_timeout: 5_000,
             receive_timeout: 30_000,
             request_timeout: 60_000,
             max_response_bytes: 1_000_000,
             max_decoded_response_bytes: 1_000_000,
             max_sse_event_bytes: 1_000_000,
-            compression: :disabled,
+            max_concurrent_requests: 64,
+            max_subscriptions: 64,
             allow_non_loopback_http: false
 
   @type t :: %__MODULE__{
-          redirect: :reject,
-          retry: false,
           connect_timeout: pos_integer(),
           receive_timeout: pos_integer(),
           request_timeout: pos_integer(),
           max_response_bytes: pos_integer(),
           max_decoded_response_bytes: pos_integer(),
           max_sse_event_bytes: pos_integer(),
-          compression: :disabled,
+          max_concurrent_requests: pos_integer(),
+          max_subscriptions: pos_integer(),
           allow_non_loopback_http: boolean()
         }
 
   @keys [
-    :redirect,
-    :retry,
     :connect_timeout,
     :receive_timeout,
     :request_timeout,
     :max_response_bytes,
     :max_decoded_response_bytes,
     :max_sse_event_bytes,
-    :compression,
+    :max_concurrent_requests,
+    :max_subscriptions,
     :allow_non_loopback_http
   ]
   @positive_keys [
@@ -48,7 +45,9 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
     :request_timeout,
     :max_response_bytes,
     :max_decoded_response_bytes,
-    :max_sse_event_bytes
+    :max_sse_event_bytes,
+    :max_concurrent_requests,
+    :max_subscriptions
   ]
 
   @spec default() :: t()
@@ -61,6 +60,11 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   @spec response_limit(t()) :: pos_integer()
   def response_limit(%__MODULE__{} = policy),
     do: min(policy.max_response_bytes, policy.max_decoded_response_bytes)
+
+  @doc "Returns the connect timeout constrained by the whole-request budget."
+  @spec connection_timeout(t()) :: pos_integer()
+  def connection_timeout(%__MODULE__{} = policy),
+    do: min(policy.connect_timeout, policy.request_timeout)
 
   @spec new(keyword() | t()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
   def new(opts \\ [])
@@ -129,21 +133,10 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   end
 
   defp validate_fixed_values(policy) do
-    cond do
-      policy.redirect != :reject ->
-        {:error, {:redirect, policy.redirect}}
-
-      policy.retry != false ->
-        {:error, {:retry, policy.retry}}
-
-      policy.compression != :disabled ->
-        {:error, {:compression, policy.compression}}
-
-      not is_boolean(policy.allow_non_loopback_http) ->
-        {:error, {:allow_non_loopback_http, policy.allow_non_loopback_http}}
-
-      true ->
-        :ok
+    if not is_boolean(policy.allow_non_loopback_http) do
+      {:error, {:allow_non_loopback_http, policy.allow_non_loopback_http}}
+    else
+      :ok
     end
   end
 

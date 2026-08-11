@@ -49,6 +49,18 @@ case mode do
       end)
     )
 
+  "frame_flood" ->
+    IO.binwrite(
+      Enum.map_join(1..1_000, "", fn id ->
+        ~s({"jsonrpc":"2.0","id":#{id},"result":{"ok":true}}\n)
+      end)
+    )
+
+    Process.sleep(:infinity)
+
+  "truncated_exit" ->
+    IO.binwrite(~s({"jsonrpc":"2.0","id":1,"result":{"ok":true}}))
+
   "chunked_stderr" ->
     for chunk <- ["abc", "def", "ghi"] do
       IO.binwrite(:stderr, chunk)

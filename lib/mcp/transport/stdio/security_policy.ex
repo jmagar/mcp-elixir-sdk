@@ -8,8 +8,8 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   """
 
   defstruct max_frame_bytes: 1_000_000,
+            max_pending_stdout_bytes: 4_000_000,
             max_frames_per_turn: 100,
-            malformed_output: :close,
             stderr: :disable,
             max_stderr_bytes: 64_000,
             environment: :inherit,
@@ -17,8 +17,8 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @type t :: %__MODULE__{
           max_frame_bytes: pos_integer(),
+          max_pending_stdout_bytes: pos_integer(),
           max_frames_per_turn: pos_integer(),
-          malformed_output: :close,
           stderr: :capture | :console | :disable,
           max_stderr_bytes: pos_integer(),
           environment: :replace | :inherit,
@@ -27,8 +27,8 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @keys [
     :max_frame_bytes,
+    :max_pending_stdout_bytes,
     :max_frames_per_turn,
-    :malformed_output,
     :stderr,
     :max_stderr_bytes,
     :environment,
@@ -36,6 +36,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   ]
   @positive_keys [
     :max_frame_bytes,
+    :max_pending_stdout_bytes,
     :max_frames_per_turn,
     :max_stderr_bytes,
     :shutdown_timeout
@@ -46,10 +47,6 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @spec gateway() :: t()
   def gateway, do: %__MODULE__{environment: :replace}
-
-  @doc "Describes the process-isolation guarantee supplied by this policy."
-  @spec containment_guarantee() :: :cooperative_process_tree_cleanup
-  def containment_guarantee, do: :cooperative_process_tree_cleanup
 
   @spec new(keyword() | t()) :: {:ok, t()} | {:error, {:invalid_security_policy, term()}}
   def new(opts \\ [])
@@ -84,9 +81,6 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
     cond do
       invalid_positive ->
         {:error, {invalid_positive, Map.fetch!(policy, invalid_positive)}}
-
-      policy.malformed_output != :close ->
-        {:error, {:malformed_output, policy.malformed_output}}
 
       policy.stderr not in [:capture, :console, :disable] ->
         {:error, {:stderr, policy.stderr}}

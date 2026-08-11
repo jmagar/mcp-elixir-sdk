@@ -156,7 +156,7 @@ growth rather than merely bounding the final worker queue.
 
 For 2025 HTTP, the client transport also owns a supervised GET SSE listener
 bound to the negotiated session ID. Closing stops the listener before issuing
-a best-effort DELETE. Session expiry or exhausted listener retries are surfaced
+a bounded synchronous DELETE. Session expiry or exhausted listener retries are surfaced
 to the owner; a terminal listener exit is never treated as continued healthy
 delivery.
 

@@ -1,7 +1,7 @@
 # Dual-Version Protocol and Secure Transports Design
 
 **Status:** Implemented by PR #2
-**Date:** 2026-08-10  
+**Date:** 2026-08-10
 **Scope:** `mcp_elixir_sdk` 2.0 client/server protocol support, HTTP and stdio
 transport security, conformance evidence, Phoenix integration, and release identity
 

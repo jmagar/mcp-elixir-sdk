@@ -51,6 +51,8 @@ end
 defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias MCP.Transport.StreamableHTTP.Client
   alias MCP.Transport.StreamableHTTP.ResponseReader
   alias MCP.Transport.StreamableHTTP.SecurityPolicy
@@ -136,8 +138,26 @@ defmodule MCP.Transport.StreamableHTTPResponseBoundsTest do
     url = start_response_server("data: not-json\n\n")
     client = start_supervised!({Client, owner: self(), url: url})
 
-    assert {:error, {:invalid_sse_json, %Jason.DecodeError{}}} =
+    assert {:error, :invalid_sse_json} =
              Client.send_message(client, %{"jsonrpc" => "2.0", "id" => 1, "method" => "ping"})
+  end
+
+  test "malformed successful response content never enters transport logs" do
+    secret = "sentinel-secret-response-body"
+    url = start_response_server(secret, content_type: "application/json")
+    client = start_supervised!({Client, owner: self(), url: url})
+
+    log =
+      capture_log(fn ->
+        assert {:error, :json_decode_error} =
+                 Client.send_message(client, %{
+                   "jsonrpc" => "2.0",
+                   "id" => 1,
+                   "method" => "ping"
+                 })
+      end)
+
+    refute log =~ secret
   end
 
   test "non-success POST SSE also enforces the event bound" do

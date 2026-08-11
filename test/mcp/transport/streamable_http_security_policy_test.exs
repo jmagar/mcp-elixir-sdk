@@ -7,14 +7,16 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
   test "secure defaults bound requests and reject redirects and retries" do
     policy = SecurityPolicy.default()
 
-    assert policy.redirect == :reject
-    assert policy.retry == false
     assert policy.connect_timeout == 5_000
     assert policy.receive_timeout == 30_000
     assert policy.request_timeout == 60_000
     assert policy.max_response_bytes == 1_000_000
     assert policy.max_sse_event_bytes == 1_000_000
-    assert policy.compression == :disabled
+  end
+
+  test "the effective connection timeout cannot exceed the whole-request budget" do
+    {:ok, policy} = SecurityPolicy.new(connect_timeout: 5_000, request_timeout: 25)
+    assert SecurityPolicy.connection_timeout(policy) == 25
   end
 
   test "gateway policy rejects malformed and unsafe endpoint URLs" do
@@ -59,6 +61,12 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
   test "policy construction rejects non-positive bounds and unknown options" do
     assert {:error, {:invalid_security_policy, {:max_response_bytes, 0}}} =
              SecurityPolicy.new(max_response_bytes: 0)
+
+    assert {:error, {:invalid_security_policy, {:max_concurrent_requests, 0}}} =
+             SecurityPolicy.new(max_concurrent_requests: 0)
+
+    assert {:error, {:invalid_security_policy, {:max_subscriptions, 0}}} =
+             SecurityPolicy.new(max_subscriptions: 0)
 
     assert {:error, {:invalid_security_policy, {:unknown_options, [:surprise]}}} =
              SecurityPolicy.new(surprise: true)

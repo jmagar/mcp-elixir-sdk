@@ -3,13 +3,26 @@ defmodule MCP.Transport.Stdio.Process do
 
   use GenServer
 
-  defstruct [:owner, :exec_pid, :os_pid, :policy, :cleanup_marker, closed?: false]
+  defstruct [
+    :owner,
+    :exec_pid,
+    :os_pid,
+    :policy,
+    :cleanup_marker,
+    pending_stdout_bytes: 0,
+    stdout_from: nil,
+    stderr_bytes: 0,
+    closed?: false
+  ]
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
   @spec write(pid(), iodata()) :: :ok | {:error, term()}
   def write(process, data), do: GenServer.call(process, {:write, IO.iodata_to_binary(data)})
+
+  @spec ack_stdout(pid(), non_neg_integer()) :: :ok
+  def ack_stdout(process, bytes), do: GenServer.cast(process, {:ack_stdout, bytes})
 
   @spec close(pid(), timeout()) :: :ok | {:error, term()}
   def close(process, timeout), do: GenServer.call(process, :close, timeout + 4_000)
@@ -53,56 +66,98 @@ defmodule MCP.Transport.Stdio.Process do
   end
 
   def handle_call(:close, _from, state) do
-    descendants = cleanup_identities(state)
+    reply_stdout(state.stdout_from)
+    state = %{state | stdout_from: nil, pending_stdout_bytes: 0}
+    deadline = cleanup_deadline(state.policy.shutdown_timeout)
+    descendants = cleanup_identities(state, deadline)
     _ = :exec.send(state.exec_pid, :eof)
-
-    result =
-      case :exec.stop_and_wait(state.exec_pid, state.policy.shutdown_timeout + 1_000) do
-        {:error, :timeout} -> {:error, :process_group_cleanup_failed}
-        {:error, :not_found} -> :ok
-        {:error, reason} -> {:error, {:process_shutdown_failed, reason}}
-        _exit_status -> :ok
-      end
-      |> ensure_processes_stopped(
-        descendants,
-        state.cleanup_marker,
-        state.policy.shutdown_timeout
-      )
+    result = ensure_processes_stopped(:ok, descendants, state.cleanup_marker, deadline)
 
     {:stop, :normal, result, %{state | closed?: true}}
   end
 
+  def handle_call({:output, :stdout, os_pid, data}, from, %{os_pid: os_pid} = state) do
+    pending = state.pending_stdout_bytes + byte_size(data)
+
+    if pending > state.policy.max_pending_stdout_bytes do
+      deadline = cleanup_deadline(state.policy.shutdown_timeout)
+
+      cleanup_result =
+        ensure_processes_stopped(
+          {:error, {:stdout_backlog_too_large, state.policy.max_pending_stdout_bytes}},
+          cleanup_identities(state, deadline),
+          state.cleanup_marker,
+          deadline
+        )
+
+      notify_cleanup_result(state, cleanup_result)
+      {:stop, :normal, :ok, %{state | closed?: true}}
+    else
+      send(state.owner, {:stdio_process, self(), :stdout, data})
+
+      {:noreply, %{state | pending_stdout_bytes: pending, stdout_from: {from, byte_size(data)}}}
+    end
+  end
+
+  def handle_call({:output, :stderr, os_pid, data}, _from, %{os_pid: os_pid} = state) do
+    remaining = max(state.policy.max_stderr_bytes - state.stderr_bytes, 0)
+    captured = if byte_size(data) <= remaining, do: data, else: binary_part(data, 0, remaining)
+    if captured != "", do: send(state.owner, {:stdio_process, self(), :stderr, captured})
+
+    stderr_bytes = min(state.stderr_bytes + byte_size(data), state.policy.max_stderr_bytes)
+    action = if remaining == 0, do: {:throttle, 10}, else: :ok
+    {:reply, action, %{state | stderr_bytes: stderr_bytes}}
+  end
+
   @impl GenServer
-  def handle_info({:stdout, os_pid, data}, %{os_pid: os_pid} = state) do
-    send(state.owner, {:stdio_process, self(), :stdout, data})
+  def handle_cast({:ack_stdout, bytes}, state) do
+    reply_stdout(state.stdout_from)
+
+    state = %{
+      state
+      | pending_stdout_bytes: max(state.pending_stdout_bytes - bytes, 0),
+        stdout_from: nil
+    }
+
     {:noreply, state}
   end
 
-  def handle_info({:stderr, os_pid, data}, %{os_pid: os_pid} = state) do
-    send(state.owner, {:stdio_process, self(), :stderr, data})
-    {:noreply, state}
-  end
-
+  @impl GenServer
   def handle_info({:DOWN, os_pid, :process, exec_pid, reason}, state)
       when os_pid == state.os_pid and exec_pid == state.exec_pid do
+    deadline = cleanup_deadline(state.policy.shutdown_timeout)
+
     cleanup_result =
       ensure_processes_stopped(
         :ok,
-        cleanup_identities(state),
+        cleanup_identities(state, deadline),
         state.cleanup_marker,
-        state.policy.shutdown_timeout
+        deadline
       )
 
-    if match?({:error, _}, cleanup_result) do
-      {:error, cleanup_reason} = cleanup_result
-      send(state.owner, {:stdio_process, self(), :cleanup_failed, cleanup_reason})
-    end
-
+    notify_cleanup_failure(state, cleanup_result)
     send(state.owner, {:stdio_process, self(), :closed, normalize_exit(reason)})
     {:stop, :normal, %{state | closed?: true}}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp reply_stdout(nil), do: :ok
+  defp reply_stdout({from, _bytes}), do: GenServer.reply(from, :ok)
+
+  defp notify_cleanup_result(state, {:error, {:stdout_backlog_too_large, _} = reason}) do
+    send(state.owner, {:stdio_process, self(), :closed, {:protocol_violation, reason}})
+  end
+
+  defp notify_cleanup_result(state, {:error, {reason, cleanup_reason}}) do
+    send(state.owner, {:stdio_process, self(), :cleanup_failed, cleanup_reason})
+    send(state.owner, {:stdio_process, self(), :closed, {:protocol_violation, reason}})
+  end
+
+  defp notify_cleanup_failure(state, {:error, cleanup_reason}),
+    do: send(state.owner, {:stdio_process, self(), :cleanup_failed, cleanup_reason})
+
+  defp notify_cleanup_failure(_state, :ok), do: :ok
 
   defp validate_command(command, args, env)
        when is_binary(command) and is_list(args) and is_list(env) do
@@ -128,7 +183,7 @@ defmodule MCP.Transport.Stdio.Process do
 
     [
       :stdin,
-      {:stdout, self()},
+      {:stdout, output_device(self(), :stdout)},
       stderr_option(policy.stderr),
       :monitor,
       {:group, 0},
@@ -138,9 +193,18 @@ defmodule MCP.Transport.Stdio.Process do
     ]
   end
 
-  defp stderr_option(:capture), do: {:stderr, self()}
+  defp stderr_option(:capture), do: {:stderr, output_device(self(), :stderr)}
   defp stderr_option(:console), do: {:stderr, :print}
   defp stderr_option(:disable), do: {:stderr, :null}
+
+  defp output_device(process, stream) do
+    fn _stream, os_pid, data ->
+      case GenServer.call(process, {:output, stream, os_pid, data}, :infinity) do
+        {:throttle, milliseconds} -> Process.sleep(milliseconds)
+        :ok -> :ok
+      end
+    end
+  end
 
   defp environment(:replace, env, cleanup_marker), do: [:clear | env] ++ [cleanup_marker]
   defp environment(:inherit, env, cleanup_marker), do: env ++ [cleanup_marker]
@@ -154,8 +218,8 @@ defmodule MCP.Transport.Stdio.Process do
   defp normalize_exit({:exit_status, status}), do: {:exit_status, :exec.status(status)}
   defp normalize_exit(reason), do: reason
 
-  defp descendants(root_pid) do
-    %{children: children, start_times: start_times} = process_table()
+  defp descendants(root_pid, deadline) do
+    %{children: children, start_times: start_times} = process_table(deadline)
 
     root_pid
     |> descendants_from(children)
@@ -163,25 +227,30 @@ defmodule MCP.Transport.Stdio.Process do
     |> Enum.map(&{&1, Map.get(start_times, &1)})
   end
 
-  defp cleanup_identities(state) do
-    Enum.uniq(descendants(state.os_pid) ++ marked_processes(state.cleanup_marker))
+  defp cleanup_identities(state, deadline) do
+    Enum.uniq(
+      descendants(state.os_pid, deadline) ++ marked_processes(state.cleanup_marker, deadline)
+    )
   end
 
-  defp marked_processes({key, value}) do
+  defp marked_processes({key, value}, deadline) do
     marker = key <> "=" <> value
 
-    "/proc/[0-9]*/environ"
-    |> Path.wildcard()
-    |> Enum.reduce([], fn path, identities ->
-      with {:ok, environment} <- File.read(path),
-           true <- marker_in_environment?(environment, marker),
-           pid_text <- path |> Path.dirname() |> Path.basename(),
-           {pid, ""} <- Integer.parse(pid_text),
-           {:ok, stat} <- File.read("/proc/#{pid}/stat"),
-           fields when is_list(fields) <- stat_fields(stat) do
-        [{pid, Enum.at(fields, 19)} | identities]
+    proc_paths("environ")
+    |> Enum.reduce_while([], fn path, identities ->
+      if deadline_expired?(deadline) do
+        {:halt, identities}
       else
-        _unavailable_or_unmarked -> identities
+        with {:ok, environment} <- File.read(path),
+             true <- marker_in_environment?(environment, marker),
+             pid_text <- path |> Path.dirname() |> Path.basename(),
+             {pid, ""} <- Integer.parse(pid_text),
+             {:ok, stat} <- File.read("/proc/#{pid}/stat"),
+             fields when is_list(fields) <- stat_fields(stat) do
+          {:cont, [{pid, Enum.at(fields, 19)} | identities]}
+        else
+          _unavailable_or_unmarked -> {:cont, identities}
+        end
       end
     end)
   end
@@ -202,13 +271,16 @@ defmodule MCP.Transport.Stdio.Process do
   # read. Collecting the identity in a second pass would let a PID recycled
   # between the two reads inherit a descendant's place in the tree, and cleanup
   # would then signal an unrelated process.
-  defp process_table do
-    "/proc/[0-9]*/stat"
-    |> Path.wildcard()
-    |> Enum.reduce(%{children: %{}, start_times: %{}}, fn path, table ->
-      case File.read(path) do
-        {:ok, stat} -> put_process_identity(table, stat)
-        {:error, _unavailable} -> table
+  defp process_table(deadline) do
+    proc_paths("stat")
+    |> Enum.reduce_while(%{children: %{}, start_times: %{}}, fn path, table ->
+      if deadline_expired?(deadline) do
+        {:halt, table}
+      else
+        case File.read(path) do
+          {:ok, stat} -> {:cont, put_process_identity(table, stat)}
+          {:error, _unavailable} -> {:cont, table}
+        end
       end
     end)
   end
@@ -228,51 +300,99 @@ defmodule MCP.Transport.Stdio.Process do
     end
   end
 
-  defp ensure_processes_stopped({:error, reason}, identities, marker, timeout) do
-    case ensure_processes_stopped(:ok, identities, marker, timeout) do
+  defp ensure_processes_stopped({:error, reason}, identities, marker, deadline) do
+    case ensure_processes_stopped(:ok, identities, marker, deadline) do
       :ok -> {:error, reason}
       {:error, cleanup_reason} -> {:error, {reason, cleanup_reason}}
     end
   end
 
-  defp ensure_processes_stopped(:ok, identities, marker, timeout) do
-    identities = Enum.uniq(identities ++ marked_processes(marker))
-    signal_alive(identities, :sigterm)
+  defp ensure_processes_stopped(:ok, identities, marker, deadline) do
+    identities = Enum.uniq(identities ++ marked_processes(marker, deadline))
+    signal_alive(identities, :sigterm, deadline)
 
-    _ = wait_until_stopped(identities, min(timeout, 500))
-    remaining = Enum.uniq(identities ++ marked_processes(marker))
-    signal_alive(remaining, :sigkill)
+    term_deadline = min(deadline, now_ms() + 500)
+    _ = wait_until_stopped(identities, term_deadline)
+    remaining = Enum.uniq(identities ++ marked_processes(marker, deadline))
+    signal_alive(remaining, :sigkill, deadline)
 
-    if wait_until_stopped(remaining, 1_000) and marked_processes(marker) == [] do
+    if wait_until_stopped(remaining, deadline) and
+         not deadline_expired?(deadline) and
+         marked_processes(marker, deadline) == [] do
       :ok
     else
       {:error, :process_group_cleanup_failed}
     end
   end
 
-  defp signal_alive(identities, signal) do
+  defp signal_alive(identities, signal, deadline) do
     flag = if signal == :sigterm, do: "-TERM", else: "-KILL"
 
-    Enum.each(identities, fn {pid, _start_time} = identity ->
-      if process_alive?(identity) do
-        _ = System.cmd("/bin/kill", [flag, "--", Integer.to_string(pid)], stderr_to_stdout: true)
+    Enum.reduce_while(identities, :ok, fn {pid, _start_time} = identity, :ok ->
+      if deadline_expired?(deadline) do
+        {:halt, :timeout}
+      else
+        if process_alive?(identity) do
+          _ = bounded_signal(flag, pid, deadline)
+        end
+
+        {:cont, :ok}
       end
     end)
   end
 
-  defp wait_until_stopped(identities, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
+  defp bounded_signal(flag, pid, deadline) do
+    port =
+      Port.open(
+        {:spawn_executable, ~c"/bin/kill"},
+        [:binary, :exit_status, args: [flag, "--", Integer.to_string(pid)]]
+      )
+
+    receive do
+      {^port, {:exit_status, _status}} -> :ok
+    after
+      remaining_ms(deadline) ->
+        Port.close(port)
+        :timeout
+    end
+  end
+
+  defp wait_until_stopped(identities, deadline) do
     wait_until_stopped(identities, deadline, Enum.any?(identities, &process_alive?/1))
   end
 
   defp wait_until_stopped(_pids, _deadline, false), do: true
 
   defp wait_until_stopped(identities, deadline, true) do
-    if System.monotonic_time(:millisecond) >= deadline do
+    if deadline_expired?(deadline) do
       false
     else
       Process.sleep(20)
       wait_until_stopped(identities, deadline, Enum.any?(identities, &process_alive?/1))
+    end
+  end
+
+  defp cleanup_deadline(timeout), do: now_ms() + timeout
+  defp deadline_expired?(deadline), do: now_ms() >= deadline
+  defp remaining_ms(deadline), do: max(deadline - now_ms(), 1)
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp proc_paths(filename) do
+    case File.ls("/proc") do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&numeric_name?/1)
+        |> Enum.map(&Path.join(["/proc", &1, filename]))
+
+      {:error, _unavailable} ->
+        []
+    end
+  end
+
+  defp numeric_name?(name) do
+    case Integer.parse(name) do
+      {_pid, ""} -> true
+      _not_pid -> false
     end
   end
 

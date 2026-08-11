@@ -13,6 +13,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     * `:url` (required) — the MCP endpoint URL (e.g., "http://localhost:8080/mcp")
     * `:headers` — extra HTTP headers to include on all requests
     * `:protocol_version` — MCP protocol version (default: the stateless core's)
+    * `:security_policy` — validated request, URL, deadline, and body limits
 
   ## Stateless (2026-07-28)
 
@@ -25,13 +26,16 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   An initialize response binds `Mcp-Session-Id`. Later requests reuse it, a
   supervised GET SSE listener receives server messages, and close performs a
-  best-effort session DELETE.
+  bounded synchronous session DELETE.
   """
 
   use GenServer
 
   require Logger
 
+  alias MCP.Protocol
+  alias MCP.Protocol.Messages.Initialize
+  alias MCP.Protocol.Messages.Response
   alias MCP.Protocol.Revision
   alias MCP.Protocol.ToolRouting
   alias MCP.Transport.SSE
@@ -48,7 +52,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   defstruct [
     :owner,
     :owner_ref,
-    :url,
     :endpoint,
     :security_policy,
     :protocol_version,
@@ -136,7 +139,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       state = %__MODULE__{
         owner: owner,
         owner_ref: Process.monitor(owner),
-        url: url,
         endpoint: URI.to_string(endpoint),
         security_policy: security_policy,
         protocol_version: protocol_version,
@@ -163,9 +165,13 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl GenServer
   def handle_call({:send_message, message, opts}, from, state) do
-    case build_headers(state, message, opts) do
-      {:ok, headers} -> start_post_task(state, from, message, headers)
-      {:error, reason} -> {:reply, {:error, reason}, state}
+    if map_size(state.post_tasks) >= state.security_policy.max_concurrent_requests do
+      {:reply, {:error, :request_limit_reached}, state}
+    else
+      case build_headers(state, message, opts) do
+        {:ok, headers} -> start_post_task(state, from, message, headers)
+        {:error, reason} -> {:reply, {:error, reason}, state}
+      end
     end
   end
 
@@ -178,6 +184,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
       Map.has_key?(state.subscriptions, id) ->
         {:reply, {:error, :duplicate_subscription_id}, state}
+
+      map_size(state.subscriptions) >= state.security_policy.max_subscriptions ->
+        {:reply, {:error, :subscription_limit_reached}, state}
 
       true ->
         case build_headers(state, message, opts) do
@@ -200,9 +209,21 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   def handle_call({:bind_session, session_id, protocol_version}, _from, state)
-      when is_binary(session_id) and is_binary(protocol_version) do
+      when is_binary(session_id) and is_binary(protocol_version) and is_nil(state.session_id) do
     state = %{state | session_id: session_id, protocol_version: protocol_version}
     {:reply, :ok, start_legacy_sse_listener(state)}
+  end
+
+  def handle_call(
+        {:bind_session, session_id, protocol_version},
+        _from,
+        %{session_id: session_id, protocol_version: protocol_version} = state
+      ) do
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:bind_session, _session_id, _protocol_version}, _from, state) do
+    {:reply, {:error, :session_already_bound}, state}
   end
 
   def handle_call(:reset_session, _from, state) do
@@ -233,20 +254,20 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         {:noreply, state}
 
       data ->
-        case Jason.decode(data) do
+        case decode_json_message(data, :invalid_sse_json) do
           {:ok, decoded} ->
             send(state.owner, {:mcp_message, decoded})
             {:noreply, state}
 
           {:error, reason} ->
-            send(state.owner, {:mcp_transport_closed, {:invalid_sse_json, reason}})
-            {:stop, {:invalid_sse_json, reason}, state}
+            send(state.owner, {:mcp_transport_closed, reason})
+            {:stop, reason, state}
         end
     end
   end
 
   def handle_info({:sse_stream_closed, reason}, state) do
-    Logger.debug("MCP StreamableHTTP Client: SSE stream closed: #{inspect(reason)}")
+    Logger.debug("MCP StreamableHTTP Client: SSE stream closed: #{failure_tag(reason)}")
     {:noreply, state}
   end
 
@@ -314,7 +335,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     cond do
       ref == state.legacy_sse_ref and task == state.legacy_sse_task ->
         if reason not in [:normal, :shutdown] do
-          Logger.warning("MCP legacy SSE listener stopped: #{inspect(reason)}")
+          Logger.warning("MCP legacy SSE listener stopped: #{failure_tag(reason)}")
         end
 
         {:noreply, %{state | legacy_sse_task: nil, legacy_sse_ref: nil}}
@@ -399,20 +420,20 @@ defmodule MCP.Transport.StreamableHTTP.Client do
          ) do
       {:ok, %Req.Response{status: status, headers: resp_headers}, resp_body}
       when status in [200, 201] ->
-        bind_response_session(transport, message, state.protocol_version, resp_headers)
         content_type = get_content_type(resp_headers)
 
-        cond do
-          String.contains?(content_type, "text/event-stream") ->
-            # Parse SSE events from the response body
-            parse_sse_body(state, resp_body)
-
-          String.contains?(content_type, "application/json") ->
-            # Single JSON response
-            deliver_json_response(state, resp_body)
-
-          true ->
-            {:error, {:unexpected_content_type, content_type}}
+        with {:ok, messages} <- decode_success_response(state, content_type, resp_body),
+             :ok <- validate_post_response(message, messages),
+             :ok <-
+               bind_response_session(
+                 transport,
+                 message,
+                 state.protocol_version,
+                 resp_headers,
+                 messages
+               ) do
+          deliver_messages(state.owner, messages)
+          {:ok, state}
         end
 
       {:ok, %Req.Response{status: 202}, _body} ->
@@ -423,14 +444,14 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         handle_non_success_response(state, status, resp_headers, resp_body)
 
       {:error, reason} ->
-        Logger.warning("MCP StreamableHTTP Client: POST failed: #{inspect(reason)}")
+        Logger.warning("MCP StreamableHTTP Client: POST failed: #{failure_tag(reason)}")
 
         {:error, reason}
     end
   end
 
   defp handle_non_success_response(state, status, headers, body) do
-    Logger.warning("MCP StreamableHTTP Client: HTTP #{status}: #{inspect(body)}")
+    Logger.warning("MCP StreamableHTTP Client: HTTP #{status}")
 
     cond do
       status == 404 and
@@ -610,61 +631,129 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  defp parse_sse_body(state, body) when is_binary(body) do
-    # Parse complete SSE body (from a non-streaming response)
-    parser = SSE.new_parser(max_event_bytes: state.security_policy.max_sse_event_bytes)
-
-    case SSE.feed(parser, body) do
-      {:error, reason} ->
-        {:error, reason}
-
-      {:ok, events, _parser} ->
-        deliver_sse_events(events, state)
+  defp decode_success_response(state, content_type, body) do
+    cond do
+      String.contains?(content_type, "text/event-stream") -> decode_sse_body(state, body)
+      String.contains?(content_type, "application/json") -> decode_json_messages(body)
+      true -> {:error, {:unexpected_content_type, content_type}}
     end
   end
 
-  defp deliver_sse_events(events, state) do
-    Enum.reduce_while(events, {:ok, state}, fn event, result ->
-      case Map.get(event, :data) do
-        data when data in [nil, ""] -> {:cont, result}
-        data -> deliver_sse_event(state.owner, data, result)
-      end
-    end)
+  defp decode_sse_body(state, body) when is_binary(body) do
+    parser = SSE.new_parser(max_event_bytes: state.security_policy.max_sse_event_bytes)
+
+    case SSE.feed(parser, body) do
+      {:error, reason} -> {:error, reason}
+      {:ok, events, %{buffer: ""}} -> decode_sse_events(events)
+      {:ok, _events, _parser} -> {:error, :truncated_sse_event}
+    end
   end
 
-  defp deliver_sse_event(owner, data, result) do
-    case deliver_decoded(owner, data) do
-      :ok -> {:cont, result}
-      {:error, reason} -> {:halt, {:error, reason}}
+  defp decode_sse_events(events) do
+    Enum.reduce_while(events, {:ok, []}, fn event, {:ok, messages} ->
+      case Map.get(event, :data) do
+        data when data in [nil, ""] ->
+          {:cont, {:ok, messages}}
+
+        data ->
+          case decode_json_message(data, :invalid_sse_json) do
+            {:ok, decoded} -> {:cont, {:ok, [decoded | messages]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+      end
+    end)
+    |> case do
+      {:ok, messages} -> {:ok, Enum.reverse(messages)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp deliver_messages(owner, messages) do
+    Enum.each(messages, &send(owner, {:mcp_message, &1}))
+  end
+
+  defp validate_post_response(%{"id" => expected_id}, messages) do
+    if Enum.any?(messages, &response_for_id?(&1, expected_id)) do
+      :ok
+    else
+      {:error, {:mismatched_response_id, expected_id}}
+    end
+  end
+
+  defp validate_post_response(_notification, _messages), do: :ok
+
+  defp response_for_id?(message, expected_id) do
+    case Protocol.decode_message(message) do
+      {:ok, %Response{id: ^expected_id}} -> true
+      _not_matching_response -> false
     end
   end
 
   defp deliver_json_response(state, body) when is_map(body) do
-    send(state.owner, {:mcp_message, body})
-    {:ok, state}
-  end
-
-  defp deliver_json_response(state, body) when is_binary(body) do
-    case Jason.decode(body) do
-      {:ok, decoded} ->
-        send(state.owner, {:mcp_message, decoded})
+    case validate_protocol_message(body) do
+      :ok ->
+        send(state.owner, {:mcp_message, body})
         {:ok, state}
 
       {:error, reason} ->
-        {:error, {:json_decode_error, reason}}
+        {:error, reason}
     end
   end
 
-  defp deliver_decoded(owner, data) when is_binary(data) do
-    case Jason.decode(data) do
-      {:ok, decoded} ->
-        send(owner, {:mcp_message, decoded})
-        :ok
+  defp deliver_json_response(state, body) when is_binary(body) do
+    case decode_json_messages(body) do
+      {:ok, [decoded]} ->
+        deliver_messages(state.owner, [decoded])
+        {:ok, state}
 
       {:error, reason} ->
-        {:error, {:invalid_sse_json, reason}}
+        {:error, reason}
     end
   end
+
+  defp decode_json_messages(body) when is_map(body) do
+    case validate_protocol_message(body) do
+      :ok -> {:ok, [body]}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_json_messages(body) when is_binary(body) do
+    case decode_json_message(body, :json_decode_error) do
+      {:ok, decoded} -> {:ok, [decoded]}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_json_message(data, decode_error_tag) when is_binary(data) do
+    case Jason.decode(data) do
+      {:ok, decoded} ->
+        case validate_protocol_message(decoded) do
+          :ok -> {:ok, decoded}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        _reason = reason
+        {:error, decode_error_tag}
+    end
+  end
+
+  defp validate_protocol_message(decoded) when is_map(decoded) do
+    case Protocol.decode_message(decoded) do
+      {:ok, _message} -> :ok
+      {:error, %MCP.Protocol.Error{} = error} -> {:error, {:invalid_json_rpc, error.code}}
+      {:error, reason} -> {:error, {:invalid_json_rpc, reason}}
+    end
+  end
+
+  defp validate_protocol_message(_decoded), do: {:error, :non_protocol_json}
+
+  defp failure_tag(%{__struct__: module}), do: inspect(module)
+  defp failure_tag({tag, _detail}) when is_atom(tag), do: Atom.to_string(tag)
+  defp failure_tag({tag, _detail, _more}) when is_atom(tag), do: Atom.to_string(tag)
+  defp failure_tag(tag) when is_atom(tag), do: Atom.to_string(tag)
+  defp failure_tag(_reason), do: "transport_error"
 
   # terminate/2 also calls do_close/2, so the stop tuple must carry a state with
   # no session left or the same session is DELETEd twice.
@@ -707,21 +796,42 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   defp bind_response_session(
          transport,
-         %{"method" => "initialize"} = message,
+         %{"method" => "initialize", "id" => id} = message,
          fallback_version,
-         headers
+         headers,
+         messages
        ) do
-    case get_header(headers, "mcp-session-id") do
-      nil ->
-        :ok
+    protocol_version = request_protocol_version(message, fallback_version)
 
-      session_id ->
-        protocol_version = request_protocol_version(message, fallback_version)
+    successful_initialize? =
+      Enum.any?(messages, fn response ->
+        case Protocol.decode_message(response) do
+          {:ok, %Response{id: ^id, result: result, error: nil}} when is_map(result) ->
+            valid_initialize_result?(result, protocol_version)
+
+          _not_successful_initialize ->
+            false
+        end
+      end)
+
+    case {successful_initialize?, get_header(headers, "mcp-session-id")} do
+      {true, session_id} when is_binary(session_id) ->
         GenServer.call(transport, {:bind_session, session_id, protocol_version})
+
+      _no_successful_session ->
+        :ok
     end
   end
 
-  defp bind_response_session(_transport, _message, _fallback_version, _headers), do: :ok
+  defp bind_response_session(_transport, _message, _fallback_version, _headers, _messages),
+    do: :ok
+
+  defp valid_initialize_result?(result, protocol_version) do
+    initialize = Initialize.Result.from_map(result)
+    initialize.protocol_version == protocol_version
+  rescue
+    _invalid_initialize_result -> false
+  end
 
   defp session_headers(%{session_id: nil}), do: []
   defp session_headers(%{session_id: session_id}), do: [{"mcp-session-id", session_id}]
@@ -998,9 +1108,13 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   defp reduce_legacy_sse_event(owner, data) do
-    case deliver_decoded(owner, data) do
-      :ok -> {:cont, :ok}
-      {:error, reason} -> {:halt, {:error, reason}}
+    case decode_json_message(data, :invalid_sse_json) do
+      {:ok, decoded} ->
+        send(owner, {:mcp_message, decoded})
+        {:cont, :ok}
+
+      {:error, reason} ->
+        {:halt, {:error, reason}}
     end
   end
 
@@ -1159,7 +1273,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   defp deliver_subscription_event(transport, id, data) do
-    case Jason.decode(data) do
+    case decode_json_message(data, :invalid_sse_json) do
       {:ok, decoded} ->
         delivery_ref = make_ref()
         send(transport, {:subscription_stream_message, id, self(), delivery_ref, decoded})
@@ -1175,7 +1289,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         end
 
       {:error, reason} ->
-        {:halt, {:error, {:invalid_sse_json, reason}}}
+        {:halt, {:error, reason}}
     end
   end
 

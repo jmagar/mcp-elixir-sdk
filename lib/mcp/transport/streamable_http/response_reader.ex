@@ -19,7 +19,7 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
         retry: false,
         raw: true,
         compressed: false,
-        connect_options: [timeout: policy.connect_timeout],
+        connect_options: [timeout: SecurityPolicy.connection_timeout(policy)],
         # `into: :self` returns as soon as the response headers arrive. Req 0.5
         # has no `:request_timeout` option, so this cross-version adapter bounds
         # that phase by clamping `:receive_timeout` to the overall budget. The

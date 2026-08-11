@@ -113,6 +113,15 @@ defmodule MCP.Transport.StdioTest do
 
       assert :ok = Stdio.close(transport)
     end
+
+    test "server mode accepts and validates the same bounded framing policy" do
+      assert {:ok, _transport} =
+               Stdio.start_link(
+                 owner: self(),
+                 mode: :server,
+                 security_policy: [max_frame_bytes: 64]
+               )
+    end
   end
 
   describe "line buffering" do

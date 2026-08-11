@@ -115,6 +115,22 @@ defmodule MCP.ClientReviewRemediationTest do
              )
   end
 
+  test "captured stdio diagnostics require an explicit high-level client handler" do
+    client =
+      start_supervised!(
+        {Client, transport: {ClientReviewTransport, observer: self()}, stderr_handler: self()}
+      )
+
+    send(client, {:mcp_transport_stderr, "bounded diagnostic"})
+    assert_receive {:mcp_transport_stderr, "bounded diagnostic"}
+
+    assert {:error, {:invalid_stderr_handler, :log_it}} =
+             Client.start_link(
+               transport: {ClientReviewTransport, observer: self()},
+               stderr_handler: :log_it
+             )
+  end
+
   test "server request callbacks are bounded and timeout with correlated errors" do
     test_pid = self()
 
@@ -227,6 +243,137 @@ defmodule MCP.ClientReviewRemediationTest do
     refute Enum.any?(headers, &match?({"mcp-session-id", _}, &1))
   end
 
+  test "malformed initialize response never poisons the next HTTP session" do
+    recovery_agent = start_supervised!({Agent, fn -> %{} end})
+
+    %{url: url} =
+      start_http_plug(
+        malformed_initialize_once?: true,
+        recovery_agent: recovery_agent
+      )
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert {:error, :non_protocol_json} =
+             HTTPClient.send_message(transport, initialize_request(1))
+
+    assert_receive {:client_review_http_post, first_headers, %{"id" => 1}}
+    refute List.keymember?(first_headers, "mcp-session-id", 0)
+    assert :sys.get_state(transport).session_id == nil
+
+    assert :ok = HTTPClient.send_message(transport, initialize_request(2))
+    assert_receive {:client_review_http_post, second_headers, %{"id" => 2}}
+    refute List.keymember?(second_headers, "mcp-session-id", 0)
+  end
+
+  test "only a matching successful initialize response can bind an HTTP session" do
+    for override <- [:wrong_id, :notification, :error, :incomplete] do
+      %{url: url} = start_http_plug(initialize_override: override)
+
+      transport =
+        start_supervised!(
+          {HTTPClient, owner: self(), url: url, protocol_version: @legacy_version},
+          id: {HTTPClient, override}
+        )
+
+      result = HTTPClient.send_message(transport, initialize_request(10))
+
+      if override in [:error, :incomplete],
+        do: assert(result == :ok),
+        else: assert(result == {:error, {:mismatched_response_id, 10}})
+
+      assert :sys.get_state(transport).session_id == nil
+    end
+  end
+
+  test "an HTTP session binding is immutable until explicit reset" do
+    %{url: url} = start_http_plug(stream?: true)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
+    assert_receive {:client_review_stream_chunked, stream_request}
+    assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
+
+    assert {:error, :session_already_bound} =
+             GenServer.call(transport, {:bind_session, "second", @legacy_version})
+
+    assert :sys.get_state(transport).session_id == "first"
+    send(stream_request, :release_stream)
+  end
+
+  test "truncated initialize SSE response cannot bind an HTTP session" do
+    body = "data: #{Jason.encode!(initialize_result(1))}"
+    %{url: url} = start_http_plug(initialize_sse_body: body)
+
+    transport =
+      start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
+
+    assert {:error, :truncated_sse_event} =
+             HTTPClient.send_message(transport, initialize_request(1))
+
+    assert :sys.get_state(transport).session_id == nil
+  end
+
+  test "HTTP policy rejects work beyond the concurrent request limit" do
+    %{url: url} = start_http_plug(block_post?: true)
+
+    transport =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: [max_concurrent_requests: 1]}
+      )
+
+    first =
+      Task.async(fn ->
+        HTTPClient.send_message(transport, %{
+          "jsonrpc" => "2.0",
+          "id" => 1,
+          "method" => "tools/list"
+        })
+      end)
+
+    assert_receive {:client_review_post_blocked, request}
+
+    assert {:error, :request_limit_reached} =
+             HTTPClient.send_message(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 2,
+               "method" => "tools/list"
+             })
+
+    send(request, :release_post)
+    assert :ok = Task.await(first)
+  end
+
+  test "HTTP policy rejects subscriptions beyond the concurrent stream limit" do
+    %{url: url} = start_http_plug(block_subscription?: true)
+
+    transport =
+      start_supervised!(
+        {HTTPClient, owner: self(), url: url, security_policy: [max_subscriptions: 1]}
+      )
+
+    assert :ok =
+             HTTPClient.open_subscription(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 1,
+               "method" => "subscriptions/listen"
+             })
+
+    assert_receive {:client_review_stream_chunked, request}
+
+    assert {:error, :subscription_limit_reached} =
+             HTTPClient.open_subscription(transport, %{
+               "jsonrpc" => "2.0",
+               "id" => 2,
+               "method" => "subscriptions/listen"
+             })
+
+    send(request, :release_stream)
+  end
+
   test "legacy SSE is delivered incrementally before the response closes" do
     %{url: url} = start_http_plug(stream?: true)
     client = start_supervised!({HTTPClient, owner: self(), url: url})
@@ -242,11 +389,12 @@ defmodule MCP.ClientReviewRemediationTest do
   end
 
   test "explicit close waits for bounded session DELETE completion" do
-    %{url: url} = start_http_plug()
+    %{url: url} = start_http_plug(stream?: true)
     client = start_supervised!({HTTPClient, owner: self(), url: url})
 
     assert :ok = HTTPClient.send_message(client, initialize_request(1))
     assert_receive {:mcp_message, %{"id" => 1}}
+    assert_receive {:client_review_stream_chunked, stream_request}
 
     close = Task.async(fn -> HTTPClient.close(client) end)
     assert_receive {:client_review_delete, request}, 500
@@ -258,6 +406,7 @@ defmodule MCP.ClientReviewRemediationTest do
 
     send(request, :release_delete)
     assert :ok = Task.await(close, 1_000)
+    send(stream_request, :release_stream)
   end
 
   test "legacy SSE retry exhaustion is reported to the owner" do
@@ -448,7 +597,7 @@ defmodule MCP.ClientReviewRemediationTest do
     }
   end
 
-  defp start_http_plug(opts \\ []) do
+  defp start_http_plug(opts) do
     bandit =
       start_supervised!(
         {Bandit,

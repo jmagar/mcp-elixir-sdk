@@ -19,12 +19,11 @@ defmodule MCP.Transport.StdioSecurityTest do
     policy = SecurityPolicy.gateway()
 
     assert policy.max_frame_bytes == 1_000_000
+    assert policy.max_pending_stdout_bytes == 4_000_000
     assert policy.max_frames_per_turn == 100
-    assert policy.malformed_output == :close
     assert policy.stderr == :disable
     assert policy.environment == :replace
     assert policy.shutdown_timeout == 5_000
-    assert SecurityPolicy.containment_guarantee() == :cooperative_process_tree_cleanup
   end
 
   test "default policy inherits while gateway policy replaces the parent environment" do
@@ -49,6 +48,9 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert {:error, {:invalid_security_policy, {:max_frame_bytes, 0}}} =
              SecurityPolicy.new(max_frame_bytes: 0)
 
+    assert {:error, {:invalid_security_policy, {:max_pending_stdout_bytes, 0}}} =
+             SecurityPolicy.new(max_pending_stdout_bytes: 0)
+
     assert {:error, {:invalid_security_policy, {:stderr, :stdout}}} =
              SecurityPolicy.new(stderr: :stdout)
 
@@ -58,7 +60,7 @@ defmodule MCP.Transport.StdioSecurityTest do
 
   @tag @linux_only
   test "oversized incomplete stdout fails closed" do
-    transport = start_transport("oversized", max_frame_bytes: 64, shutdown_timeout: 100)
+    transport = start_transport("oversized", max_frame_bytes: 64, shutdown_timeout: 2_000)
 
     assert_receive {:mcp_transport_closed, {:protocol_violation, {:frame_too_large, 64}}},
                    5_000
@@ -74,8 +76,8 @@ defmodule MCP.Transport.StdioSecurityTest do
         ] do
       _transport = start_transport(mode, max_frame_bytes: 64)
 
-      assert_receive {:mcp_transport_closed, {:protocol_violation, {^expected, _detail}}},
-                     5_000
+      assert_receive {:mcp_transport_closed, {:protocol_violation, reason}}, 5_000
+      assert reason == expected or match?({^expected, _detail}, reason)
     end
   end
 
@@ -101,10 +103,19 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   @tag @linux_only
+  test "an extremely small cleanup deadline returns a failure instead of crashing the caller" do
+    transport = start_transport("descendant", shutdown_timeout: 1)
+    assert_receive {:mcp_message, %{"result" => %{"pid" => _child_pid}}}, 5_000
+
+    assert Stdio.close(transport) == {:error, :process_group_cleanup_failed}
+    assert Process.alive?(self())
+  end
+
+  @tag @linux_only
   test "protocol violation terminates the hostile parent and descendant" do
     _transport = start_transport("malformed_descendant", shutdown_timeout: 5_000)
     assert_receive {:mcp_message, %{"result" => %{"parent" => parent, "child" => child}}}, 5_000
-    assert_receive {:mcp_transport_closed, {:protocol_violation, {:malformed_json, _}}}, 5_000
+    assert_receive {:mcp_transport_closed, {:protocol_violation, :malformed_json}}, 5_000
     refute stays_true?(fn -> os_process_alive?(parent) or os_process_alive?(child) end, 7_000)
   end
 
@@ -163,6 +174,29 @@ defmodule MCP.Transport.StdioSecurityTest do
     ids = for _ <- 1..5, do: get_in(receive_message(), ["id"])
     assert ids == [1, 2, 3, 4, 5]
     assert_receive {:mcp_transport_closed, _reason}, 5_000
+  end
+
+  @tag @linux_only
+  test "aggregate pending stdout is bounded even when every frame is individually valid" do
+    _transport =
+      start_transport(
+        "frame_flood",
+        max_frame_bytes: 128,
+        max_pending_stdout_bytes: 256,
+        max_frames_per_turn: 1
+      )
+
+    assert_receive {:mcp_transport_closed,
+                    {:protocol_violation, {:stdout_backlog_too_large, 256}}},
+                   5_000
+  end
+
+  @tag @linux_only
+  test "unterminated stdout at subprocess EOF is a truncated-frame violation" do
+    _transport = start_transport("truncated_exit")
+
+    assert_receive {:mcp_transport_closed, {:protocol_violation, :truncated_frame}}, 5_000
+    refute_receive {:mcp_message, _message}
   end
 
   @tag @linux_only

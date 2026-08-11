@@ -155,7 +155,8 @@ stdio launch opts  -> fixed identity      -> ToolContext.identity -> handler
   with structured transport errors before decoding.
 - Stdio clients reject oversized or malformed/non-JSON-RPC stdout, keep stderr
   outside the protocol channel, and apply the configured environment and
-  process-tree shutdown policy.
+  process-tree shutdown policy. Captured stderr is never logged automatically;
+  high-level clients receive it only through an explicit `:stderr_handler`.
 - `params`, tool `arguments`, `_meta`, and routing headers are never identity
   sources.
 - `MCP.Server.Dispatch` only accepts a preconstructed `ToolContext`; it does not
@@ -326,6 +327,7 @@ invalidation, bounds, and unknown-scope behavior.
 | Handler domain error | Handler-provided MCP error | Yes |
 | Tool execution error intended for model | Successful result with `isError: true` | Yes |
 | Transport closes with pending calls | `{:error, {:transport_closed, reason}}` | Maybe |
+| Transport cleanup fails before close | `{:error, {:transport_closed, {:cleanup_failed, cleanup_reason, close_reason}}}`; `MCP.Client.transport_failure/1` returns `cleanup_reason` | Maybe |
 | Client request timeout | `{:error, :timeout}` | Maybe |
 | Subscription queue overflow | Subscription terminates; other work continues | Already established |
 | MRTR/notification callback raises or times out | Operation/callback fails; client GenServer remains responsive | Maybe |

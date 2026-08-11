@@ -14,7 +14,7 @@ defmodule MCP.Client do
         client_info: %{name: "my_app", version: "1.0.0"}
       )
 
-      {:ok, info}  = MCP.Client.connect(client)          # server/discover probe
+      {:ok, info}  = MCP.Client.connect(client)          # selects the configured era
       {:ok, tools} = MCP.Client.list_tools(client)
       {:ok, out}   = MCP.Client.call_tool(client, "my_tool", %{"arg" => "val"})
 
@@ -36,6 +36,10 @@ defmodule MCP.Client do
     * `:protocol_version` — advertised version (default: the stateless core's)
     * `:notification_handler` — pid or `(method, params -> any)` for server
       notifications
+    * `:stderr_handler` — opt-in pid or `(binary -> any)` for bounded captured
+      stdio diagnostics; diagnostics are never logged by default
+    * `:stderr_handler_concurrency` — isolated diagnostic callback concurrency
+      (default: 1)
     * `:on_input_required` — `(input_requests -> input_responses)` MRTR resolver
     * `:request_timeout` — default request timeout in ms (default: 30_000)
     * `:tool_schema_limit` — maximum cached tool schemas (default: 1,024)
@@ -69,6 +73,7 @@ defmodule MCP.Client do
   @default_notification_concurrency 32
   @default_server_request_concurrency 32
   @default_server_request_timeout 30_000
+  @default_stderr_handler_concurrency 1
   @protocol_version Revision.preferred()
   @subscription_ack_method "notifications/subscriptions/acknowledged"
 
@@ -85,6 +90,7 @@ defmodule MCP.Client do
     :legacy_adapter,
     :status,
     :notification_handler,
+    :stderr_handler,
     :on_input_required,
     :request_handlers,
     :legacy_ready,
@@ -99,6 +105,7 @@ defmodule MCP.Client do
     :request_timeout,
     :task_supervisor,
     :notification_supervisor,
+    :diagnostic_supervisor,
     :server_request_supervisor,
     :server_request_timeout,
     :subscription_supervisor,
@@ -123,8 +130,9 @@ defmodule MCP.Client do
   end
 
   @doc """
-  Probes the server via `server/discover` (the stateless replacement for the
-  removed `initialize` handshake).
+  Connects using `server/discover` for the stateless era or the
+  initialize/initialized handshake for the legacy era. A preferred stateless
+  client may make one bounded legacy fallback on explicit incompatibility.
 
   Returns `{:ok, %{server_info:, server_capabilities:, protocol_version:,
   instructions:}}`.
@@ -357,6 +365,12 @@ defmodule MCP.Client do
     {:ok, notification_supervisor} =
       Task.Supervisor.start_link(max_children: notification_concurrency)
 
+    stderr_handler_concurrency =
+      Keyword.get(opts, :stderr_handler_concurrency, @default_stderr_handler_concurrency)
+
+    {:ok, diagnostic_supervisor} =
+      Task.Supervisor.start_link(max_children: stderr_handler_concurrency)
+
     server_request_concurrency =
       Keyword.get(opts, :server_request_concurrency, @default_server_request_concurrency)
 
@@ -380,6 +394,7 @@ defmodule MCP.Client do
       legacy_adapter: legacy_adapter(Keyword.get(opts, :protocol_version, @protocol_version)),
       status: :ready,
       notification_handler: Keyword.get(opts, :notification_handler),
+      stderr_handler: Keyword.get(opts, :stderr_handler),
       on_input_required: Keyword.get(opts, :on_input_required),
       request_handlers: request_handlers,
       legacy_ready: false,
@@ -392,6 +407,7 @@ defmodule MCP.Client do
       request_timeout: Keyword.get(opts, :request_timeout, @default_request_timeout),
       task_supervisor: task_supervisor,
       notification_supervisor: notification_supervisor,
+      diagnostic_supervisor: diagnostic_supervisor,
       server_request_supervisor: server_request_supervisor,
       server_request_timeout:
         Keyword.get(opts, :server_request_timeout, @default_server_request_timeout),
@@ -646,8 +662,32 @@ defmodule MCP.Client do
     {:noreply, %{state | transport_failure: reason}}
   end
 
-  def handle_info({:mcp_transport_stderr, data}, state) do
-    Logger.warning("MCP upstream stderr: #{String.trim_trailing(data)}")
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: nil} = state) do
+    # Captured stderr is sensitive upstream-owned data. The transport exposes
+    # it to direct owners, but the high-level client never persists it to logs.
+    _data = data
+    {:noreply, state}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: handler} = state)
+      when is_pid(handler) do
+    send(handler, {:mcp_transport_stderr, data})
+    {:noreply, state}
+  end
+
+  def handle_info({:mcp_transport_stderr, data}, %{stderr_handler: handler} = state)
+      when is_function(handler, 1) do
+    case Task.Supervisor.start_child(state.diagnostic_supervisor, fn -> handler.(data) end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, :max_children} ->
+        Logger.warning("MCP stderr handler saturated; diagnostic dropped")
+
+      {:error, reason} ->
+        Logger.warning("MCP stderr handler unavailable: #{inspect(reason)}")
+    end
+
     {:noreply, state}
   end
 
@@ -2269,7 +2309,14 @@ defmodule MCP.Client do
              :server_request_timeout,
              @default_server_request_timeout
            ),
+         :ok <-
+           validate_positive_option(
+             opts,
+             :stderr_handler_concurrency,
+             @default_stderr_handler_concurrency
+           ),
          :ok <- validate_client_capabilities(opts),
+         :ok <- validate_stderr_handler(opts),
          do: validate_callback_configuration(opts)
   end
 
@@ -2298,6 +2345,9 @@ defmodule MCP.Client do
 
   defp invalid_option_error(:server_request_timeout), do: :invalid_server_request_timeout
 
+  defp invalid_option_error(:stderr_handler_concurrency),
+    do: :invalid_stderr_handler_concurrency
+
   defp validate_client_capabilities(opts) do
     capabilities = Keyword.get(opts, :client_capabilities, %ClientCapabilities{})
     _encoded = capabilities |> normalize_client_capabilities() |> ClientCapabilities.to_map()
@@ -2305,6 +2355,14 @@ defmodule MCP.Client do
   rescue
     exception in [ArgumentError, FunctionClauseError] ->
       {:error, {:invalid_client_capabilities, Exception.message(exception)}}
+  end
+
+  defp validate_stderr_handler(opts) do
+    case Keyword.get(opts, :stderr_handler) do
+      nil -> :ok
+      handler when is_pid(handler) or is_function(handler, 1) -> :ok
+      invalid -> {:error, {:invalid_stderr_handler, invalid}}
+    end
   end
 
   defp validate_callback_configuration(opts) do

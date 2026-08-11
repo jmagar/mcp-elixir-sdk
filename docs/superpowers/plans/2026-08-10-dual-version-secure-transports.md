@@ -81,7 +81,7 @@ end
 
 - [ ] **Step 2: Run the focused test and verify failure**
 
-Run: `mix test test/mcp/protocol/revision_test.exs --seed 0`  
+Run: `mix test test/mcp/protocol/revision_test.exs --seed 0`
 Expected: compilation failure because `MCP.Protocol.Revision` does not exist.
 
 - [ ] **Step 3: Implement the behavior, registry, and the explicit `2025-11-25` adapter**
@@ -97,7 +97,7 @@ Use binary-keyed compile-time maps:
 
 - [ ] **Step 4: Run protocol tests**
 
-Run: `mix test test/mcp/protocol/revision_test.exs test/mcp/protocol_test.exs test/mcp/protocol/messages/initialize_test.exs --seed 0`  
+Run: `mix test test/mcp/protocol/revision_test.exs test/mcp/protocol_test.exs test/mcp/protocol/messages/initialize_test.exs --seed 0`
 Expected: all pass.
 
 - [ ] **Step 5: Commit**
@@ -139,7 +139,7 @@ Also assert that 401/403, TLS/network errors, malformed JSON, overflow, and time
 
 - [ ] **Step 2: Run focused tests and verify the June cases fail**
 
-Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs --seed 0`  
+Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs --seed 0`
 Expected: dual-version selection, fallback, and server initialization pass.
 
 - [ ] **Step 3: Replace the single legacy constant with adapter selection**
@@ -159,7 +159,7 @@ On explicit legacy configuration or supported-version fallback, call `Revision.f
 
 - [ ] **Step 5: Run client, legacy server, and HTTP session tests**
 
-Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs test/mcp/client_review_remediation_test.exs test/mcp/server/legacy_protocol_hardening_test.exs test/mcp/transport/legacy_session_hardening_test.exs --seed 0`  
+Run: `mix test test/mcp/dual_version_security_compatibility_test.exs test/mcp/dual_protocol_compatibility_test.exs test/mcp/client_review_remediation_test.exs test/mcp/server/legacy_protocol_hardening_test.exs test/mcp/transport/legacy_session_hardening_test.exs --seed 0`
 Expected: all pass.
 
 - [ ] **Step 6: Commit**
@@ -203,7 +203,7 @@ Use defaults: connect 5 seconds, receive/idle 30 seconds, finite request 60 seco
 
 - [ ] **Step 2: Run the focused test and verify failure**
 
-Run: `mix test test/mcp/transport/streamable_http_security_policy_test.exs --seed 0`  
+Run: `mix test test/mcp/transport/streamable_http_security_policy_test.exs --seed 0`
 Expected: missing policy module.
 
 - [ ] **Step 3: Implement validated policy constructors and URL normalization**
@@ -216,7 +216,7 @@ Replace `Keyword.fetch!(opts, :url)` storage with controlled `{:stop, reason}` i
 
 - [ ] **Step 5: Run policy and existing client tests**
 
-Run: `mix test test/mcp/transport/streamable_http_security_policy_test.exs test/mcp/transport/streamable_http_client_test.exs --seed 0`  
+Run: `mix test test/mcp/transport/streamable_http_security_policy_test.exs test/mcp/transport/streamable_http_client_test.exs --seed 0`
 Expected: all pass.
 
 - [ ] **Step 6: Commit**
@@ -247,7 +247,7 @@ Create local Bandit fixtures for 301/302/303/307/308, chunked oversized JSON, a 
 
 - [ ] **Step 2: Run focused tests and verify current buffering/redirect behavior fails**
 
-Run: `mix test test/mcp/transport/streamable_http_response_bounds_test.exs test/mcp/transport/sse_test.exs --seed 0`  
+Run: `mix test test/mcp/transport/streamable_http_response_bounds_test.exs test/mcp/transport/sse_test.exs --seed 0`
 Expected: redirect is followed or bounds/deadline assertions fail.
 
 - [ ] **Step 3: Implement one Req template for POST, GET, and DELETE**
@@ -277,7 +277,7 @@ All three paths share the bounded SSE parser and idle-timeout receive loop. Pres
 
 - [ ] **Step 6: Run the complete HTTP transport test set**
 
-Run: `mix test test/mcp/transport/streamable_http_response_bounds_test.exs test/mcp/transport/sse_test.exs test/mcp/transport/streamable_http_client_test.exs test/mcp/transport/streamable_http_recovery_test.exs test/mcp/subscriptions_http_integration_test.exs --seed 0`  
+Run: `mix test test/mcp/transport/streamable_http_response_bounds_test.exs test/mcp/transport/sse_test.exs test/mcp/transport/streamable_http_client_test.exs test/mcp/transport/streamable_http_recovery_test.exs test/mcp/subscriptions_http_integration_test.exs --seed 0`
 Expected: all pass.
 
 - [ ] **Step 7: Commit**
@@ -331,7 +331,7 @@ The fixture accepts a mode argument and emits: a partial frame at limit, limit+1
 
 - [ ] **Step 3: Run focused tests and verify failure**
 
-Run: `mix deps.get && mix test test/mcp/transport/stdio_security_test.exs --seed 0`  
+Run: `mix deps.get && mix test test/mcp/transport/stdio_security_test.exs --seed 0`
 Expected: missing policy/process modules and current malformed-output behavior fails.
 
 - [ ] **Step 4: Implement policy and Unix process-group owner**
@@ -350,7 +350,7 @@ Reject before append when `byte_size(buffer) + byte_size(chunk)` exceeds the inc
 
 - [ ] **Step 7: Run all stdio tests**
 
-Run: `mix test test/mcp/transport/stdio_security_test.exs test/mcp/transport/stdio_test.exs test/mcp/integration_test.exs test/mcp/subscriptions_stdio_integration_test.exs --seed 0`  
+Run: `mix test test/mcp/transport/stdio_security_test.exs test/mcp/transport/stdio_test.exs test/mcp/integration_test.exs test/mcp/subscriptions_stdio_integration_test.exs --seed 0`
 Expected: all pass.
 
 - [ ] **Step 8: Commit**
@@ -460,7 +460,7 @@ Describe the current branch as unreleased and remove the stale `3fa6dce` install
 
 - [ ] **Step 4: Generate docs and inspect warnings**
 
-Run: `mix docs`  
+Run: `mix docs`
 Expected: success without undefined references for new policy/revision modules.
 
 - [ ] **Step 5: Commit**
@@ -506,7 +506,7 @@ Cover one bounded HTTP tool call, one stdio tool call, one rejected redirect, an
 
 - [ ] **Step 4: Run the complete Phoenix suite**
 
-Run: `mix test --seed 0`  
+Run: `mix test --seed 0`
 Expected: all pass with the newly resolved Req lock.
 
 - [ ] **Step 5: Run the actual-Unraid descendant cleanup probe**
@@ -541,7 +541,7 @@ git commit -m "test(stdio): record Unraid process cleanup verification"
 
 - [ ] **Step 1: Run the canonical precommit gate before versioning**
 
-Run: `mix precommit`  
+Run: `mix precommit`
 Expected: format, warnings-as-errors compile, all tests, Credo, Dialyzer, docs, Hex build/audit, unused dependency check, diff check, and all conformance ledger JSON checks pass.
 
 - [ ] **Step 2: Confirm the proposed coordinate is unused**
@@ -572,7 +572,7 @@ Expected: archive contains `lib`, complete required `docs`, conformance ledgers,
 
 - [ ] **Step 5: Rerun the full gate at the release commit**
 
-Run: `mix precommit`  
+Run: `mix precommit`
 Expected: all pass.
 
 - [ ] **Step 6: Commit the release candidate metadata**

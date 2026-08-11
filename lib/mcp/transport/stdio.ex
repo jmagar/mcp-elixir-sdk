@@ -80,12 +80,7 @@ defmodule MCP.Transport.Stdio do
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
     mode = determine_mode(opts)
-
-    if mode == :server and Keyword.has_key?(opts, :security_policy) do
-      {:stop, {:invalid_security_policy, :server_mode_does_not_apply_client_policy}}
-    else
-      init_with_policy(owner, mode, opts)
-    end
+    init_with_policy(owner, mode, opts)
   end
 
   defp init_with_policy(owner, mode, opts) do
@@ -120,7 +115,9 @@ defmodule MCP.Transport.Stdio do
 
   @impl GenServer
   def handle_info({:stdio_process, process, :stdout, data}, %{process: process} = state) do
-    consume_stdout(state, data)
+    result = consume_stdout(state, data)
+    StdioProcess.ack_stdout(process, byte_size(data))
+    result
   end
 
   def handle_info({:stdio_process, process, :stderr, data}, %{process: process} = state) do
@@ -150,23 +147,13 @@ defmodule MCP.Transport.Stdio do
     consume_stdout(%{state | buffer: ""}, state.buffer)
   end
 
-  # Server mode: stdin reader sends us lines
-  def handle_info({:stdio_line, line}, state) do
-    case Jason.decode(line) do
-      {:ok, decoded} ->
-        send(state.owner, {:mcp_message, decoded})
-
-      {:error, reason} ->
-        Logger.warning("MCP Stdio: failed to decode JSON from stdin: #{inspect(reason)}")
-    end
-
-    {:noreply, state}
+  def handle_info({:stdio_chunk, reader, data}, %{mode: :server, reader_pid: reader} = state) do
+    result = consume_stdout(state, data)
+    send(reader, {:stdio_chunk_ack, self()})
+    result
   end
 
-  def handle_info(:stdio_eof, state) do
-    send(state.owner, {:mcp_transport_closed, :eof})
-    {:stop, :normal, state}
-  end
+  def handle_info(:stdio_eof, %{mode: :server} = state), do: finish_or_defer_close(state, :eof)
 
   def handle_info(msg, state) do
     Logger.debug("MCP Stdio: unexpected message: #{inspect(msg)}")
@@ -218,7 +205,7 @@ defmodule MCP.Transport.Stdio do
   end
 
   defp stdio_read_loop(transport) do
-    case :io.get_line(:standard_io, ~c"") do
+    case IO.binread(:standard_io, 4_096) do
       :eof ->
         send(transport, :stdio_eof)
 
@@ -226,22 +213,11 @@ defmodule MCP.Transport.Stdio do
         send(transport, :stdio_eof)
 
       data when is_binary(data) ->
-        line = String.trim_trailing(data, "\n")
+        send(transport, {:stdio_chunk, self(), data})
 
-        if line != "" do
-          send(transport, {:stdio_line, line})
+        receive do
+          {:stdio_chunk_ack, ^transport} -> stdio_read_loop(transport)
         end
-
-        stdio_read_loop(transport)
-
-      data when is_list(data) ->
-        line = data |> IO.chardata_to_string() |> String.trim_trailing("\n")
-
-        if line != "" do
-          send(transport, {:stdio_line, line})
-        end
-
-        stdio_read_loop(transport)
     end
   end
 
@@ -287,6 +263,18 @@ defmodule MCP.Transport.Stdio do
   defp consume_stdout(state, data) do
     combined = state.buffer <> data
 
+    if byte_size(combined) > state.security_policy.max_pending_stdout_bytes do
+      fail_protocol(
+        state,
+        {:stdout_backlog_too_large, state.security_policy.max_pending_stdout_bytes},
+        []
+      )
+    else
+      consume_stdout_frames(state, combined)
+    end
+  end
+
+  defp consume_stdout_frames(state, combined) do
     case consume_frames(combined, state.security_policy, 0, []) do
       {:ok, messages, remaining, more?} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
@@ -301,29 +289,38 @@ defmodule MCP.Transport.Stdio do
             {:noreply, state}
 
           state.closing_reason != :none ->
-            emit_close(state, state.closing_reason)
+            if remaining == "" do
+              emit_close(state, state.closing_reason)
+            else
+              emit_close(state, {:protocol_violation, :truncated_frame})
+            end
 
           true ->
             {:noreply, state}
         end
 
       {:error, reason, messages} ->
-        Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
-        send(state.owner, {:mcp_transport_closed, {:protocol_violation, reason}})
-        close_result = do_close(state)
-
-        if match?({:error, _}, close_result) do
-          {:error, cleanup_reason} = close_result
-
-          Logger.error(
-            "MCP Stdio cleanup failed after protocol violation: #{inspect(cleanup_reason)}"
-          )
-
-          send(state.owner, {:mcp_transport_cleanup_failed, cleanup_reason})
-        end
-
-        {:stop, :normal, state}
+        fail_protocol(state, reason, messages)
     end
+  end
+
+  defp fail_protocol(state, reason, messages) do
+    Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
+    close_result = do_close(state)
+
+    if match?({:error, _}, close_result) do
+      {:error, cleanup_reason} = close_result
+
+      Logger.error(
+        "MCP Stdio cleanup failed after protocol violation: #{inspect(cleanup_reason)}"
+      )
+
+      send(state.owner, {:mcp_transport_cleanup_failed, cleanup_reason})
+    end
+
+    send(state.owner, {:mcp_transport_closed, {:protocol_violation, reason}})
+
+    {:stop, :normal, state}
   end
 
   defp finish_or_defer_close(%{buffer: ""} = state, reason), do: emit_close(state, reason)
@@ -369,15 +366,15 @@ defmodule MCP.Transport.Stdio do
          {:ok, _classified} <- Protocol.decode_message(decoded) do
       {:ok, decoded}
     else
-      {:ok, decoded} -> {:error, {:non_protocol_json, decoded}}
+      {:ok, _decoded} -> {:error, :non_protocol_json}
       {:error, %MCP.Protocol.Error{} = error} -> {:error, {:invalid_json_rpc, error.code}}
-      {:error, reason} -> {:error, {:malformed_json, reason}}
+      {:error, _reason} -> {:error, :malformed_json}
     end
   end
 
   defp consume_stderr(%{security_policy: %{stderr: :capture}} = state, data) do
     remaining = max(state.security_policy.max_stderr_bytes - state.stderr_bytes, 0)
-    captured = utf8_prefix(data, remaining)
+    captured = binary_prefix(data, remaining)
     if captured != "", do: send(state.owner, {:mcp_transport_stderr, captured})
 
     total = state.stderr_bytes + byte_size(data)
@@ -396,14 +393,7 @@ defmodule MCP.Transport.Stdio do
 
   defp consume_stderr(state, _data), do: state
 
-  defp utf8_prefix(data, limit) when byte_size(data) <= limit, do: data
-
-  defp utf8_prefix(data, limit),
-    do: data |> String.codepoints() |> Enum.reduce_while("", &append_utf8(&1, &2, limit))
-
-  defp append_utf8(codepoint, acc, limit) do
-    if byte_size(acc) + byte_size(codepoint) <= limit,
-      do: {:cont, acc <> codepoint},
-      else: {:halt, acc}
-  end
+  defp binary_prefix(_data, 0), do: ""
+  defp binary_prefix(data, limit) when byte_size(data) <= limit, do: data
+  defp binary_prefix(data, limit), do: binary_part(data, 0, limit)
 end

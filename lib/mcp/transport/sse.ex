@@ -96,6 +96,7 @@ defmodule MCP.Transport.SSE do
       Enum.reduce(lines, %{}, fn line, acc ->
         parse_field(line, acc)
       end)
+      |> finalize_data()
 
     if map_size(event) == 0 do
       {:error, :empty_event}
@@ -203,27 +204,32 @@ defmodule MCP.Transport.SSE do
   end
 
   defp apply_field("data", value, acc) do
-    case Map.get(acc, :data) do
-      nil -> Map.put(acc, :data, value)
-      existing -> Map.put(acc, :data, existing <> "\n" <> value)
-    end
+    Map.update(acc, :data_lines, [value], &[value | &1])
   end
 
   defp apply_field(_unknown, _value, acc), do: acc
+
+  defp finalize_data(%{data_lines: lines} = event) do
+    event
+    |> Map.delete(:data_lines)
+    |> Map.put(:data, lines |> Enum.reverse() |> Enum.join("\n"))
+  end
+
+  defp finalize_data(event), do: event
 
   defp extract_events(buffer, events) do
     case split_event(buffer) do
       {:ok, event_text, rest} ->
         case decode_event(event_text) do
           {:ok, event} ->
-            extract_events(rest, events ++ [event])
+            extract_events(rest, [event | events])
 
           {:error, _} ->
             extract_events(rest, events)
         end
 
       :incomplete ->
-        {events, buffer}
+        {Enum.reverse(events), buffer}
     end
   end
 
