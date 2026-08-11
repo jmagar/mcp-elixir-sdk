@@ -279,30 +279,29 @@ defmodule MCP.Transport.Stdio do
       {:ok, messages, remaining, more?} ->
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
         state = %{state | buffer: remaining}
-
-        cond do
-          # Queued immediately: the message lands behind everything already in
-          # the mailbox, which preserves the frame-turn yield without adding
-          # latency or letting a queued close notification overtake the drain.
-          more? ->
-            send(self(), :drain_stdout)
-            {:noreply, state}
-
-          state.closing_reason != :none ->
-            if remaining == "" do
-              emit_close(state, state.closing_reason)
-            else
-              emit_close(state, {:protocol_violation, :truncated_frame})
-            end
-
-          true ->
-            {:noreply, state}
-        end
+        continue_after_stdout_turn(state, remaining, more?)
 
       {:error, reason, messages} ->
         fail_protocol(state, reason, messages)
     end
   end
+
+  # Queued immediately: the message lands behind everything already in the
+  # mailbox, preserving the frame-turn yield without adding latency or letting
+  # a queued close notification overtake the drain.
+  defp continue_after_stdout_turn(state, _remaining, true) do
+    send(self(), :drain_stdout)
+    {:noreply, state}
+  end
+
+  defp continue_after_stdout_turn(%{closing_reason: :none} = state, _remaining, false),
+    do: {:noreply, state}
+
+  defp continue_after_stdout_turn(state, "", false),
+    do: emit_close(state, state.closing_reason)
+
+  defp continue_after_stdout_turn(state, _remaining, false),
+    do: emit_close(state, {:protocol_violation, :truncated_frame})
 
   defp fail_protocol(state, reason, messages) do
     Enum.each(messages, &send(state.owner, {:mcp_message, &1}))

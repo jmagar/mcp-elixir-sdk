@@ -133,10 +133,10 @@ defmodule MCP.Transport.StreamableHTTP.SecurityPolicy do
   end
 
   defp validate_fixed_values(policy) do
-    if not is_boolean(policy.allow_non_loopback_http) do
-      {:error, {:allow_non_loopback_http, policy.allow_non_loopback_http}}
-    else
+    if is_boolean(policy.allow_non_loopback_http) do
       :ok
+    else
+      {:error, {:allow_non_loopback_http, policy.allow_non_loopback_http}}
     end
   end
 

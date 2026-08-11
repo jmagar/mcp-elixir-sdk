@@ -54,28 +54,7 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
 
       "initialize" ->
         initialize_count = update_recovery_counter(opts, :initializes)
-
-        cond do
-          body = Keyword.get(opts, :initialize_sse_body) ->
-            conn
-            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
-            |> stream_body(body)
-
-          override = Keyword.get(opts, :initialize_override) ->
-            conn
-            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
-            |> respond(200, initialize_override(override, message))
-
-          Keyword.get(opts, :malformed_initialize_once?) == true and initialize_count == 1 ->
-            conn
-            |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
-            |> respond(200, [])
-
-          true ->
-            conn
-            |> Plug.Conn.put_resp_header("mcp-session-id", "review-session")
-            |> respond(200, initialize_result(message["id"]))
-        end
+        initialize_response(conn, message, opts, initialize_count)
 
       "tools/list" ->
         if Keyword.has_key?(opts, :recovery),
@@ -87,6 +66,30 @@ defmodule MCP.Test.ClientReviewHTTPPlug do
 
       _method ->
         default_post_response(conn, message, opts)
+    end
+  end
+
+  defp initialize_response(conn, message, opts, initialize_count) do
+    cond do
+      body = Keyword.get(opts, :initialize_sse_body) ->
+        conn
+        |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+        |> stream_body(body)
+
+      override = Keyword.get(opts, :initialize_override) ->
+        conn
+        |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+        |> respond(200, initialize_override(override, message))
+
+      Keyword.get(opts, :malformed_initialize_once?) == true and initialize_count == 1 ->
+        conn
+        |> Plug.Conn.put_resp_header("mcp-session-id", "poison-session")
+        |> respond(200, [])
+
+      true ->
+        conn
+        |> Plug.Conn.put_resp_header("mcp-session-id", "review-session")
+        |> respond(200, initialize_result(message["id"]))
     end
   end
 

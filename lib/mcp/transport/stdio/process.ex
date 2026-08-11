@@ -238,21 +238,29 @@ defmodule MCP.Transport.Stdio.Process do
 
     proc_paths("environ")
     |> Enum.reduce_while([], fn path, identities ->
-      if deadline_expired?(deadline) do
-        {:halt, identities}
-      else
-        with {:ok, environment} <- File.read(path),
-             true <- marker_in_environment?(environment, marker),
-             pid_text <- path |> Path.dirname() |> Path.basename(),
-             {pid, ""} <- Integer.parse(pid_text),
-             {:ok, stat} <- File.read("/proc/#{pid}/stat"),
-             fields when is_list(fields) <- stat_fields(stat) do
-          {:cont, [{pid, Enum.at(fields, 19)} | identities]}
-        else
-          _unavailable_or_unmarked -> {:cont, identities}
-        end
-      end
+      marked_process_step(path, identities, marker, deadline)
     end)
+  end
+
+  defp marked_process_step(path, identities, marker, deadline) do
+    if deadline_expired?(deadline) do
+      {:halt, identities}
+    else
+      read_marked_process(path, identities, marker)
+    end
+  end
+
+  defp read_marked_process(path, identities, marker) do
+    with {:ok, environment} <- File.read(path),
+         true <- marker_in_environment?(environment, marker),
+         pid_text <- path |> Path.dirname() |> Path.basename(),
+         {pid, ""} <- Integer.parse(pid_text),
+         {:ok, stat} <- File.read("/proc/#{pid}/stat"),
+         fields when is_list(fields) <- stat_fields(stat) do
+      {:cont, [{pid, Enum.at(fields, 19)} | identities]}
+    else
+      _unavailable_or_unmarked -> {:cont, identities}
+    end
   end
 
   defp marker_in_environment?(environment, marker) do
@@ -274,15 +282,23 @@ defmodule MCP.Transport.Stdio.Process do
   defp process_table(deadline) do
     proc_paths("stat")
     |> Enum.reduce_while(%{children: %{}, start_times: %{}}, fn path, table ->
-      if deadline_expired?(deadline) do
-        {:halt, table}
-      else
-        case File.read(path) do
-          {:ok, stat} -> {:cont, put_process_identity(table, stat)}
-          {:error, _unavailable} -> {:cont, table}
-        end
-      end
+      process_table_step(path, table, deadline)
     end)
+  end
+
+  defp process_table_step(path, table, deadline) do
+    if deadline_expired?(deadline) do
+      {:halt, table}
+    else
+      read_process_identity(path, table)
+    end
+  end
+
+  defp read_process_identity(path, table) do
+    case File.read(path) do
+      {:ok, stat} -> {:cont, put_process_identity(table, stat)}
+      {:error, _unavailable} -> {:cont, table}
+    end
   end
 
   defp put_process_identity(table, stat) do
@@ -332,13 +348,14 @@ defmodule MCP.Transport.Stdio.Process do
       if deadline_expired?(deadline) do
         {:halt, :timeout}
       else
-        if process_alive?(identity) do
-          _ = bounded_signal(flag, pid, deadline)
-        end
-
+        signal_if_alive(identity, flag, pid, deadline)
         {:cont, :ok}
       end
     end)
+  end
+
+  defp signal_if_alive(identity, flag, pid, deadline) do
+    if process_alive?(identity), do: bounded_signal(flag, pid, deadline), else: :ok
   end
 
   defp bounded_signal(flag, pid, deadline) do

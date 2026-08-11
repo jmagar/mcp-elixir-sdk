@@ -142,8 +142,6 @@ defmodule MCP.Transport.StreamableHTTP.ResponseReader do
     end
   end
 
-  defp min_timeout(:infinity, other), do: other
-  defp min_timeout(timeout, :infinity), do: timeout
   defp min_timeout(timeout, other), do: min(timeout, other)
 
   defp deadline(:infinity), do: :infinity

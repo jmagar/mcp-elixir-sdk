@@ -651,20 +651,21 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   defp decode_sse_events(events) do
     Enum.reduce_while(events, {:ok, []}, fn event, {:ok, messages} ->
-      case Map.get(event, :data) do
-        data when data in [nil, ""] ->
-          {:cont, {:ok, messages}}
-
-        data ->
-          case decode_json_message(data, :invalid_sse_json) do
-            {:ok, decoded} -> {:cont, {:ok, [decoded | messages]}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-      end
+      decode_sse_event(Map.get(event, :data), messages)
     end)
     |> case do
       {:ok, messages} -> {:ok, Enum.reverse(messages)}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp decode_sse_event(data, messages) when data in [nil, ""],
+    do: {:cont, {:ok, messages}}
+
+  defp decode_sse_event(data, messages) do
+    case decode_json_message(data, :invalid_sse_json) do
+      {:ok, decoded} -> {:cont, {:ok, [decoded | messages]}}
+      {:error, reason} -> {:halt, {:error, reason}}
     end
   end
 
@@ -711,13 +712,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     end
   end
 
-  defp decode_json_messages(body) when is_map(body) do
-    case validate_protocol_message(body) do
-      :ok -> {:ok, [body]}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp decode_json_messages(body) when is_binary(body) do
     case decode_json_message(body, :json_decode_error) do
       {:ok, decoded} -> {:ok, [decoded]}
@@ -743,7 +737,6 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     case Protocol.decode_message(decoded) do
       {:ok, _message} -> :ok
       {:error, %MCP.Protocol.Error{} = error} -> {:error, {:invalid_json_rpc, error.code}}
-      {:error, reason} -> {:error, {:invalid_json_rpc, reason}}
     end
   end
 
