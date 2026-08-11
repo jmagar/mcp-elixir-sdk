@@ -1,4 +1,4 @@
-# Tri-Version Protocol and Secure Transports Design
+# Dual-Version Protocol and Secure Transports Design
 
 **Status:** Approved design, pending implementation plan  
 **Date:** 2026-08-10  
@@ -10,11 +10,10 @@ transport security, conformance evidence, Phoenix integration, and release ident
 Make the SDK safe to use as Phoenix's MCP gateway protocol engine and transport
 implementation without maintaining Phoenix-specific forks.
 
-The SDK will support three protocol revisions as first-class, version-isolated eras:
+The SDK will support two protocol revisions as first-class, version-isolated eras:
 
 - `2026-07-28`, the preferred stateless revision;
-- `2025-11-25`, a stateful legacy revision;
-- `2025-06-18`, a stateful legacy revision.
+- `2025-11-25`, a stateful legacy revision.
 
 The HTTP and stdio transports will expose configurable security policies with secure
 defaults. The policies must be useful outside Phoenix, while their default guarantees
@@ -57,10 +56,9 @@ atoms from them.
 - optional `server/discover`;
 - MRTR rather than held-open legacy server-to-client requests.
 
-`2025-11-25` and `2025-06-18` use separate revision adapters behind a shared legacy
-lifecycle behavior. Both perform initialization and capability negotiation, but each
-adapter owns its exact wire projections and transport rules. Shared code is limited to
-semantics proven identical by the pinned schemas and specifications.
+`2025-11-25` uses a revision adapter behind the shared legacy lifecycle behavior. The
+adapter performs initialization and capability negotiation and owns its exact wire
+projections and transport rules.
 
 The existing `MCP.Server.LegacyDispatch` must stop embedding one legacy version as a
 global constant. Dispatch selects a revision adapter after validating initialization or
@@ -72,8 +70,7 @@ validation to the selected adapter.
 Automatic negotiation attempts revisions in this order:
 
 1. `2026-07-28`;
-2. `2025-11-25`;
-3. `2025-06-18`.
+2. `2025-11-25`.
 
 Fallback is bounded to one attempt per remaining configured revision. It is allowed only
 after an explicit unsupported-version or incompatible-lifecycle result. It must not run
@@ -243,9 +240,7 @@ Every claimed revision receives:
 
 The machine-readable ledgers record the pinned harness version, exact commands, scenario
 IDs, pass/fail/warning totals, exclusions, and artifact locations. Internal integration
-coverage remains separately labeled and cannot substitute for an official denominator. The
-pinned harness has no 2025-06-18 profile, so that absence and the SDK-owned June matrix are
-recorded explicitly.
+coverage remains separately labeled and cannot substitute for an official denominator.
 
 ### 8.2 Security tests
 
@@ -282,11 +277,11 @@ explicit operator authorization.
 
 ## 10. Delivery order
 
-1. Introduce revision registry and `2025-06-18` version-isolated adapters.
+1. Introduce the revision registry and isolate the `2025-11-25` adapter.
 2. Add policy types and shared error vocabulary.
 3. Harden finite and streaming HTTP execution.
 4. Harden stdio framing, diagnostics, and process ownership.
-5. Complete three-version conformance and security matrices.
+5. Complete dual-version conformance and security matrices.
 6. Verify Phoenix and actual-Unraid behavior.
 7. Establish the new immutable release coordinate.
 
@@ -295,8 +290,6 @@ no release coordinate is created before production evidence exists.
 
 ## 11. Primary references
 
-- MCP 2025-06-18 transport specification:
-  <https://modelcontextprotocol.io/specification/2025-06-18/basic/transports>
 - MCP 2025-11-25 transport specification:
   <https://modelcontextprotocol.io/specification/2025-11-25/basic/transports>
 - MCP 2026-07-28 release and stateless lifecycle:

@@ -30,7 +30,6 @@ mix deps.unlock --check-unused
 git diff --check
 jq empty conformance/scenarios.json
 jq empty conformance/compatibility-2025-11-25.json
-jq empty conformance/compatibility-2025-06-18.json
 ```
 
 Do not use sleeps to coordinate process tests. Start owned processes with
@@ -78,9 +77,6 @@ npx --no-install conformance client \
   --command 'env MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 ERL_LIBS=_build/dev/lib elixir conformance/client_adapter.exs' \
   --requirements 2025-11-25
 ```
-
-The pinned harness has no `2025-06-18` requirement set. The June ledger records
-that limitation separately from SDK-owned tri-version integration coverage.
 
 `conformance/scenarios.json` records the 2026 release matrix and
 the two `conformance/compatibility-*.json` files record the legacy evidence and

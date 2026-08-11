@@ -16,7 +16,7 @@
       {"name": "initialize", "status": "passed", "checks": {"passed": 1, "failed": 0, "warnings": 0}},
       {"name": "tools_call", "status": "passed", "checks": {"passed": 2, "failed": 0, "warnings": 0}},
       {"name": "elicitation-sep1034-client-defaults", "status": "passed", "checks": {"passed": 5, "failed": 0, "warnings": 0}},
-      {"name": "sse-retry", "status": "partial", "checks": {"passed": 1, "failed": 0, "warnings": 2}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared three-version support set; the adapter exits after rejecting that initialize version."}
+      {"name": "sse-retry", "status": "partial", "checks": {"passed": 1, "failed": 0, "warnings": 2}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared support set; the adapter exits after rejecting that initialize version."}
     ],
     "requiredAuthorizationScenarios": {
       "count": 14,

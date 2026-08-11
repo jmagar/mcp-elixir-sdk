@@ -1,14 +1,14 @@
 # Architecture
 
-MCP Elixir SDK 2.0 is an OTP-native tri-version implementation of MCP
-`2025-06-18`, `2025-11-25`, and `2026-07-28`. Stateless 2026 dispatch remains
-sessionless; each legacy revision uses an explicit initialize/session adapter. There is no
+MCP Elixir SDK 2.0 is an OTP-native dual-version implementation of MCP
+`2025-11-25` and `2026-07-28`. Stateless 2026 dispatch remains
+sessionless; the legacy revision uses an explicit initialize/session adapter. There is no
 client-side result cache or mutable per-request handler configuration.
 
 ## Protocol selection
 
-Clients prefer `2026-07-28` discovery and use a bounded ordered fallback to
-`2025-11-25` and then `2025-06-18` only for version/lifecycle incompatibility.
+Clients prefer `2026-07-28` discovery and use a bounded fallback to
+`2025-11-25` only for version/lifecycle incompatibility.
 Authentication, TLS, malformed-response, overflow, and timeout failures never
 advance fallback. Servers choose a mode on the first valid
 request. A connection never changes modes.

@@ -2,7 +2,7 @@
 
 > **Archived 1.x onboarding record.** The initialization/session lifecycle
 > below is historical 1.x design material, not the current 2.0 implementation.
-> Version 2.0 supports the `2025-06-18` and `2025-11-25` wire lifecycles through
+> Version 2.0 supports the `2025-11-25` wire lifecycle through an
 > isolated compatibility layer. New contributors must use the [current README](../README.md),
 > [architecture](architecture.md), and
 > [development tooling guide](dev-tooling.md) for SDK 2.0.

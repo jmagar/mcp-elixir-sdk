@@ -1,8 +1,8 @@
-# Tri-Version Secure Transports Implementation Plan
+# Dual-Version Secure Transports Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Support MCP `2025-06-18`, `2025-11-25`, and `2026-07-28` with version-isolated lifecycles, bounded HTTP and stdio transports, complete conformance evidence, Phoenix verification, and an immutable 2.0 release candidate coordinate.
+**Goal:** Support MCP `2025-11-25` and `2026-07-28` with version-isolated lifecycles, bounded HTTP and stdio transports, complete conformance evidence, Phoenix verification, and an immutable 2.0 release candidate coordinate.
 
 **Architecture:** A protocol revision registry selects modern or revision-specific legacy adapters without scattering version conditionals. HTTP and stdio each receive a validated policy struct with secure defaults; the transport implementations consume only validated policies and return structured failures. Conformance ledgers and Phoenix integration prove the public claims before version metadata changes.
 
@@ -10,8 +10,8 @@
 
 ## Global Constraints
 
-- Supported revisions are exactly `2026-07-28`, `2025-11-25`, and `2025-06-18`, in that preference order.
-- `2026-07-28` remains stateless; neither legacy revision may leak initialization/session behavior into it.
+- Supported revisions are exactly `2026-07-28` and `2025-11-25`, in that preference order.
+- `2026-07-28` remains stateless; the legacy revision may not leak initialization/session behavior into it.
 - Fallback occurs only for explicit unsupported-version or incompatible-lifecycle results.
 - HTTP redirects and retries default to disabled; finite bodies and SSE frames are bounded before decoding.
 - Stdio malformed or oversized stdout closes the upstream; stderr is never parsed as protocol data.
@@ -29,7 +29,6 @@ New production modules:
 
 - `lib/mcp/protocol/revision.ex` — immutable revision metadata and selection API.
 - `lib/mcp/protocol/legacy_adapter.ex` — behavior implemented by each legacy revision.
-- `lib/mcp/protocol/legacy/v2025_06_18.ex` — 2025-06-18 lifecycle/wire rules.
 - `lib/mcp/protocol/legacy/v2025_11_25.ex` — 2025-11-25 lifecycle/wire rules.
 - `lib/mcp/transport/streamable_http/security_policy.ex` — validated HTTP policy.
 - `lib/mcp/transport/streamable_http/response_reader.ex` — bounded Req async response consumption.
@@ -66,9 +65,9 @@ Existing orchestration modules remain responsible for orchestration only:
 Create tests asserting:
 
 ```elixir
-assert Revision.supported() == ["2026-07-28", "2025-11-25", "2025-06-18"]
+assert Revision.supported() == ["2026-07-28", "2025-11-25"]
 assert {:ok, V2025_11_25} = Revision.fetch("2025-11-25")
-assert {:ok, V2025_06_18} = Revision.fetch("2025-06-18")
+assert {:error, {:unsupported_protocol_version, "2025-06-18"}} = Revision.fetch("2025-06-18")
 assert {:error, {:unsupported_protocol_version, "bogus"}} = Revision.fetch("bogus")
 
 for adapter <- [V2025_11_25, V2025_06_18] do
@@ -88,11 +87,8 @@ Expected: compilation failure because `MCP.Protocol.Revision` does not exist.
 Use binary-keyed compile-time maps:
 
 ```elixir
-@adapters %{
-  "2025-11-25" => MCP.Protocol.Legacy.V2025_11_25,
-  "2025-06-18" => MCP.Protocol.Legacy.V2025_06_18
-}
-@supported ["2026-07-28", "2025-11-25", "2025-06-18"]
+@adapters %{"2025-11-25" => MCP.Protocol.Legacy.V2025_11_25}
+@supported ["2026-07-28", "2025-11-25"]
 ```
 
 `MCP.Protocol.supported_versions/0` delegates to `Revision.supported/0`. Each adapter constructs and validates its own exact initialize version rather than accepting any legacy string.
@@ -106,10 +102,10 @@ Expected: all pass.
 
 ```bash
 git add lib/mcp/protocol.ex lib/mcp/protocol/revision.ex lib/mcp/protocol/legacy_adapter.ex lib/mcp/protocol/legacy test/mcp/protocol/revision_test.exs mix.exs
-git commit -m "feat(protocol): add tri-version revision registry"
+git commit -m "feat(protocol): add dual-version revision registry"
 ```
 
-### Task 2: Tri-Version Client Negotiation and Server Dispatch
+### Task 2: Dual-Version Client Negotiation and Server Dispatch
 
 **Files:**
 - Modify: `lib/mcp/client.ex:71-72,329-370,819-876,1030-1080,2309-2363`
@@ -367,7 +363,6 @@ git commit -m "feat(stdio): enforce bounded secure subprocess policies"
 **Files:**
 - Modify: `conformance/client_adapter.exs`
 - Modify: `conformance/server_adapter.exs`
-- Create: `conformance/compatibility-2025-06-18.json`
 - Modify: `conformance/compatibility-2025-11-25.json`
 - Modify: `conformance/scenarios.json`
 - Modify: `conformance/README.md`
@@ -383,7 +378,6 @@ git commit -m "feat(stdio): enforce bounded secure subprocess policies"
 Run:
 
 ```bash
-# The pinned harness has no official 2025-06-18 requirements profile; record that absence.
 npx --no-install conformance list --client --requirements 2025-11-25
 npx --no-install conformance list --server --requirements 2025-11-25
 npx --no-install conformance list --client --requirements 2026-07-28
@@ -398,7 +392,7 @@ Reject unknown environment values. Ensure the client adapter runs initialize/too
 
 - [ ] **Step 3: Run every applicable server requirement set**
 
-Run official server profiles where the pinned harness exposes them. For 2025-06-18, record the absent official denominator and run the SDK-owned lifecycle/transport matrix.
+Run official server profiles where the pinned harness exposes them.
 
 - [ ] **Step 4: Run every applicable non-authorization client scenario**
 
@@ -406,14 +400,14 @@ Invoke `conformance client --command 'mix run conformance/client_adapter.exs' --
 
 - [ ] **Step 5: Update ledgers and validation gates**
 
-Add `jq empty conformance/compatibility-2025-06-18.json` to precommit. Replace the legacy one-scenario claim with exact scenario totals and IDs. Keep SDK integration coverage in a separately named field.
+Replace the legacy one-scenario claim with exact scenario totals and IDs. Keep SDK integration coverage in a separately named field.
 
 - [ ] **Step 6: Validate evidence files and rerun adapter smoke tests**
 
 Run:
 
 ```bash
-jq empty conformance/scenarios.json conformance/compatibility-2025-11-25.json conformance/compatibility-2025-06-18.json
+jq empty conformance/scenarios.json conformance/compatibility-2025-11-25.json
 mix run conformance/client_adapter.exs </dev/null
 ```
 
@@ -453,7 +447,7 @@ Add tests or doctests verifying the README examples compile with all three expli
 Replace every two-version union with:
 
 ```elixir
-@type protocol_version :: "2026-07-28" | "2025-11-25" | "2025-06-18"
+@type protocol_version :: "2026-07-28" | "2025-11-25"
 ```
 
 Document transport limits, failure tags, environment/stderr behavior, and why the three revisions remain isolated.
@@ -471,7 +465,7 @@ Expected: success without undefined references for new policy/revision modules.
 
 ```bash
 git add README.md CHANGELOG.md docs mix.exs test
-git commit -m "docs: document tri-version secure transport contracts"
+git commit -m "docs: document dual-version secure transport contracts"
 ```
 
 ### Task 8: Phoenix and Actual-Unraid Integration Verification

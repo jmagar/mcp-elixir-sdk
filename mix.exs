@@ -45,8 +45,6 @@ defmodule MCPElixirSDK.MixProject do
           "https://modelcontextprotocol.io/specification/2026-07-28",
         "MCP 2025-11-25 Specification" =>
           "https://modelcontextprotocol.io/specification/2025-11-25",
-        "MCP 2025-06-18 Specification" =>
-          "https://modelcontextprotocol.io/specification/2025-06-18",
         "Examples" => "#{@source_url}#server-handler"
       },
       files:
@@ -85,7 +83,7 @@ defmodule MCPElixirSDK.MixProject do
           title: "ADR-007 Dual Protocol Support"
         ],
         "docs/adr/0008-tri-version-secure-transports.md": [
-          title: "ADR-008 Tri-Version Secure Transports"
+          title: "ADR-008 Dual-Version Secure Transports"
         ]
       ],
       groups_for_extras: [
@@ -126,7 +124,6 @@ defmodule MCPElixirSDK.MixProject do
           MCP.Protocol.Methods,
           MCP.Protocol.Revision,
           MCP.Protocol.LegacyAdapter,
-          MCP.Protocol.Legacy.V2025_06_18,
           MCP.Protocol.Legacy.V2025_11_25
         ],
         Capabilities: ~r/MCP\.Protocol\.Capabilities\..*/,
@@ -186,8 +183,7 @@ defmodule MCPElixirSDK.MixProject do
       {"mix", ["deps.unlock", "--check-unused"]},
       {"git", ["diff", "--check"]},
       {"jq", ["empty", "conformance/scenarios.json"]},
-      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]},
-      {"jq", ["empty", "conformance/compatibility-2025-06-18.json"]}
+      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]}
     ]
     |> Enum.each(&run_command!/1)
   end

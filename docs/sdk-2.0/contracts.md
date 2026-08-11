@@ -35,7 +35,7 @@ For 2026 Streamable HTTP:
   exists.
 - Only `subscriptions/listen` owns a long-lived notification response stream.
 
-For `2025-06-18` and `2025-11-25` Streamable HTTP, initialize mints
+For `2025-11-25` Streamable HTTP, initialize mints
 `Mcp-Session-Id`; later POST and GET
 requests require it, GET carries queued server messages as SSE, and DELETE
 closes the session. Handler configuration and the identity binding are created
@@ -187,8 +187,8 @@ The 2.0 path never falls back to a legacy callback arity.
 The 2026 path rejects `initialize`. The client prefers `server/discover`, then
 falls back to a 2025 initialize only when discovery is missing or the peer's
 unsupported-version response (including an HTTP 400 carrying that JSON-RPC
-error) advertises 2025. The fallback walks the supported legacy revisions
-newest-first — `2025-11-25`, then `2025-06-18` — attempting each at most once
+error) advertises 2025. The fallback attempts the supported legacy revision,
+`2025-11-25`, at most once
 and bounded by the connect deadline. Explicit legacy configuration initializes
 directly. An expired legacy HTTP session permits one reinitialize-and-retry;
 the retry cannot recurse. Other errors never trigger fallback.

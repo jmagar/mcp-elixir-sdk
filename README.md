@@ -1,7 +1,7 @@
 # MCP Elixir SDK
 
 An OTP-native Elixir client and server SDK for the Model Context Protocol. The
-unreleased 2.0 line supports stateful `2025-06-18` and `2025-11-25` plus
+unreleased 2.0 line supports stateful `2025-11-25` plus
 stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 
 > `2.0.0-rc.1` is a release candidate. Its handler API is a breaking cutover from
@@ -9,8 +9,8 @@ stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 
 ## What 2.0 provides
 
-- Tri-version selection: clients prefer `2026-07-28`, then perform bounded
-  fallback through `2025-11-25` and `2025-06-18` only for lifecycle/version
+- Dual-version selection: clients prefer `2026-07-28`, then perform bounded
+  fallback to `2025-11-25` only for lifecycle/version
   incompatibility signals.
 - Version-isolated lifecycles: 2026 requests use `server/discover` and
   per-request metadata; 2025 requests use initialize/initialized and a session.
@@ -68,8 +68,8 @@ the package does not compile there.
 ```
 
 `connect/2` prefers `server/discover`. If the peer requires a legacy lifecycle,
-it tries `2025-11-25` and then `2025-06-18`, initializes a session, and sends
-`notifications/initialized`. Pass either legacy version through
+it tries `2025-11-25`, initializes a session, and sends
+`notifications/initialized`. Pass that legacy version through
 `protocol_version:` to start directly in that mode.
 Each operation has one end-to-end deadline covering transport work, schema
 refresh, and any MRTR resolver invocation. Cache hints are returned to the

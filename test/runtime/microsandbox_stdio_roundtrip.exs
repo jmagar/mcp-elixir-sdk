@@ -248,7 +248,7 @@ run_parent = fn ->
   if tools == [], do: raise("tools/list returned no tools")
 
   {:ok, result} = MCP.Client.call_tool(client, "get-sum", %{"a" => 17, "b" => 25})
-  text = result |> Map.get("content", []) |> Enum.map(& &1["text"]) |> Enum.join()
+  text = result |> Map.get("content", []) |> Enum.map_join(& &1["text"])
   unless String.contains?(text, "42"), do: raise("get-sum(17,25) returned #{inspect(text)}")
 
   transport = MCP.Client.transport(client)

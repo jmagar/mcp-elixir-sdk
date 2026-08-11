@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Core `2025-06-18` and `2025-11-25` compatibility alongside `2026-07-28`: bounded client
+- Core `2025-11-25` compatibility alongside `2026-07-28`: bounded client
   negotiation fallback, initialize/initialized, legacy Streamable HTTP
   sessions, GET SSE server requests, session DELETE, resource subscriptions,
   logging, roots, sampling, elicitation, ping, and legacy notifications.
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The original cutover removed initialize/session handling, legacy resource
   subscriptions, held-open server requests, and protocol negotiation. The
   `2025-11-25` portions of that removal are restored by the dual-era
-  compatibility entry above; revisions older than `2025-06-18` remain absent.
+  compatibility entry above; older revisions remain absent.
 - Client result caching. Cache metadata remains visible to consumers.
 
 ### Security

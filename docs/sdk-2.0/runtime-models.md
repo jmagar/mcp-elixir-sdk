@@ -59,7 +59,7 @@ Its important current state is:
   transport_pid: pid(),
   client_info: MCP.Protocol.Types.Implementation.t(),
   client_capabilities: MCP.Protocol.Capabilities.ClientCapabilities.t(),
-  protocol_version: "2026-07-28" | "2025-11-25" | "2025-06-18",
+  protocol_version: "2026-07-28" | "2025-11-25",
   status: :ready | :closed,
   server_capabilities: map() | nil,
   server_info: map() | nil,
