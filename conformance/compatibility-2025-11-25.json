@@ -2,7 +2,7 @@
   "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
   "protocolVersion": "2025-11-25",
   "verifiedOn": "2026-08-11",
-  "reviewedCommit": "bc0e88ff3a02b6186d0fc6a977ee040c4134efd4",
+  "reviewedCommit": "f330a1eddf60b373bb63ccb8d1e059b2f52880bc",
   "server": {
     "profile": "requirements:2025-11-25",
     "status": "passed",
@@ -17,7 +17,7 @@
       {"name": "initialize", "status": "passed", "checks": {"passed": 1, "failed": 0, "warnings": 0}},
       {"name": "tools_call", "status": "passed", "checks": {"passed": 2, "failed": 0, "warnings": 0}},
       {"name": "elicitation-sep1034-client-defaults", "status": "passed", "checks": {"passed": 5, "failed": 0, "warnings": 0}},
-      {"name": "sse-retry", "status": "partial", "checks": {"passed": 1, "failed": 0, "warnings": 2}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared support set; the adapter exits after rejecting that initialize version."}
+      {"name": "sse-retry", "status": "partial", "checks": {"passed": 0, "failed": 1, "warnings": 0}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared support set; the adapter exits after rejecting that initialize version."}
     ],
     "requiredAuthorizationScenarios": {
       "count": 14,
