@@ -131,6 +131,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
     assert_receive {:mcp_transport_closed, :normal}, 5_000
     refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+    refute_receive {:mcp_transport_cleanup_failed, _reason}, 100
     refute Process.alive?(transport)
   end
 

@@ -127,15 +127,19 @@ defmodule MCP.Transport.Stdio.Process do
       when os_pid == state.os_pid and exec_pid == state.exec_pid do
     reply_stdout(state.stdout_from)
     state = %{state | stdout_from: nil, pending_stdout_bytes: 0}
-    deadline = cleanup_deadline(state.policy.shutdown_timeout)
+
+    # Once the root has exited, descendants that created a new session may
+    # already be reparented and therefore cannot be rediscovered from PPID.
+    # Give the inherited cleanup marker its own bounded discovery window, then
+    # start a fresh bounded TERM/KILL budget. Reusing one deadline for both
+    # phases let a /proc scan consume the entire shutdown budget before an
+    # escaped child was ever signaled.
+    discovery_deadline = cleanup_deadline(state.policy.shutdown_timeout)
+    identities = marked_processes(state.cleanup_marker, discovery_deadline)
+    cleanup_deadline = cleanup_deadline(state.policy.shutdown_timeout)
 
     cleanup_result =
-      ensure_processes_stopped(
-        :ok,
-        cleanup_identities(state, deadline),
-        state.cleanup_marker,
-        deadline
-      )
+      ensure_processes_stopped(:ok, identities, state.cleanup_marker, cleanup_deadline)
 
     notify_cleanup_failure(state, cleanup_result)
     send(state.owner, {:stdio_process, self(), :closed, normalize_exit(reason)})
@@ -258,7 +262,8 @@ defmodule MCP.Transport.Stdio.Process do
          pid_text <- path |> Path.dirname() |> Path.basename(),
          {pid, ""} <- Integer.parse(pid_text),
          {:ok, stat} <- File.read("/proc/#{pid}/stat"),
-         fields when is_list(fields) <- stat_fields(stat) do
+         [state | _rest] = fields <- stat_fields(stat),
+         true <- state != "Z" do
       {:cont, [{pid, Enum.at(fields, 19)} | identities]}
     else
       _unavailable_or_unmarked -> {:cont, identities}
@@ -326,8 +331,16 @@ defmodule MCP.Transport.Stdio.Process do
   end
 
   defp ensure_processes_stopped(:ok, identities, marker, deadline) do
-    identities = Enum.uniq(identities ++ marked_processes(marker, deadline))
+    identities = Enum.uniq(identities)
+
+    # Signal identities already proven to belong to this transport before any
+    # additional /proc discovery. A second scan is useful for children spawned
+    # during shutdown, but it must not delay TERM for a child we already know.
     signal_alive(identities, :sigterm, deadline)
+    discovered = marked_processes(marker, deadline)
+    newly_discovered = discovered -- identities
+    signal_alive(newly_discovered, :sigterm, deadline)
+    identities = Enum.uniq(identities ++ discovered)
 
     term_deadline = min(deadline, now_ms() + 500)
     _ = wait_until_stopped(identities, term_deadline)
@@ -401,6 +414,11 @@ defmodule MCP.Transport.Stdio.Process do
       {:ok, entries} ->
         entries
         |> Enum.filter(&numeric_name?/1)
+        # Cleanup markers belong to the root and processes it spawned, which
+        # overwhelmingly have newer PIDs than unrelated long-lived services.
+        # Newest-first keeps escaped-child discovery reliable even when the
+        # bounded scan cannot inspect every process before its deadline.
+        |> Enum.sort_by(&String.to_integer/1, :desc)
         |> Enum.map(&Path.join(["/proc", &1, filename]))
 
       {:error, _unavailable} ->
