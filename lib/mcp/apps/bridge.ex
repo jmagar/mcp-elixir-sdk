@@ -77,12 +77,12 @@ defmodule MCP.Apps.Bridge do
       }),
       do: {:ok, %{state | phase: :ready}, []}
 
-  def transition(%__MODULE__{phase: :ready, complete_input?: false} = state, %{
+  def transition(%__MODULE__{phase: :ready, complete_input?: false, terminal?: false} = state, %{
         "method" => "ui/notifications/tool-input-partial"
       }),
       do: {:ok, state, []}
 
-  def transition(%__MODULE__{phase: :ready, complete_input?: false} = state, %{
+  def transition(%__MODULE__{phase: :ready, complete_input?: false, terminal?: false} = state, %{
         "method" => "ui/notifications/tool-input"
       }),
       do: {:ok, %{state | complete_input?: true}, []}
@@ -107,7 +107,7 @@ defmodule MCP.Apps.Bridge do
     request? = Map.has_key?(message, "id")
 
     cond do
-      request? and is_nil(message["id"]) ->
+      request? and not valid_id?(message["id"]) ->
         {:error, :invalid_bridge_id}
 
       method == "ui/initialize" ->
@@ -118,11 +118,12 @@ defmodule MCP.Apps.Bridge do
     end
   end
 
-  defp validate_envelope(%{"jsonrpc" => "2.0", "id" => id} = message) when not is_nil(id) do
+  defp validate_envelope(%{"jsonrpc" => "2.0", "id" => id} = message) do
     success? = Map.has_key?(message, "result")
     error? = Map.has_key?(message, "error")
 
     cond do
+      not valid_id?(id) -> {:error, :invalid_bridge_id}
       Map.has_key?(message, "method") -> {:error, :ambiguous_bridge_envelope}
       success? == error? -> {:error, :invalid_bridge_response}
       error? and not valid_error?(message["error"]) -> {:error, :invalid_bridge_error}
@@ -156,4 +157,5 @@ defmodule MCP.Apps.Bridge do
     do: is_integer(code) and is_binary(message)
 
   defp valid_error?(_error), do: false
+  defp valid_id?(id), do: is_integer(id) or (is_binary(id) and id != "")
 end

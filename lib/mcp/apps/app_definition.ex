@@ -37,7 +37,12 @@ defmodule MCP.Apps.AppDefinition do
          {:ok, _listed_ui} <- Validator.resource_metadata(resource_meta, opts),
          {:ok, _validated} <- Validator.resource(uri, mime, text, blob, content_meta, opts),
          {:ok, _merged_ui} <- Validator.merge_resource_meta(resource_meta, content_meta, opts) do
-      {:ok, %__MODULE__{tool: tool, resource: resource, contents: contents}}
+      {:ok,
+       %__MODULE__{
+         tool: canonical_tool(tool, uri),
+         resource: resource,
+         contents: contents
+       }}
     else
       false -> {:error, :invalid_app_definition}
       {:error, _reason} = error -> error
@@ -129,5 +134,22 @@ defmodule MCP.Apps.AppDefinition do
       not is_binary(resource_name) or resource_name == "" -> {:error, :invalid_resource_name}
       true -> :ok
     end
+  end
+
+  defp canonical_tool(tool, uri) do
+    meta = value(tool, "_meta", :_meta, %{})
+    ui = Map.get(meta, "ui") || Map.get(meta, :ui) || %{}
+    canonical_ui = ui |> Map.delete(:resourceUri) |> Map.put("resourceUri", uri)
+
+    canonical_meta =
+      meta
+      |> Map.delete(:ui)
+      |> Map.delete(:"ui/resourceUri")
+      |> Map.delete("ui/resourceUri")
+      |> Map.put("ui", canonical_ui)
+
+    tool
+    |> Map.delete(:_meta)
+    |> Map.put("_meta", canonical_meta)
   end
 end

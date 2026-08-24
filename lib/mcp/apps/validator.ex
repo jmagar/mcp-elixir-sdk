@@ -85,13 +85,12 @@ defmodule MCP.Apps.Validator do
   defp resource_meta(meta, limits) when is_map(meta) do
     ui = Map.get(meta, "ui") || Map.get(meta, :ui) || %{}
 
-    with {:ok, ui} <- require_map(ui, :invalid_resource_ui_metadata),
-         {:ok, csp} <- csp(Map.get(ui, "csp") || Map.get(ui, :csp), limits),
-         {:ok, permissions} <-
-           permissions(Map.get(ui, "permissions") || Map.get(ui, :permissions)),
+    with :ok <- json_budget(meta, limits),
+         {:ok, ui} <- require_map(ui, :invalid_resource_ui_metadata),
+         {:ok, csp} <- csp(fetch_any(ui, "csp", :csp), limits),
+         {:ok, permissions} <- permissions(fetch_any(ui, "permissions", :permissions)),
          :ok <- optional_binary(ui, "domain"),
-         :ok <- optional_boolean(ui, "prefersBorder"),
-         :ok <- json_budget(meta, limits) do
+         :ok <- optional_boolean(ui, "prefersBorder") do
       {:ok,
        %{}
        |> maybe_put(:csp, csp)
@@ -223,7 +222,7 @@ defmodule MCP.Apps.Validator do
   defp count_nodes(_value, depth, _nodes, limits) when depth > limits.max_depth,
     do: {:error, :metadata_too_deep}
 
-  defp count_nodes(_value, _depth, nodes, limits) when nodes > limits.max_nodes,
+  defp count_nodes(_value, _depth, nodes, limits) when nodes >= limits.max_nodes,
     do: {:error, :metadata_too_large}
 
   defp count_nodes(map, depth, nodes, limits) when is_map(map) do
@@ -265,7 +264,11 @@ defmodule MCP.Apps.Validator do
   end
 
   defp valid_origin_wildcard?(host, field) do
-    not String.starts_with?(host, "*.") or field == "resourceDomains"
+    case String.split(host, "*", parts: 3) do
+      [_host] -> true
+      ["", suffix] -> field == "resourceDomains" and String.starts_with?(suffix, ".")
+      _other -> false
+    end
   end
 
   defp require_map(value, _reason) when is_map(value), do: {:ok, value}

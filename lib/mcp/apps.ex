@@ -27,8 +27,20 @@ defmodule MCP.Apps do
   @doc "Returns client capabilities with MCP Apps enabled."
   def client_capabilities(capabilities \\ %MCP.Protocol.Capabilities.ClientCapabilities{}) do
     {extension, settings} = capability()
-    extensions = Map.put(capabilities.extensions || %{}, extension, settings)
-    %{capabilities | extensions: extensions}
+
+    case capabilities do
+      %MCP.Protocol.Capabilities.ClientCapabilities{} ->
+        extensions = Map.put(capabilities.extensions || %{}, extension, settings)
+        %{capabilities | extensions: extensions}
+
+      %{} ->
+        Map.update(
+          capabilities,
+          "extensions",
+          %{extension => settings},
+          &Map.put(&1, extension, settings)
+        )
+    end
   end
 
   @doc "Adds MCP Apps to an existing string-keyed extension settings map."

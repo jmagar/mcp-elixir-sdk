@@ -58,7 +58,7 @@ defmodule MCP.Apps.Client do
     end
   end
 
-  defp resolve_result(%{"contents" => [content]}, uri, listing_meta, opts) do
+  defp resolve_result(%{"contents" => [content]}, uri, listing_meta, opts) when is_map(content) do
     content_uri = Map.get(content, "uri")
     mime = Map.get(content, "mimeType")
     text = Map.get(content, "text")
@@ -75,10 +75,10 @@ defmodule MCP.Apps.Client do
   defp resolve_result(%{contents: [content]}, uri, listing_meta, opts) when is_map(content) do
     normalized = %{
       "uri" => value(content, "uri", :uri),
-      "mimeType" => value(content, "mimeType", :mimeType),
+      "mimeType" => value(content, "mimeType", :mime_type),
       "text" => value(content, "text", :text),
       "blob" => value(content, "blob", :blob),
-      "_meta" => value(content, "_meta", :_meta)
+      "_meta" => value(content, "_meta", :meta)
     }
 
     resolve_result(%{"contents" => [normalized]}, uri, listing_meta, opts)

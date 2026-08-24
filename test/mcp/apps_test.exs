@@ -14,6 +14,11 @@ defmodule MCP.AppsTest do
     assert extension == "io.modelcontextprotocol/ui"
     assert settings == %{"mimeTypes" => [@mime]}
     assert MCP.Apps.negotiated?(%{extensions: %{extension => settings}})
+
+    assert MCP.Apps.client_capabilities(%{}) == %{
+             "extensions" => %{extension => settings}
+           }
+
     refute MCP.Apps.negotiated?(%{extensions: %{}})
     assert_raise ArgumentError, fn -> MCP.Apps.capability([]) end
   end
@@ -97,6 +102,17 @@ defmodule MCP.AppsTest do
 
     assert {:error, :invalid_permissions} =
              AppDefinition.new(definition.tool, invalid_resource, definition.contents)
+
+    flat_tool =
+      definition.tool
+      |> Map.delete("_meta")
+      |> Map.put("_meta", %{"ui/resourceUri" => @uri})
+
+    assert {:ok, canonical} =
+             AppDefinition.new(flat_tool, definition.resource, definition.contents)
+
+    assert get_in(canonical.tool, ["_meta", "ui", "resourceUri"]) == @uri
+    refute Map.has_key?(canonical.tool["_meta"], "ui/resourceUri")
   end
 
   test "bridge codec enforces stable methods, byte bounds, and lifecycle order" do
@@ -251,7 +267,7 @@ defmodule MCP.AppsTest do
   end
 
   defp await_request(transport, count) do
-    assert {:ok, messages} = MockTransport.await_sent(transport, count)
+    assert {:ok, messages} = MockTransport.await_sent(transport, count, 5_000)
     List.last(messages)
   end
 end
