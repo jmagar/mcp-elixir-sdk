@@ -18,6 +18,11 @@ stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
   subscription workers run under consumer-supplied supervisors.
 - Tools, resources, prompts, completions, extensions, and MRTR input-required
   round trips.
+- Draft SEP-2640 Skills extension contracts and opt-in runtime support for
+  `skills/list`, `skills/get`, and gated `resources/directory/read`. The
+  implementation is pinned to SEP PR head
+  `753b9f2be43e07fdd070e535d75f190cff14beea` (reviewed 2026-08-24); it is an
+  extension-track feature, not part of the SDK's core-conformance denominator.
 - Streamable HTTP routing headers, including schema-directed `Mcp-Param-*`
   headers and a bounded schema index.
 - Lossless JSON Schema 2020-12 maps and full JSON structured-content values.
@@ -162,6 +167,30 @@ end
 The callback forms are documented in `MCP.Server.Handler`. A handler may
 return `{:input_required, requests_map, request_state}` from `handle_call_tool/4`;
 the client resolves the requests and retries with a new JSON-RPC id.
+
+### Skills extension security boundary
+
+Skills support transports catalogs and resource bytes; it does not execute
+instructions, approve skills, grant tools, or turn remote resources into local
+trusted files. `frontmatter`, Markdown, scripts, `_meta`, and `allowed-tools`
+remain untrusted server data. A digest match proves consistency with the
+server-supplied manifest, not trust or authorization.
+
+Hosts remain responsible for preserving the originating connection together
+with every skill URI, displaying that origin, obtaining explicit per-skill
+consent, binding persisted approval to the complete static manifest, revoking
+approval when it changes, isolating caches by origin, verifying size/digest and
+frontmatter, rejecting unlisted reads while acting on a static skill, and
+requiring fresh consent for nested skills. Dynamic skills are explicitly
+unverifiable and cannot receive content-bound persistent approval. SDK reads
+are lazy; capability negotiation never authorizes a tool or filesystem action.
+
+The extension works in both supported protocol eras. In `2026-07-28`, Skills
+requests carry stateless per-request metadata and complete list results carry
+`resultType` plus applicable cache fields. The `2025-11-25` adapter preserves
+the extension methods and negotiated settings but projects away only
+revision-inapplicable result fields. Skills evidence is maintained separately
+from official core conformance.
 
 ### Stdio or in-process connection
 
