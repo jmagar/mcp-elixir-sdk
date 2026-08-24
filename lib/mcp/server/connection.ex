@@ -218,6 +218,7 @@ defmodule MCP.Server.Connection do
     case graceful_close_subscription(state, request_id) do
       {:ok, state} -> {:reply, :ok, state}
       {:error, :not_found} -> {:reply, {:error, :not_found}, state}
+      {:error, reason, state} -> {:stop, reason, {:error, reason}, state}
     end
   end
 
@@ -492,8 +493,7 @@ defmodule MCP.Server.Connection do
           finish_legacy_initialization(state, response, initialize)
 
         {:error, response} ->
-          state.transport_module.send_message(state.transport_pid, response)
-          {:noreply, state}
+          finish_protocol_send(state, response)
       end
     else
       send_protocol_error(state, id, Error.invalid_request("Already initialized"))
@@ -998,6 +998,7 @@ defmodule MCP.Server.Connection do
         case graceful_close_subscription(state, id) do
           {:ok, state} -> {:noreply, state}
           {:error, :not_found} -> dispatch(notification, nil, state)
+          {:error, reason, state} -> {:stop, reason, state}
         end
 
       _invalid ->
@@ -1045,8 +1046,11 @@ defmodule MCP.Server.Connection do
 
         result = %ListenResult{meta: %{@subscription_id_key => id}}
         response = Response.success(id, ListenResult.to_map(result)) |> encode()
-        _ = state.transport_module.send_message(state.transport_pid, response)
-        {:ok, state}
+
+        case send_transport_message(state, response) do
+          :ok -> {:ok, state}
+          {:error, reason} -> {:error, reason, state}
+        end
 
       :error ->
         {:error, :not_found}
@@ -1097,14 +1101,29 @@ defmodule MCP.Server.Connection do
       case graceful_close_subscription(acc, id) do
         {:ok, next_state} -> next_state
         {:error, :not_found} -> acc
+        {:error, reason, _next_state} -> exit(reason)
       end
     end)
   end
 
   defp send_protocol_error(state, id, %Error{} = error) do
     response = Response.error(id, error) |> encode()
-    _ = state.transport_module.send_message(state.transport_pid, response)
-    {:noreply, state}
+    finish_protocol_send(state, response)
+  end
+
+  defp finish_protocol_send(state, response) do
+    case send_transport_message(state, response) do
+      :ok -> {:noreply, state}
+      {:error, reason} -> {:stop, reason, state}
+    end
+  end
+
+  defp send_transport_message(state, message) do
+    case state.transport_module.send_message(state.transport_pid, message) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:transport_send_failed, reason}}
+      other -> {:error, {:invalid_transport_send_result, other}}
+    end
   end
 
   # Per-request notification emitter: writes straight to the transport (no
@@ -1158,9 +1177,10 @@ defmodule MCP.Server.Connection do
         false
 
       request_id ->
-        Enum.any?(state.handler_tasks, fn {_ref, task} ->
-          handler_request_id(task.kind) == request_id
-        end)
+        Map.has_key?(state.subscriptions, request_id) or
+          Enum.any?(state.handler_tasks, fn {_ref, task} ->
+            handler_request_id(task.kind) == request_id
+          end)
     end
   end
 
