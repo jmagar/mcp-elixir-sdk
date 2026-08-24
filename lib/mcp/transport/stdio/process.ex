@@ -3,7 +3,9 @@ defmodule MCP.Transport.Stdio.Process do
 
   use GenServer
 
-  @kill_confirmation_timeout 1_000
+  alias MCP.Transport.Stdio.Signal
+
+  @kill_confirmation_timeout 2_000
 
   defstruct [
     :owner,
@@ -364,35 +366,21 @@ defmodule MCP.Transport.Stdio.Process do
   end
 
   defp signal_alive(identities, signal, deadline) do
-    flag = if signal == :sigterm, do: "-TERM", else: "-KILL"
-
     Enum.reduce_while(identities, :ok, fn {pid, _start_time} = identity, :ok ->
       if deadline_expired?(deadline) do
         {:halt, :timeout}
       else
-        signal_if_alive(identity, flag, pid, deadline)
+        signal_if_alive(identity, signal, pid, deadline)
         {:cont, :ok}
       end
     end)
   end
 
-  defp signal_if_alive(identity, flag, pid, deadline) do
-    if process_alive?(identity), do: bounded_signal(flag, pid, deadline), else: :ok
-  end
-
-  defp bounded_signal(flag, pid, deadline) do
-    port =
-      Port.open(
-        {:spawn_executable, ~c"/bin/kill"},
-        [:binary, :exit_status, args: [flag, "--", Integer.to_string(pid)]]
-      )
-
-    receive do
-      {^port, {:exit_status, _status}} -> :ok
-    after
-      remaining_ms(deadline) ->
-        Port.close(port)
-        :timeout
+  defp signal_if_alive(identity, signal, pid, deadline) do
+    if process_alive?(identity) do
+      Signal.dispatch(pid, signal, remaining_ms(deadline))
+    else
+      :ok
     end
   end
 

@@ -1,6 +1,7 @@
 defmodule MCP.Transport.StdioSecurityTest do
   use ExUnit.Case, async: false
 
+  alias MCP.Test.StdioFixture
   alias MCP.Transport.Stdio
   alias MCP.Transport.Stdio.Process, as: StdioProcess
   alias MCP.Transport.Stdio.SecurityPolicy
@@ -139,14 +140,12 @@ defmodule MCP.Transport.StdioSecurityTest do
   test "a subprocess DOWN releases an outstanding stdout callback before stopping" do
     {:ok, policy} = SecurityPolicy.new(shutdown_timeout: 500)
 
+    {command, args} = StdioFixture.elixir([@fixture, "frame_burst"])
+
     process =
       start_supervised!(
         {StdioProcess,
-         owner: self(),
-         command: System.find_executable("elixir"),
-         args: ["--erl", "+S 2:2", @fixture, "frame_burst"],
-         env: [],
-         security_policy: policy}
+         owner: self(), command: command, args: args, env: [], security_policy: policy}
       )
 
     assert_receive {:stdio_process, ^process, :stdout, data}, 5_000
@@ -250,11 +249,8 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   defp start_transport(mode, policy_opts \\ []) do
-    start_command_transport(
-      System.find_executable("elixir"),
-      ["--erl", "+S 2:2", @fixture, mode],
-      policy_opts
-    )
+    {command, args} = StdioFixture.elixir([@fixture, mode])
+    start_command_transport(command, args, policy_opts)
   end
 
   defp start_command_transport(command, args, policy_opts) do
