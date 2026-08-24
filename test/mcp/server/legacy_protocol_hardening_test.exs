@@ -12,7 +12,8 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     LegacyFeatureHandler,
     LegacyMRTRHandler,
     LegacySubscribeOnlyHandler,
-    StatelessHandler
+    StatelessHandler,
+    SubscriptionHandler
   }
 
   @legacy_version "2025-11-25"
@@ -442,6 +443,68 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
 
     assert_receive {:DOWN, ^monitor, :process, ^server, {:transport_send_failed, :closed}}, 5_000
     Process.flag(:trap_exit, previous_trap_exit)
+  end
+
+  test "active subscription IDs reject reuse and close-send failures terminate cleanly" do
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one}, id: make_ref())
+    registry = Module.concat(__MODULE__, "Registry#{System.unique_integer([:positive])}")
+    start_supervised!({Registry, keys: :duplicate, name: registry})
+
+    server =
+      start_supervised!(
+        {Connection,
+         transport: {FailableTransport, observer: self()},
+         handler: {SubscriptionHandler, test_pid: self()},
+         identity: :principal,
+         subscription_supervisor: supervisor,
+         subscription_registry: registry,
+         subscription_endpoint: :hardening_test},
+        id: make_ref()
+      )
+
+    transport = Connection.transport(server)
+
+    meta = %{
+      "io.modelcontextprotocol/protocolVersion" => @stateless_version,
+      "io.modelcontextprotocol/clientCapabilities" => %{}
+    }
+
+    :ok =
+      FailableTransport.inject(transport, %{
+        "jsonrpc" => "2.0",
+        "id" => 91,
+        "method" => "subscriptions/listen",
+        "params" => %{
+          "notifications" => %{"toolsListChanged" => true},
+          "_meta" => meta
+        }
+      })
+
+    assert_receive {:subscription_authorized, 91, :principal}, 1_000
+
+    assert_receive {:mcp_message, %{"method" => "notifications/subscriptions/acknowledged"}},
+                   1_000
+
+    assert Map.has_key?(:sys.get_state(server).subscriptions, 91)
+
+    :ok =
+      FailableTransport.inject(transport, %{
+        "jsonrpc" => "2.0",
+        "id" => 91,
+        "method" => "tools/list",
+        "params" => %{"_meta" => meta}
+      })
+
+    assert_receive {:mcp_message, %{"id" => 91, "error" => %{"code" => -32_600}}}, 1_000
+    assert Map.has_key?(:sys.get_state(server).subscriptions, 91)
+
+    monitor = Process.monitor(server)
+    :ok = FailableTransport.fail(transport, :closed)
+
+    assert {:error, {:transport_send_failed, :closed}} = Connection.close_subscription(server, 91)
+
+    assert_receive {:DOWN, ^monitor, :process, ^server, {:transport_send_failed, :closed}}, 1_000
+    assert DynamicSupervisor.count_children(supervisor).active == 0
   end
 
   defp start_ready_connection(handler, opts \\ []) do
