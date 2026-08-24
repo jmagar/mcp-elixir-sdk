@@ -14,7 +14,10 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
 
   @sweep_interval 30_000
 
-  defstruct sessions: %{}, sweep_interval: @sweep_interval
+  defstruct sessions: %{},
+            endpoint_counts: %{},
+            identity_counts: %{},
+            sweep_interval: @sweep_interval
 
   def start_link(opts) do
     {gen_opts, opts} = Keyword.split(opts, [:name])
@@ -34,7 +37,15 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   @spec lookup(GenServer.server(), term(), String.t(), term()) ::
           {:ok, LegacySession.session()} | {:error, :identity_mismatch} | :error
   def lookup(manager, endpoint_id, session_id, identity) do
-    GenServer.call(manager, {:lookup, endpoint_id, session_id, identity})
+    lookup(manager, endpoint_id, session_id, identity, identity)
+  end
+
+  @doc false
+  def lookup(manager, endpoint_id, session_id, identity, authorization_context) do
+    GenServer.call(
+      manager,
+      {:lookup, endpoint_id, session_id, identity, authorization_context}
+    )
   end
 
   @doc false
@@ -65,11 +76,13 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
         state
       ) do
     now = System.monotonic_time(:millisecond)
-    state = expire_sessions(state, now)
     identity_fingerprint = identity_fingerprint(identity)
 
+    authorization_fingerprint =
+      identity_fingerprint(Keyword.get(limits, :authorization_context, identity))
+
     with {:ok, endpoint_owner} <- resolve_endpoint_owner(Keyword.fetch!(limits, :endpoint_owner)),
-         :ok <- capacity_available(state, endpoint_id, identity_fingerprint, limits),
+         {:ok, state} <- ensure_capacity(state, endpoint_id, identity_fingerprint, limits, now),
          {:ok, session} <-
            LegacySession.start_linked(
              handler_module,
@@ -82,6 +95,7 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
       entry = %{
         endpoint_id: endpoint_id,
         identity_fingerprint: identity_fingerprint,
+        authorization_fingerprint: authorization_fingerprint,
         session: session,
         last_used: now,
         absolute_expires_at: now + Keyword.fetch!(limits, :absolute_timeout),
@@ -89,25 +103,35 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
         endpoint_owner_ref: Process.monitor(endpoint_owner)
       }
 
-      {:reply, {:ok, session_id, session}, put_in(state.sessions[session_id], entry)}
+      {:reply, {:ok, session_id, session}, put_session(state, session_id, entry)}
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  def handle_call({:lookup, endpoint_id, session_id, identity}, _from, state) do
+  def handle_call(
+        {:lookup, endpoint_id, session_id, identity, authorization_context},
+        _from,
+        state
+      ) do
     now = System.monotonic_time(:millisecond)
-    state = expire_sessions(state, now)
     presented_fingerprint = identity_fingerprint(identity)
+    presented_authorization_fingerprint = identity_fingerprint(authorization_context)
 
     case Map.get(state.sessions, session_id) do
-      %{endpoint_id: ^endpoint_id, identity_fingerprint: expected} = entry ->
-        if :crypto.hash_equals(expected, presented_fingerprint) do
-          entry = %{entry | last_used: now}
-          {:reply, {:ok, entry.session}, put_in(state.sessions[session_id], entry)}
-        else
-          {:reply, {:error, :identity_mismatch}, state}
-        end
+      %{
+        endpoint_id: ^endpoint_id,
+        identity_fingerprint: expected,
+        authorization_fingerprint: expected_authorization
+      } = entry ->
+        finish_lookup(
+          state,
+          session_id,
+          entry,
+          {expected, expected_authorization, presented_fingerprint,
+           presented_authorization_fingerprint},
+          now
+        )
 
       _missing ->
         {:reply, :error, state}
@@ -115,12 +139,11 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   end
 
   def handle_call({:delete, endpoint_id, session_id}, _from, state) do
-    case Map.pop(state.sessions, session_id) do
-      {%{endpoint_id: ^endpoint_id} = entry, sessions} ->
-        close_entry(entry)
-        {:reply, :ok, %{state | sessions: sessions}}
+    case Map.get(state.sessions, session_id) do
+      %{endpoint_id: ^endpoint_id} ->
+        {:reply, :ok, remove_session(state, session_id)}
 
-      {_other, _sessions} ->
+      _missing ->
         {:reply, :ok, state}
     end
   end
@@ -140,6 +163,25 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
     {:reply, :ok, state}
   end
 
+  defp finish_lookup(state, session_id, entry, _fingerprints, now)
+       when now >= entry.absolute_expires_at or now - entry.last_used >= entry.idle_timeout do
+    {:reply, :error, remove_session(state, session_id)}
+  end
+
+  defp finish_lookup(state, session_id, entry, {expected, expected_auth, presented, auth}, now) do
+    cond do
+      not Process.alive?(entry.session.server) or not Process.alive?(entry.session.transport) ->
+        {:reply, :error, remove_session(state, session_id)}
+
+      :crypto.hash_equals(expected, presented) and :crypto.hash_equals(expected_auth, auth) ->
+        entry = %{entry | last_used: now}
+        {:reply, {:ok, entry.session}, put_in(state.sessions[session_id], entry)}
+
+      true ->
+        {:reply, {:error, :identity_mismatch}, state}
+    end
+  end
+
   @impl GenServer
   def handle_info(:sweep, state) do
     schedule_sweep(state.sweep_interval)
@@ -147,21 +189,23 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   end
 
   def handle_info({:EXIT, pid, _reason}, state) do
-    {expired, retained} =
-      Enum.split_with(state.sessions, fn {_id, entry} ->
-        entry.session.server == pid or entry.session.transport == pid
+    state =
+      Enum.reduce(state.sessions, state, fn {id, entry}, acc ->
+        if entry.session.server == pid or entry.session.transport == pid,
+          do: remove_session(acc, id),
+          else: acc
       end)
 
-    Enum.each(expired, fn {_id, entry} -> close_entry(entry) end)
-    {:noreply, %{state | sessions: Map.new(retained)}}
+    {:noreply, state}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
-    {expired, retained} =
-      Enum.split_with(state.sessions, fn {_id, entry} -> entry.endpoint_owner_ref == ref end)
+    state =
+      Enum.reduce(state.sessions, state, fn {id, entry}, acc ->
+        if entry.endpoint_owner_ref == ref, do: remove_session(acc, id), else: acc
+      end)
 
-    Enum.each(expired, fn {_id, entry} -> close_entry(entry) end)
-    {:noreply, %{state | sessions: Map.new(retained)}}
+    {:noreply, state}
   end
 
   @impl GenServer
@@ -171,13 +215,8 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
   end
 
   defp capacity_available(state, endpoint_id, identity_fingerprint, limits) do
-    endpoint_count = Enum.count(state.sessions, fn {_id, e} -> e.endpoint_id == endpoint_id end)
-
-    identity_count =
-      Enum.count(state.sessions, fn {_id, e} ->
-        e.endpoint_id == endpoint_id and
-          :crypto.hash_equals(e.identity_fingerprint, identity_fingerprint)
-      end)
+    endpoint_count = Map.get(state.endpoint_counts, endpoint_id, 0)
+    identity_count = Map.get(state.identity_counts, {endpoint_id, identity_fingerprint}, 0)
 
     cond do
       endpoint_count >= Keyword.fetch!(limits, :session_limit) -> {:error, :session_limit}
@@ -186,16 +225,70 @@ defmodule MCP.Transport.StreamableHTTP.LegacySessionManager do
     end
   end
 
-  defp expire_sessions(state, now) do
-    {expired, retained} =
-      Enum.split_with(state.sessions, fn {_id, entry} ->
-        now >= entry.absolute_expires_at or now - entry.last_used >= entry.idle_timeout or
-          not Process.alive?(entry.session.server) or
-          not Process.alive?(entry.session.transport)
-      end)
+  defp ensure_capacity(state, endpoint_id, identity_fingerprint, limits, now) do
+    case capacity_available(state, endpoint_id, identity_fingerprint, limits) do
+      :ok ->
+        {:ok, state}
 
-    Enum.each(expired, fn {_id, entry} -> close_entry(entry) end)
-    %{state | sessions: Map.new(retained)}
+      {:error, _reason} ->
+        state = expire_sessions(state, now)
+
+        case capacity_available(state, endpoint_id, identity_fingerprint, limits) do
+          :ok -> {:ok, state}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  end
+
+  defp expire_sessions(state, now) do
+    Enum.reduce(state.sessions, state, fn {id, entry}, acc ->
+      if expired?(entry, now), do: remove_session(acc, id), else: acc
+    end)
+  end
+
+  defp expired?(entry, now) do
+    now >= entry.absolute_expires_at or now - entry.last_used >= entry.idle_timeout or
+      not Process.alive?(entry.session.server) or not Process.alive?(entry.session.transport)
+  end
+
+  defp put_session(state, session_id, entry) do
+    if Map.has_key?(state.sessions, session_id) do
+      put_in(state.sessions[session_id], entry)
+    else
+      identity_key = {entry.endpoint_id, entry.identity_fingerprint}
+
+      %{
+        state
+        | sessions: Map.put(state.sessions, session_id, entry),
+          endpoint_counts: Map.update(state.endpoint_counts, entry.endpoint_id, 1, &(&1 + 1)),
+          identity_counts: Map.update(state.identity_counts, identity_key, 1, &(&1 + 1))
+      }
+    end
+  end
+
+  defp remove_session(state, session_id) do
+    case Map.pop(state.sessions, session_id) do
+      {nil, _sessions} ->
+        state
+
+      {entry, sessions} ->
+        close_entry(entry)
+        identity_key = {entry.endpoint_id, entry.identity_fingerprint}
+
+        %{
+          state
+          | sessions: sessions,
+            endpoint_counts: decrement_count(state.endpoint_counts, entry.endpoint_id),
+            identity_counts: decrement_count(state.identity_counts, identity_key)
+        }
+    end
+  end
+
+  defp decrement_count(counts, key) do
+    case Map.get(counts, key, 0) do
+      count when count <= 1 -> Map.delete(counts, key)
+      count -> Map.put(counts, key, count - 1)
+    end
   end
 
   defp close_entry(entry) do

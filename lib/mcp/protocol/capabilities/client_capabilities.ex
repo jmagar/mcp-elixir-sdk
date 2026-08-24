@@ -21,7 +21,7 @@ defmodule MCP.Protocol.Capabilities.ClientCapabilities do
           elicitation: ElicitationCapabilities.t() | nil,
           experimental: map() | nil,
           extensions: map() | nil,
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec from_map(map()) :: t()

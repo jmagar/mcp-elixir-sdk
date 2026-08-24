@@ -1,0 +1,8 @@
+{
+  "name": "mcp-elixir-sdk-apps-browser-interop",
+  "private": true,
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "2.3.0",
+    "playwright": "1.62.1"
+  }
+}

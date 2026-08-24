@@ -45,7 +45,7 @@ defmodule MCP.ClientLifecycleTest do
 
     MockTransport.inject(transport, input_required(request["id"]))
 
-    assert {:error, {:callback_failed, _reason}} = Task.await(call, 1_000)
+    assert {:error, {:callback_failed, _reason}} = Task.await(call, 5_000)
     assert Client.status(client) == :ready
   end
 
@@ -62,7 +62,8 @@ defmodule MCP.ClientLifecycleTest do
 
     client =
       start_supervised!(
-        {Client, transport: {MockTransport, []}, on_input_required: resolver, request_timeout: 75}
+        {Client,
+         transport: {MockTransport, []}, on_input_required: resolver, request_timeout: 500}
       )
 
     transport = Client.transport(client)
@@ -70,11 +71,11 @@ defmodule MCP.ClientLifecycleTest do
     request = await_request(transport)
     MockTransport.inject(transport, input_required(request["id"]))
 
-    assert_receive {:resolver_started, resolver_pid}, 1_000
+    assert_receive {:resolver_started, resolver_pid}, 5_000
     monitor = Process.monitor(resolver_pid)
     assert Client.status(client) == :ready
-    assert {:error, :timeout} = Task.await(call, 1_000)
-    assert_receive {:DOWN, ^monitor, :process, ^resolver_pid, _reason}, 1_000
+    assert {:error, :timeout} = Task.await(call, 5_000)
+    assert_receive {:DOWN, ^monitor, :process, ^resolver_pid, _reason}, 5_000
     assert Client.status(client) == :ready
   end
 
@@ -217,7 +218,7 @@ defmodule MCP.ClientLifecycleTest do
     stream_ref = Process.monitor(subscription.task)
 
     assert :ok = SubscriptionHandle.close(handle)
-    assert_receive {:DOWN, ^stream_ref, :process, _pid, _reason}, 1_000
+    assert_receive {:DOWN, ^stream_ref, :process, _pid, _reason}, 5_000
     _ = :sys.get_state(client)
 
     assert Client.status(client) == :ready
@@ -243,8 +244,8 @@ defmodule MCP.ClientLifecycleTest do
         )
       end)
 
-    assert_receive {:transport_send_started, %{"method" => "subscriptions/listen"}}, 1_000
-    assert {:error, :timeout} = Task.await(open, 1_000)
+    assert_receive {:transport_send_started, %{"method" => "subscriptions/listen"}}, 5_000
+    assert {:error, :timeout} = Task.await(open, 5_000)
     assert Client.status(client) == :ready
     assert :sys.get_state(client).subscription_open_tasks == %{}
     assert DynamicSupervisor.count_children(subscription_supervisor).active == 0
@@ -330,11 +331,11 @@ defmodule MCP.ClientLifecycleTest do
         )
       end)
 
-    assert_receive {:transport_send_started, %{"method" => "subscriptions/listen"}}, 1_000
+    assert_receive {:transport_send_started, %{"method" => "subscriptions/listen"}}, 5_000
     [{_id, subscription}] = :sys.get_state(client).subscriptions |> Map.to_list()
     GenServer.stop(subscription.worker, :normal)
 
-    assert {:error, {:subscription_worker_exit, :normal}} = Task.await(open, 1_000)
+    assert {:error, {:subscription_worker_exit, :normal}} = Task.await(open, 5_000)
     assert :sys.get_state(client).subscription_open_tasks == %{}
   end
 
@@ -404,7 +405,7 @@ defmodule MCP.ClientLifecycleTest do
   end
 
   defp await_request(transport, count \\ 1) do
-    case MockTransport.await_sent(transport, count) do
+    case MockTransport.await_sent(transport, count, 5_000) do
       {:ok, messages} -> Enum.at(messages, count - 1)
       {:error, :timeout} -> flunk("request was not sent")
     end

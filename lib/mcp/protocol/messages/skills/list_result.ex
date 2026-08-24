@@ -1,9 +1,20 @@
 defmodule MCP.Protocol.Messages.Skills.ListResult do
   @moduledoc "Result of `skills/list`."
 
+  alias MCP.Protocol.OpenObject
   alias MCP.Protocol.Types.Skill
 
-  defstruct [:skills, :next_cursor, :ttl_ms, :cache_scope, :meta, result_type: "complete"]
+  @known_keys ~w(skills nextCursor resultType ttlMs cacheScope _meta)
+
+  defstruct [
+    :skills,
+    :next_cursor,
+    :ttl_ms,
+    :cache_scope,
+    :meta,
+    extra: %{},
+    result_type: "complete"
+  ]
 
   @type t :: %__MODULE__{
           skills: [Skill.t()],
@@ -11,7 +22,8 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
           result_type: String.t(),
           ttl_ms: non_neg_integer() | nil,
           cache_scope: String.t() | nil,
-          meta: map() | nil
+          meta: map() | nil,
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec decode(term(), keyword()) :: {:ok, t()} | {:error, term()}
@@ -27,7 +39,8 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
          result_type: Map.get(map, "resultType", "complete"),
          ttl_ms: Map.get(map, "ttlMs"),
          cache_scope: Map.get(map, "cacheScope"),
-         meta: Map.get(map, "_meta")
+         meta: Map.get(map, "_meta"),
+         extra: OpenObject.extra(map, @known_keys)
        }}
     end
   end
@@ -41,6 +54,7 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
     |> maybe_put("ttlMs", result.ttl_ms)
     |> maybe_put("cacheScope", result.cache_scope)
     |> maybe_put("_meta", result.meta)
+    |> OpenObject.merge!(result.extra, @known_keys, "skills/list result")
   end
 
   defp decode_skills(skills, opts) do
@@ -60,8 +74,7 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
   end
 
   defp validate_envelope(map) do
-    if Enum.all?(Map.keys(map), &(&1 in ~w(skills nextCursor resultType ttlMs cacheScope _meta))) and
-         valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
+    if valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
          Map.get(map, "resultType", "complete") == "complete" and
          valid_optional?(Map.get(map, "ttlMs"), &(is_integer(&1) and &1 >= 0)) and
          valid_optional?(Map.get(map, "cacheScope"), &(&1 in ["public", "private"])) and

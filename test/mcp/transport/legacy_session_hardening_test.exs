@@ -67,6 +67,59 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
     assert MCPPlug.legacy_sessions(config) == []
   end
 
+  test "a legacy session rejects stale non-identity authorization context" do
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        enable_json_response: true,
+        handler_opts: fn conn ->
+          [
+            identity: conn.assigns[:principal],
+            role: conn.assigns[:role],
+            authorization_context: %{role: conn.assigns[:role]}
+          ]
+        end
+      )
+
+    initialize = legacy_post_with_role(config, initialize_request(), nil, :alice, :admin)
+    [session_id] = Plug.Conn.get_resp_header(initialize, "mcp-session-id")
+
+    denied =
+      legacy_post_with_role(
+        config,
+        %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list", "params" => %{}},
+        session_id,
+        :alice,
+        :viewer
+      )
+
+    assert denied.status == 403
+  end
+
+  test "request-scoped handler options do not invalidate a legacy session" do
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        enable_json_response: true,
+        handler_opts: fn conn ->
+          [identity: conn.assigns[:principal], trace_id: System.unique_integer()]
+        end
+      )
+
+    initialize = legacy_post(config, initialize_request(), nil, :alice)
+    [session_id] = Plug.Conn.get_resp_header(initialize, "mcp-session-id")
+
+    response =
+      legacy_post(
+        config,
+        %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list", "params" => %{}},
+        session_id,
+        :alice
+      )
+
+    assert response.status == 200
+  end
+
   test "failed initialize does not mint or retain a session" do
     config = MCPPlug.init(server_mod: StatelessHandler, enable_json_response: true)
     request = put_in(initialize_request(), ["params", "protocolVersion"], "unsupported")
@@ -298,6 +351,25 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
       |> Plug.Conn.put_req_header("origin", "http://localhost")
       |> Plug.Conn.put_req_header("mcp-protocol-version", @legacy_version)
       |> Plug.Conn.assign(:principal, principal)
+
+    conn =
+      if session_id,
+        do: Plug.Conn.put_req_header(conn, "mcp-session-id", session_id),
+        else: conn
+
+    MCPPlug.call(conn, config)
+  end
+
+  defp legacy_post_with_role(config, message, session_id, principal, role) do
+    conn =
+      :post
+      |> Plug.Test.conn("http://localhost/mcp", Jason.encode!(message))
+      |> Plug.Conn.put_req_header("content-type", "application/json")
+      |> Plug.Conn.put_req_header("accept", "application/json")
+      |> Plug.Conn.put_req_header("origin", "http://localhost")
+      |> Plug.Conn.put_req_header("mcp-protocol-version", @legacy_version)
+      |> Plug.Conn.assign(:principal, principal)
+      |> Plug.Conn.assign(:role, role)
 
     conn =
       if session_id,

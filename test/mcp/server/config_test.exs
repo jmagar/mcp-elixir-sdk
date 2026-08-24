@@ -4,6 +4,30 @@ defmodule MCP.Server.ConfigTest do
   alias MCP.Server.Config
   alias MCP.Test.{EchoHandler, StatelessHandler}
 
+  defmodule RaisingHandler do
+    def init(_opts), do: raise("boom")
+  end
+
+  defmodule ThrowingHandler do
+    def init(_opts), do: throw(:boom)
+  end
+
+  defmodule ExitingHandler do
+    def init(_opts), do: exit(:boom)
+  end
+
+  defmodule InvalidHandler do
+    def init(_opts), do: :not_a_tuple
+  end
+
+  defmodule ErrorHandler do
+    def init(_opts), do: {:error, :application_error}
+  end
+
+  defmodule ConfigurationShapedErrorHandler do
+    def init(_opts), do: {:error, {:invalid_cache_defaults, :backend}}
+  end
+
   test "accepts only nonnegative cache TTLs and protocol cache scopes" do
     assert {:ok, %{cache_defaults: {0, "public"}}} = Config.build(EchoHandler, [])
 
@@ -28,5 +52,27 @@ defmodule MCP.Server.ConfigTest do
     assert subscribed.tools.list_changed == true
     assert subscribed.resources.list_changed == true
     assert subscribed.prompts.list_changed == true
+  end
+
+  test "normalizes all handler init failures" do
+    assert {:error, {:handler_init_failed, {:raised, %RuntimeError{message: "boom"}}}} =
+             Config.build(RaisingHandler, [])
+
+    assert Config.build(ThrowingHandler, []) ==
+             {:error, {:handler_init_failed, {:thrown, :boom}}}
+
+    assert Config.build(ExitingHandler, []) ==
+             {:error, {:handler_init_failed, {:exited, :boom}}}
+
+    assert Config.build(InvalidHandler, []) ==
+             {:error, {:handler_init_failed, {:invalid_return, :not_a_tuple}}}
+  end
+
+  test "normalizes errors returned normally by handler init" do
+    assert Config.build(ErrorHandler, []) ==
+             {:error, {:handler_init_failed, :application_error}}
+
+    assert Config.build(ConfigurationShapedErrorHandler, []) ==
+             {:error, {:handler_init_failed, {:invalid_cache_defaults, :backend}}}
   end
 end

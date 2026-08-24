@@ -42,6 +42,7 @@ defmodule MCP.Client do
       (default: 1)
     * `:on_input_required` — `(input_requests -> input_responses)` MRTR resolver
     * `:request_timeout` — default request timeout in ms (default: 30_000)
+    * `:max_pending_requests` — maximum in-flight RPC requests (default: 1,024)
     * `:tool_schema_limit` — maximum cached tool schemas (default: 1,024)
   """
 
@@ -70,6 +71,9 @@ defmodule MCP.Client do
   alias MCP.Protocol.Types.{Implementation, SubscriptionFilter}
 
   @default_request_timeout 30_000
+  @default_max_pending_requests 1_024
+  @default_list_all_max_pages 100
+  @default_list_all_max_items 100_000
   @max_tool_refresh_pages 32
   @default_subscription_queue_limit 256
   @default_notification_concurrency 32
@@ -96,6 +100,7 @@ defmodule MCP.Client do
     :on_input_required,
     :request_handlers,
     :legacy_ready,
+    :legacy_session_expired,
     :connect_waiters,
     :connect_result,
     :tool_schema_index,
@@ -103,6 +108,7 @@ defmodule MCP.Client do
     :tool_schema_limit,
     :transport_failure,
     :pending_requests,
+    :max_pending_requests,
     :next_id,
     :request_timeout,
     :task_supervisor,
@@ -365,18 +371,18 @@ defmodule MCP.Client do
 
   # --- Pagination helpers ---
 
-  @doc "Lists all tools, paginating automatically."
+  @doc "Lists all tools with bounded automatic pagination. Options: `:timeout`, `:max_pages`, `:max_items`, and normal list options."
   def list_all_tools(client, opts \\ []), do: list_all(client, :list_tools, :tools, opts)
 
-  @doc "Lists all resources, paginating automatically."
+  @doc "Lists all resources with bounded automatic pagination."
   def list_all_resources(client, opts \\ []),
     do: list_all(client, :list_resources, :resources, opts)
 
-  @doc "Lists all resource templates, paginating automatically."
+  @doc "Lists all resource templates with bounded automatic pagination."
   def list_all_resource_templates(client, opts \\ []),
     do: list_all(client, :list_resource_templates, :resource_templates, opts)
 
-  @doc "Lists all prompts, paginating automatically."
+  @doc "Lists all prompts with bounded automatic pagination."
   def list_all_prompts(client, opts \\ []), do: list_all(client, :list_prompts, :prompts, opts)
 
   @doc "Lists skills with absolute deadline, page, item, byte, and cursor-cycle bounds."
@@ -442,11 +448,14 @@ defmodule MCP.Client do
       on_input_required: Keyword.get(opts, :on_input_required),
       request_handlers: request_handlers,
       legacy_ready: false,
+      legacy_session_expired: false,
       connect_waiters: nil,
       tool_schema_index: %{},
       tool_schema_order: [],
       tool_schema_limit: tool_schema_limit,
       pending_requests: %{},
+      max_pending_requests:
+        Keyword.get(opts, :max_pending_requests, @default_max_pending_requests),
       next_id: 1,
       request_timeout: Keyword.get(opts, :request_timeout, @default_request_timeout),
       task_supervisor: task_supervisor,
@@ -475,7 +484,9 @@ defmodule MCP.Client do
 
   def handle_call({:connect, timeout}, from, state) do
     cond do
-      state.connect_result && (not legacy_protocol?(state) or state.legacy_ready) ->
+      not is_nil(state.connect_result) and
+        (not legacy_protocol?(state) or state.legacy_ready) and
+          transport_session_valid?(state) ->
         {:reply, {:ok, state.connect_result}, state}
 
       is_list(state.connect_waiters) ->
@@ -795,9 +806,20 @@ defmodule MCP.Client do
     {:noreply, state}
   end
 
+  def handle_info({:mcp_legacy_sse_failed, :session_expired}, state) do
+    Logger.warning("MCP legacy SSE listener unavailable: :session_expired")
+
+    if map_size(state.pending_requests) == 0 do
+      {:noreply, invalidate_legacy_session(state)}
+    else
+      {:noreply, %{state | legacy_session_expired: true}}
+    end
+  end
+
   def handle_info({:mcp_legacy_sse_failed, reason}, state) do
     Logger.warning("MCP legacy SSE listener unavailable: #{inspect(reason)}")
-    {:noreply, state}
+    state = fail_all_operations(state, {:transport_closed, {:legacy_sse_failed, reason}})
+    {:noreply, %{state | status: :closed}}
   end
 
   def handle_info({:mcp_subscription_transport_closed, id, reason}, state) do
@@ -835,21 +857,24 @@ defmodule MCP.Client do
   end
 
   def handle_info({:request_timeout, id}, state) do
-    case Map.pop(state.pending_requests, id) do
-      {%{from: from} = operation, pending} ->
-        state = stop_operation_tasks(state, operation)
-        state = %{state | pending_requests: pending}
+    result =
+      case Map.pop(state.pending_requests, id) do
+        {%{from: from} = operation, pending} ->
+          state = stop_operation_tasks(state, operation)
+          state = %{state | pending_requests: pending}
 
-        if connect_operation?(operation.kind) do
-          continue_connect_after_timeout(from, state)
-        else
-          GenServer.reply(from, {:error, :timeout})
+          if connect_operation?(operation.kind) do
+            continue_connect_after_timeout(from, state)
+          else
+            GenServer.reply(from, {:error, :timeout})
+            {:noreply, state}
+          end
+
+        {nil, _} ->
           {:noreply, state}
-        end
+      end
 
-      {nil, _} ->
-        {:noreply, state}
-    end
+    maybe_finalize_legacy_expiry(result)
   end
 
   def handle_info({:connect_waiter_timeout, waiter_ref}, state) do
@@ -971,21 +996,24 @@ defmodule MCP.Client do
   # --- Response handling ---
 
   defp handle_response(%Response{id: id} = response, state) do
-    case Map.fetch(state.subscriptions, id) do
-      {:ok, subscription} ->
-        finish_subscription_response(response, subscription, state)
+    result =
+      case Map.fetch(state.subscriptions, id) do
+        {:ok, subscription} ->
+          finish_subscription_response(response, subscription, state)
 
-      :error ->
-        case Map.pop(state.pending_requests, id) do
-          {%{timeout_ref: ref} = operation, pending} ->
-            cancel_timeout(ref)
-            state = detach_transport_task(%{state | pending_requests: pending}, operation)
-            finish_response_with_operation(response, operation, state)
+        :error ->
+          case Map.pop(state.pending_requests, id) do
+            {%{timeout_ref: ref} = operation, pending} ->
+              cancel_timeout(ref)
+              state = detach_transport_task(%{state | pending_requests: pending}, operation)
+              finish_response_with_operation(response, operation, state)
 
-          {nil, _} ->
-            handle_unknown_response(response, id, state)
-        end
-    end
+            {nil, _} ->
+              handle_unknown_response(response, id, state)
+          end
+      end
+
+    maybe_finalize_legacy_expiry(result)
   end
 
   defp handle_unknown_response(response, id, state) do
@@ -1361,6 +1389,7 @@ defmodule MCP.Client do
         server_info: initialize.server_info,
         protocol_version: initialize.protocol_version,
         legacy_ready: true,
+        legacy_session_expired: false,
         connect_result: result
     }
 
@@ -1450,7 +1479,8 @@ defmodule MCP.Client do
       | server_capabilities: initialize.capabilities,
         server_info: initialize.server_info,
         protocol_version: initialize.protocol_version,
-        legacy_ready: true
+        legacy_ready: true,
+        legacy_session_expired: false
     }
 
     if remaining > 0 do
@@ -1478,7 +1508,7 @@ defmodule MCP.Client do
 
   defp recover_expired_session(operation, state) do
     remaining = operation.deadline - System.monotonic_time(:millisecond)
-    state = %{state | legacy_ready: false}
+    state = %{state | legacy_ready: false, legacy_session_expired: false}
 
     case reset_transport_session(state) do
       :ok when remaining > 0 ->
@@ -2198,6 +2228,33 @@ defmodule MCP.Client do
          timeout,
          recovery_attempted
        ) do
+    if map_size(state.pending_requests) >= state.max_pending_requests do
+      GenServer.reply(from, {:error, :request_limit_reached})
+      {:noreply, state}
+    else
+      start_rpc_task(
+        state,
+        from,
+        method,
+        params,
+        kind,
+        transport_opts,
+        timeout,
+        recovery_attempted
+      )
+    end
+  end
+
+  defp start_rpc_task(
+         state,
+         from,
+         method,
+         params,
+         kind,
+         transport_opts,
+         timeout,
+         recovery_attempted
+       ) do
     {id, state} = next_id(state)
     timeout_ref = schedule_timeout(id, timeout)
     deadline = System.monotonic_time(:millisecond) + timeout
@@ -2314,27 +2371,30 @@ defmodule MCP.Client do
   end
 
   defp fail_pending_transport(state, id, reason) do
-    case Map.pop(state.pending_requests, id) do
-      {%{from: from, timeout_ref: timeout_ref} = operation, pending} ->
-        cancel_timeout(timeout_ref)
-        state = %{state | pending_requests: pending}
+    result =
+      case Map.pop(state.pending_requests, id) do
+        {%{from: from, timeout_ref: timeout_ref} = operation, pending} ->
+          cancel_timeout(timeout_ref)
+          state = %{state | pending_requests: pending}
 
-        cond do
-          reason == :session_expired and legacy_protocol?(state) and
-            not operation.recovery_attempted and operation.kind not in [:initialize] ->
-            recover_expired_session(operation, state)
+          cond do
+            reason == :session_expired and legacy_protocol?(state) and
+              not operation.recovery_attempted and operation.kind not in [:initialize] ->
+              recover_expired_session(operation, state)
 
-          connect_operation?(operation.kind) ->
-            fail_connect(from, reason, state)
+            connect_operation?(operation.kind) ->
+              fail_connect(from, reason, state)
 
-          true ->
-            GenServer.reply(from, {:error, reason})
-            {:noreply, state}
-        end
+            true ->
+              GenServer.reply(from, {:error, reason})
+              {:noreply, state}
+          end
 
-      {nil, _pending} ->
-        {:noreply, state}
-    end
+        {nil, _pending} ->
+          {:noreply, state}
+      end
+
+    maybe_finalize_legacy_expiry(result)
   end
 
   defp finish_callback_task(ref, responses, state) do
@@ -2542,6 +2602,12 @@ defmodule MCP.Client do
          :ok <-
            validate_positive_option(
              opts,
+             :max_pending_requests,
+             @default_max_pending_requests
+           ),
+         :ok <-
+           validate_positive_option(
+             opts,
              :subscription_queue_limit,
              @default_subscription_queue_limit
            ),
@@ -2591,6 +2657,7 @@ defmodule MCP.Client do
   end
 
   defp invalid_option_error(:request_timeout), do: :invalid_request_timeout
+  defp invalid_option_error(:max_pending_requests), do: :invalid_max_pending_requests
   defp invalid_option_error(:subscription_queue_limit), do: :invalid_subscription_queue_limit
   defp invalid_option_error(:notification_concurrency), do: :invalid_notification_concurrency
 
@@ -2769,6 +2836,16 @@ defmodule MCP.Client do
 
   defp legacy_protocol?(state), do: not is_nil(state.legacy_adapter)
 
+  defp transport_session_valid?(%{legacy_adapter: nil}), do: true
+
+  defp transport_session_valid?(state) do
+    if function_exported?(state.transport_module, :legacy_session_valid?, 1) do
+      state.transport_module.legacy_session_valid?(state.transport_pid)
+    else
+      true
+    end
+  end
+
   defp legacy_adapter(version) do
     case Revision.fetch(version) do
       {:ok, adapter} when adapter != :stateless -> adapter
@@ -2867,24 +2944,134 @@ defmodule MCP.Client do
     }
   end
 
-  defp list_all(client, operation, items_key, opts),
-    do: do_list_all(client, operation, items_key, opts, nil, [])
+  defp maybe_finalize_legacy_expiry(
+         {:noreply, %{legacy_session_expired: true, pending_requests: pending} = state}
+       )
+       when map_size(pending) == 0,
+       do: {:noreply, invalidate_legacy_session(state)}
 
-  defp do_list_all(client, operation, items_key, opts, cursor, acc) do
-    call_opts = if cursor, do: Keyword.put(opts, :cursor, cursor), else: opts
+  defp maybe_finalize_legacy_expiry(result), do: result
 
-    case apply_list_operation(client, operation, call_opts) do
+  defp invalidate_legacy_session(state) do
+    %{
+      state
+      | legacy_ready: false,
+        legacy_session_expired: false,
+        connect_result: nil,
+        server_capabilities: nil,
+        server_info: nil
+    }
+  end
+
+  defp list_all(client, operation, items_key, opts) do
+    with {:ok, limits, call_opts} <- list_all_options(opts) do
+      deadline =
+        if limits.timeout,
+          do: System.monotonic_time(:millisecond) + limits.timeout,
+          else: nil
+
+      do_list_all(%{
+        client: client,
+        operation: operation,
+        items_key: items_key,
+        opts: call_opts,
+        cursor: nil,
+        chunks: [],
+        page_count: 0,
+        item_count: 0,
+        seen: MapSet.new(),
+        max_pages: limits.max_pages,
+        max_items: limits.max_items,
+        deadline: deadline
+      })
+    end
+  end
+
+  defp do_list_all(pagination) do
+    with :ok <- pagination_page_allowed(pagination.page_count, pagination.max_pages),
+         {:ok, call_opts} <-
+           pagination_call_opts(pagination.opts, pagination.cursor, pagination.deadline) do
+      do_list_all_page(pagination, call_opts)
+    end
+  end
+
+  defp do_list_all_page(pagination, call_opts) do
+    case apply_list_operation(pagination.client, pagination.operation, call_opts) do
       {:ok, result} ->
-        items = Map.get(result, Atom.to_string(items_key), [])
-        new_acc = acc ++ items
-
-        case Map.get(result, "nextCursor") do
-          nil -> {:ok, new_acc}
-          next_cursor -> do_list_all(client, operation, items_key, opts, next_cursor, new_acc)
-        end
+        items = Map.get(result, Atom.to_string(pagination.items_key), [])
+        new_count = pagination.item_count + length(items)
+        continue_list_all(pagination, items, new_count, Map.get(result, "nextCursor"))
 
       {:error, _} = error ->
         error
+    end
+  end
+
+  defp continue_list_all(pagination, _items, new_count, _cursor)
+       when new_count > pagination.max_items,
+       do: {:error, :pagination_item_limit_reached}
+
+  defp continue_list_all(pagination, items, new_count, next_cursor)
+       when not is_nil(next_cursor) do
+    if MapSet.member?(pagination.seen, next_cursor) do
+      {:error, {:pagination_cursor_cycle, next_cursor}}
+    else
+      do_list_all(%{
+        pagination
+        | cursor: next_cursor,
+          chunks: [items | pagination.chunks],
+          page_count: pagination.page_count + 1,
+          item_count: new_count,
+          seen: MapSet.put(pagination.seen, next_cursor)
+      })
+    end
+  end
+
+  defp continue_list_all(pagination, items, _new_count, nil) do
+    {:ok, pagination.chunks |> Enum.reverse([items]) |> List.flatten()}
+  end
+
+  defp list_all_options(opts) when is_list(opts) do
+    max_pages = Keyword.get(opts, :max_pages, @default_list_all_max_pages)
+    max_items = Keyword.get(opts, :max_items, @default_list_all_max_items)
+    timeout = Keyword.get(opts, :timeout)
+
+    cond do
+      not (is_integer(max_pages) and max_pages > 0) ->
+        {:error, {:invalid_max_pages, max_pages}}
+
+      not (is_integer(max_items) and max_items >= 0) ->
+        {:error, {:invalid_max_items, max_items}}
+
+      true ->
+        case validate_call_options(opts) do
+          :ok ->
+            {:ok, %{max_pages: max_pages, max_items: max_items, timeout: timeout},
+             Keyword.drop(opts, [:max_pages, :max_items, :timeout])}
+
+          {:error, _} = error ->
+            error
+        end
+    end
+  end
+
+  defp pagination_page_allowed(page_count, max_pages) when page_count < max_pages, do: :ok
+
+  defp pagination_page_allowed(_page_count, _max_pages),
+    do: {:error, :pagination_page_limit_reached}
+
+  defp pagination_call_opts(opts, cursor, nil) do
+    {:ok, if(cursor, do: Keyword.put(opts, :cursor, cursor), else: opts)}
+  end
+
+  defp pagination_call_opts(opts, cursor, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 do
+      opts = Keyword.put(opts, :timeout, remaining)
+      {:ok, if(cursor, do: Keyword.put(opts, :cursor, cursor), else: opts)}
+    else
+      {:error, :pagination_timeout}
     end
   end
 

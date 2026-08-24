@@ -27,13 +27,17 @@ defmodule MCP.Protocol.Error do
   `-32042` helper is dropped.
   """
 
-  @derive Jason.Encoder
-  defstruct [:code, :message, :data]
+  alias MCP.Protocol.OpenObject
+
+  @known_keys ["code", "message", "data"]
+
+  defstruct [:code, :message, data: :absent, extra: %{}]
 
   @type t :: %__MODULE__{
           code: integer(),
           message: String.t(),
-          data: term()
+          data: MCP.Protocol.json_value() | :absent,
+          extra: MCP.Protocol.extra_fields()
         }
 
   # Standard JSON-RPC 2.0 error codes
@@ -138,7 +142,21 @@ defmodule MCP.Protocol.Error do
     %__MODULE__{
       code: code,
       message: message,
-      data: Map.get(map, "data")
+      data: Map.get(map, "data", :absent),
+      extra: OpenObject.extra(map, @known_keys)
     }
+  end
+
+  @spec to_map(t()) :: map()
+  def to_map(%__MODULE__{} = error) do
+    %{"code" => error.code, "message" => error.message}
+    |> then(fn map ->
+      if error.data == :absent, do: map, else: Map.put(map, "data", error.data)
+    end)
+    |> OpenObject.merge!(error.extra, @known_keys, "protocol error")
+  end
+
+  defimpl Jason.Encoder do
+    def encode(error, opts), do: Jason.Encode.map(@for.to_map(error), opts)
   end
 end

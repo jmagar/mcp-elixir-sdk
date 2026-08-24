@@ -45,10 +45,11 @@ defmodule MCPElixirSDK.MixProject do
           "https://modelcontextprotocol.io/specification/2026-07-28",
         "MCP 2025-11-25 Specification" =>
           "https://modelcontextprotocol.io/specification/2025-11-25",
-        "Examples" => "#{@source_url}#server-handler"
+        "Examples" => "#{@source_url}/tree/main/examples"
       },
       files:
-        ~w(lib docs conformance usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
+        ~w(lib docs examples usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md) ++
+          ~w(conformance/server_handler.ex conformance/client_adapter.exs conformance/server_adapter.exs conformance/*.json conformance/*.md)
     ]
   end
 
@@ -162,7 +163,7 @@ defmodule MCPElixirSDK.MixProject do
       # Optional: Streamable HTTP transport
       {:req, ">= 0.5.0 and < 0.8.0", optional: true},
       {:plug, "~> 1.16", optional: true},
-      {:bandit, "~> 1.5", optional: true},
+      {:bandit, "~> 1.12.5", optional: true},
 
       # Dev/test
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -182,13 +183,14 @@ defmodule MCPElixirSDK.MixProject do
       {"mix", ["test", "--seed", "0"]},
       {"mix", ["credo", "--strict"]},
       {"mix", ["dialyzer"]},
-      {"mix", ["docs"]},
-      {"mix", ["hex.build"]},
+      {"mix", ["docs", "--warnings-as-errors"]},
+      {"elixir", ["scripts/package_smoke.exs"]},
       {"mix", ["hex.audit"]},
       {"mix", ["deps.unlock", "--check-unused"]},
       {"git", ["diff", "--check"]},
       {"jq", ["empty", "conformance/scenarios.json"]},
-      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]}
+      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]},
+      {"jq", ["empty", "conformance/mcp-apps-2026-01-26.json"]}
     ]
     |> Enum.each(&run_command!/1)
   end

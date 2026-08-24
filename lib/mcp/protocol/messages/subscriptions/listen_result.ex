@@ -4,28 +4,35 @@ defmodule MCP.Protocol.Messages.Subscriptions.ListenResult do
   """
 
   @subscription_id_key "io.modelcontextprotocol/subscriptionId"
+  @known_keys ["_meta", "resultType"]
 
-  defstruct [:meta, result_type: "complete"]
+  alias MCP.Protocol.OpenObject
+
+  defstruct [:meta, extra: %{}, result_type: "complete"]
 
   @type t :: %__MODULE__{
           meta: map(),
-          result_type: String.t()
+          result_type: String.t(),
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec from_map(map()) :: t()
   def from_map(map) when is_map(map) do
     %__MODULE__{
       meta: map |> Map.fetch!("_meta") |> validate_meta!(),
-      result_type: map |> Map.fetch!("resultType") |> validate_result_type!()
+      result_type: map |> Map.fetch!("resultType") |> validate_result_type!(),
+      extra: OpenObject.extra(map, @known_keys)
     }
   end
 
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = result) do
-    %{
+    known = %{
       "_meta" => validate_meta!(result.meta),
       "resultType" => validate_result_type!(result.result_type)
     }
+
+    OpenObject.merge!(known, result.extra, @known_keys, "subscriptions/listen result")
   end
 
   defp validate_meta!(meta) when is_map(meta) do

@@ -7,7 +7,7 @@
     "unitContract": "test/mcp/apps_test.exs",
     "transports": "unverified Apps-specific flow; generic transport suites prove metadata and resource preservation",
     "coreEras": "unverified Apps-specific cross-era flow; generic dual-era suites remain unchanged",
-    "browserHost": "external verification boundary; not claimed by local tests"
+    "browserHost": "optional workflow_dispatch job .github/workflows/mcp-apps-browser-interop.yml uses the pinned official Inspector host and uploads auth, policy, screenshots, console/network, resources/read and same-server callback evidence"
   },
   "verifiedScenarios": [
     "capability-shape-and-local-intersection",
@@ -18,7 +18,8 @@
     "exact-client-one-read-resolution",
     "bridge-envelope-and-lifecycle-validation",
     "open-object-roundtrip",
-    "bounded-resource-map-and-message-inputs"
+    "bounded-resource-map-and-message-inputs",
+    "optional-real-browser-host-job"
   ],
   "unverifiedScenarios": [
     "stdio-app-flow",

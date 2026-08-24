@@ -40,7 +40,8 @@ defmodule MCP.Protocol.Messages.SkillsTest do
       "nextCursor" => "page-2",
       "ttlMs" => 100,
       "cacheScope" => "private",
-      "_meta" => %{"com.example/page" => 1}
+      "_meta" => %{"com.example/page" => 1},
+      "vendor" => %{"nested" => [false, nil, 0]}
     }
 
     assert {:ok, result} = ListResult.decode(map)
@@ -56,7 +57,13 @@ defmodule MCP.Protocol.Messages.SkillsTest do
   end
 
   test "get result is the same complete skill-entry shape without list caching assumptions" do
-    map = %{"resultType" => "complete", "skill" => @skill, "_meta" => %{"snapshot" => 1}}
+    map = %{
+      "resultType" => "complete",
+      "skill" => @skill,
+      "_meta" => %{"snapshot" => 1},
+      "vendor" => false
+    }
+
     assert {:ok, result} = GetResult.decode(map)
     assert GetResult.to_map(result) == map
   end

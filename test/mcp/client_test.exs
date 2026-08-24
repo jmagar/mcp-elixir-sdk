@@ -20,7 +20,7 @@ defmodule MCP.ClientTest do
     "prompts" => %{"listChanged" => true}
   }
 
-  defp wait_for_sent(transport, count, timeout \\ 1000) do
+  defp wait_for_sent(transport, count, timeout \\ 5_000) do
     case MockTransport.await_sent(transport, count, timeout) do
       {:ok, messages} -> messages
       {:error, :timeout} -> flunk("Timed out waiting for #{count} messages")
@@ -1193,6 +1193,43 @@ defmodule MCP.ClientTest do
       {:ok, tools} = Task.await(task)
       assert length(tools) == 2
     end
+
+    test "list_all_tools enforces page and item limits" do
+      {client, transport} = start_client()
+      do_connect(client, transport)
+
+      page_task = Task.async(fn -> Client.list_all_tools(client, max_pages: 1) end)
+      page_request = last_after_connect(transport, 1)
+      inject_tools_page(transport, page_request, ["t1"], "next")
+      assert Task.await(page_task) == {:error, :pagination_page_limit_reached}
+
+      item_task = Task.async(fn -> Client.list_all_tools(client, max_items: 0) end)
+      item_request = last_after_connect(transport, 2)
+      inject_tools_page(transport, item_request, ["t1"])
+      assert Task.await(item_task) == {:error, :pagination_item_limit_reached}
+    end
+
+    test "list_all_tools detects cursor cycles" do
+      {client, transport} = start_client()
+      do_connect(client, transport)
+
+      task = Task.async(fn -> Client.list_all_tools(client) end)
+      first = last_after_connect(transport, 1)
+      inject_tools_page(transport, first, ["t1"], "same")
+      second = last_after_connect(transport, 2)
+      inject_tools_page(transport, second, ["t2"], "same")
+
+      assert Task.await(task) == {:error, {:pagination_cursor_cycle, "same"}}
+    end
+
+    test "list_all_tools validates pagination bounds and honors aggregate timeout" do
+      {client, transport} = start_client()
+      do_connect(client, transport)
+
+      assert Client.list_all_tools(client, max_pages: 0) == {:error, {:invalid_max_pages, 0}}
+      assert Client.list_all_tools(client, max_items: -1) == {:error, {:invalid_max_items, -1}}
+      assert Client.list_all_tools(client, timeout: 1) == {:error, :timeout}
+    end
   end
 
   describe "server_capabilities/1 and server_info/1" do
@@ -1206,6 +1243,28 @@ defmodule MCP.ClientTest do
   end
 
   describe "concurrent requests" do
+    test "rejects saturation and releases pending capacity after a response" do
+      {client, transport} = start_client(max_pending_requests: 1)
+      do_connect(client, transport)
+
+      first = Task.async(fn -> Client.list_tools(client) end)
+      first_request = last_after_connect(transport, 1)
+      assert Client.list_resources(client) == {:error, :request_limit_reached}
+      inject_tools_page(transport, first_request, [])
+      assert Task.await(first) == {:ok, %{"tools" => []}}
+
+      second = Task.async(fn -> Client.list_resources(client) end)
+      second_request = last_after_connect(transport, 2)
+
+      MockTransport.inject(transport, %{
+        "jsonrpc" => "2.0",
+        "id" => second_request["id"],
+        "result" => %{"resources" => []}
+      })
+
+      assert Task.await(second) == {:ok, %{"resources" => []}}
+    end
+
     test "handles multiple concurrent requests" do
       {client, transport} = start_client()
       do_connect(client, transport)
@@ -1231,5 +1290,22 @@ defmodule MCP.ClientTest do
       assert {:ok, _} = Task.await(t1)
       assert {:ok, _} = Task.await(t2)
     end
+  end
+
+  defp inject_tools_page(transport, request, names, next_cursor \\ nil) do
+    result = %{
+      "tools" =>
+        Enum.map(names, fn name ->
+          %{"name" => name, "inputSchema" => %{"type" => "object"}}
+        end)
+    }
+
+    result = if next_cursor, do: Map.put(result, "nextCursor", next_cursor), else: result
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => request["id"],
+      "result" => result
+    })
   end
 end

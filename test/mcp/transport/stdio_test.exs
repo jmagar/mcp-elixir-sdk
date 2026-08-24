@@ -1,24 +1,22 @@
 defmodule MCP.Transport.StdioTest do
   use ExUnit.Case, async: false
 
+  alias MCP.Test.StdioFixture
   alias MCP.Transport.Stdio
 
   @echo_server Path.expand("../../support/echo_server.exs", __DIR__)
   @project_dir Path.expand("../../..", __DIR__)
 
   defp start_echo_transport do
-    mix_path = System.find_executable("mix")
+    jason_ebin = Path.join([@project_dir, "_build", "test", "lib", "jason", "ebin"])
+    {command, args} = StdioFixture.elixir(["-pa", jason_ebin, @echo_server])
 
     {:ok, transport} =
       Stdio.start_link(
         owner: self(),
-        command: mix_path,
-        args: ["run", "--no-start", @echo_server],
-        env: [{"MIX_ENV", "test"}, {"MIX_BUILD_PATH", Path.join(@project_dir, "_build/test")}]
+        command: command,
+        args: args
       )
-
-    # Give the echo server time to compile and start
-    Process.sleep(2000)
 
     transport
   end

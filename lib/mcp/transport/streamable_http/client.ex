@@ -109,6 +109,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     :exit, reason -> {:error, {:reset_session_failed, reason}}
   end
 
+  @doc false
+  def legacy_session_valid?(pid), do: GenServer.call(pid, :legacy_session_valid?)
+
   @impl MCP.Transport
   def open_subscription(pid, message, opts \\ []) when is_map(message) and is_list(opts) do
     GenServer.call(pid, {:open_subscription, message, opts}, 60_000)
@@ -174,6 +177,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       end
     end
   end
+
+  def handle_call(:legacy_session_valid?, _from, state),
+    do: {:reply, not is_nil(state.session_id), state}
 
   def handle_call({:open_subscription, message, opts}, _from, state) do
     id = Map.get(message, "id")
@@ -300,7 +306,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     Process.demonitor(state.legacy_sse_ref, [:flush])
     state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
     state = if reason == :session_expired, do: clear_legacy_session(state), else: state
+
     send(state.owner, {:mcp_legacy_sse_failed, reason})
+
     {:noreply, state}
   end
 
@@ -568,12 +576,16 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           {:cont, {:ok, headers}}
 
         {:ok, value} ->
-          {:cont, {:ok, headers ++ [{name, encode_header_value(value)}]}}
+          {:cont, {:ok, [{name, encode_header_value(value)} | headers]}}
 
         {:error, reason} ->
           {:halt, {:error, {:invalid_routing_argument, name, reason}}}
       end
     end)
+    |> case do
+      {:ok, headers} -> {:ok, Enum.reverse(headers)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp custom_routing_headers(_message, _descriptors), do: {:ok, []}

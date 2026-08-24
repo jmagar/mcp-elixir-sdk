@@ -1,6 +1,7 @@
 defmodule MCP.Transport.StdioSecurityTest do
   use ExUnit.Case, async: false
 
+  alias MCP.Test.StdioFixture
   alias MCP.Transport.Stdio
   alias MCP.Transport.Stdio.Process, as: StdioProcess
   alias MCP.Transport.Stdio.SecurityPolicy
@@ -103,11 +104,12 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   @tag @linux_only
-  test "an extremely small cleanup deadline returns a failure instead of crashing the caller" do
+  test "an extremely small graceful deadline still forces descendant cleanup" do
     transport = start_transport("descendant", shutdown_timeout: 1)
-    assert_receive {:mcp_message, %{"result" => %{"pid" => _child_pid}}}, 5_000
+    assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
 
-    assert Stdio.close(transport) in [:ok, {:error, :process_group_cleanup_failed}]
+    assert :ok = Stdio.close(transport)
+    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
     assert Process.alive?(self())
   end
 
@@ -139,14 +141,12 @@ defmodule MCP.Transport.StdioSecurityTest do
   test "a subprocess DOWN releases an outstanding stdout callback before stopping" do
     {:ok, policy} = SecurityPolicy.new(shutdown_timeout: 500)
 
+    {command, args} = StdioFixture.elixir([@fixture, "frame_burst"])
+
     process =
       start_supervised!(
         {StdioProcess,
-         owner: self(),
-         command: System.find_executable("elixir"),
-         args: [@fixture, "frame_burst"],
-         env: [],
-         security_policy: policy}
+         owner: self(), command: command, args: args, env: [], security_policy: policy}
       )
 
     assert_receive {:stdio_process, ^process, :stdout, data}, 5_000
@@ -176,9 +176,17 @@ defmodule MCP.Transport.StdioSecurityTest do
 
     assert_receive {:mcp_message, %{"result" => %{"ready" => true}}}, 5_000
     assert :ok = Stdio.close(transport)
-    assert {:ok, pid_text} = File.read(pid_file)
-    child_pid = pid_text |> String.trim() |> String.to_integer()
-    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+
+    # A loaded scheduler may deliver KILL before Python runs its TERM handler.
+    # When the handler did spawn the late descendant, it must still be reaped.
+    case File.read(pid_file) do
+      {:ok, pid_text} ->
+        child_pid = pid_text |> String.trim() |> String.to_integer()
+        refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+
+      {:error, :enoent} ->
+        :ok
+    end
   end
 
   @tag @linux_only
@@ -250,7 +258,8 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   defp start_transport(mode, policy_opts \\ []) do
-    start_command_transport(System.find_executable("elixir"), [@fixture, mode], policy_opts)
+    {command, args} = StdioFixture.elixir([@fixture, mode])
+    start_command_transport(command, args, policy_opts)
   end
 
   defp start_command_transport(command, args, policy_opts) do

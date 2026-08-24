@@ -1,245 +1,192 @@
 # MCP Elixir SDK — Usage Rules
 
-> Condensed rules for AI agents and developers using `mcp_elixir_sdk`.
-> For full documentation see [hexdocs](https://hexdocs.pm/mcp_elixir_sdk).
+> Condensed, executable guidance for developers and coding agents using the
+> unreleased `mcp_elixir_sdk` 2.0 release candidate. The [README](README.md) and
+> generated module documentation are the authoritative public references.
 
-## What This Package Does
+## Supported MCP revisions
 
-`mcp_elixir_sdk` is an Elixir SDK for the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) — an open protocol for integrating LLM applications with external data sources and tools. It provides both **client** and **server** implementations with pluggable transports. Protocol version: **2025-11-25**.
-
-Public modules live under the `MCP.*` namespace (e.g. `MCP.Client`, `MCP.Server`).
+The SDK supports stateless `2026-07-28` (preferred) and stateful
+`2025-11-25` compatibility. Do not implement the two lifecycle models in
+consumer code. `MCP.Client.connect/2` performs bounded protocol selection, and
+the server transports isolate the selected lifecycle.
 
 ## Installation
 
-```elixir
-# mix.exs deps
-{:mcp_elixir_sdk, "~> 1.0"}
-
-# Also add these for Streamable HTTP transport:
-{:req, "~> 0.5"}      # HTTP client
-{:plug, "~> 1.16"}    # HTTP framework
-{:bandit, "~> 1.5"}   # HTTP server
-```
-
-The stdio transport requires no additional dependencies.
-
-## Client Rules
-
-### Starting a Client
-
-Always provide `:transport` and `:client_info`:
+There is not yet a published 2.0 tag or Hex package. For evaluation, pin an
+immutable Git commit rather than a branch:
 
 ```elixir
-{:ok, client} = MCP.Client.start_link(
-  transport: {MCP.Transport.Stdio, command: "mcp-server", args: []},
-  client_info: %{name: "my_app", version: "1.0.0"}
-)
+def deps do
+  [
+    {:mcp_elixir_sdk,
+     git: "https://github.com/jmagar/mcp-elixir-sdk.git",
+     ref: "e9c7fb8927de1d54c74ffecd21bfed63ba1a19ef"}
+  ]
+end
 ```
 
-### Connection Lifecycle
+Streamable HTTP requires the optional `Req`, `Plug`, and `Bandit`
+dependencies. Stdio is Unix-only because the required `erlexec` dependency
+uses a NIF that does not build on Windows.
 
-You **must** call `connect/1` before any other operation. It performs the MCP initialization handshake:
+## Client
+
+Always provide a transport and client identity, then call `connect/2` before
+protocol operations:
 
 ```elixir
-{:ok, info} = MCP.Client.connect(client)
-# info contains server_info, capabilities, protocol_version, instructions
+{:ok, client} =
+  MCP.Client.start_link(
+    transport:
+      {MCP.Transport.StreamableHTTP.Client,
+       url: "http://127.0.0.1:4000/mcp"},
+    client_info: %{name: "my_app", version: "1.0.0"}
+  )
+
+with {:ok, _discovery} <- MCP.Client.connect(client),
+     {:ok, %{"tools" => tools}} <- MCP.Client.list_tools(client),
+     {:ok, result} <- MCP.Client.call_tool(client, "add", %{"a" => 20, "b" => 22}) do
+  {tools, result}
+end
+
+:ok = MCP.Client.close(client)
 ```
 
-Call `MCP.Client.close/1` when done.
+Use `try/after` when a client is started for a bounded operation so cleanup is
+not skipped after an exception. For supervision, start `MCP.Client` from your
+own child specification and let the owning supervisor manage its lifecycle.
 
-### Available Client Operations
+Common operations are:
 
 | Function | Purpose |
-|----------|---------|
-| `connect/1` | Initialize handshake (required first) |
-| `list_tools/1,2` | List server tools (with optional cursor) |
-| `call_tool/3,4` | Call a tool by name with arguments |
-| `list_resources/1,2` | List server resources |
-| `read_resource/2` | Read a resource by URI |
-| `list_prompts/1,2` | List server prompts |
-| `get_prompt/3` | Get a prompt by name with arguments |
-| `list_all_tools/1` | Auto-paginate all tools |
-| `list_all_resources/1` | Auto-paginate all resources |
-| `list_all_prompts/1` | Auto-paginate all prompts |
-| `close/1` | Disconnect and clean up |
+|---|---|
+| `connect/2` | Select and establish the supported protocol lifecycle |
+| `list_tools/2`, `list_all_tools/2` | List one page or bounded all pages |
+| `call_tool/4` | Call a tool with optional deadline, metadata, and input schema |
+| `list_resources/2`, `read_resource/3` | Discover and read resources |
+| `list_prompts/2`, `get_prompt/4` | Discover and render prompts |
+| `complete/4` | Request argument or reference completion |
+| `listen_subscriptions/3` | Open a consumer-supervised 2026 subscription |
+| `close/1` | Close the transport and client process |
 
-### Client Feature Callbacks
+Captured stdio diagnostics are opt-in. Configure the stdio transport with
+`security_policy: [stderr: :capture]` and pass `stderr_handler:` to the client;
+the SDK never logs captured subprocess output automatically.
 
-To support server-initiated requests, pass callback options to `start_link/1`:
+## Server handler
 
-```elixir
-MCP.Client.start_link(
-  transport: {transport_mod, transport_opts},
-  client_info: %{name: "my_app", version: "1.0.0"},
-  on_sampling: fn params -> {:ok, %{"role" => "assistant", "content" => %{"type" => "text", "text" => "response"}, "model" => "my-model", "stopReason" => "endTurn"}} end,
-  on_roots_list: fn _params -> {:ok, %{"roots" => [%{"uri" => "file:///path", "name" => "Root"}]}} end,
-  on_elicitation: fn params -> {:ok, %{"action" => "accept", "content" => %{}}} end,
-  notification_handler: fn method, params -> IO.puts("#{method}") end
-)
-```
+Implement `MCP.Server.Handler`. `init/1` returns immutable launch
+configuration. Every request callback receives a request-scoped
+`MCP.Server.ToolContext` immediately before that configuration:
 
-Capabilities are auto-advertised when callbacks are provided.
-
-## Server Rules
-
-### Implementing a Handler
-
-Create a module with `@behaviour MCP.Server.Handler`. Only `init/1` is required — implement additional callbacks to enable features. The server auto-detects capabilities based on which callbacks you implement.
+Treat handler initialization failures as a stable public error boundary.
+`MCP.Server.Config.build/2` returns
+`{:error, {:handler_init_failed, detail}}` for normal handler errors, raises,
+throws, exits, and malformed `init/1` returns. Match the outer tag; the detail
+may contain the handler's application-specific reason.
 
 ```elixir
-defmodule MyHandler do
+defmodule MyApp.MCPHandler do
   @behaviour MCP.Server.Handler
+
+  alias MCP.Server.ToolContext
 
   @impl true
   def init(_opts), do: {:ok, %{}}
 
   @impl true
-  def handle_list_tools(_cursor, state) do
-    tools = [
-      %{
-        "name" => "my_tool",
-        "description" => "Does something",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{"arg" => %{"type" => "string"}},
-          "required" => ["arg"]
-        }
-      }
-    ]
-    {:ok, tools, nil, state}
+  def handle_list_tools(_cursor, %ToolContext{}, _config) do
+    {:ok,
+     [
+       %{
+         "name" => "add",
+         "description" => "Adds two numbers",
+         "inputSchema" => %{
+           "type" => "object",
+           "properties" => %{
+             "a" => %{"type" => "number"},
+             "b" => %{"type" => "number"}
+           },
+           "required" => ["a", "b"]
+         }
+       }
+     ], nil}
   end
 
   @impl true
-  def handle_call_tool("my_tool", %{"arg" => arg}, state) do
-    {:ok, [%{"type" => "text", "text" => "Result: #{arg}"}], state}
+  def handle_call_tool("add", %{"a" => a, "b" => b}, %ToolContext{}, _config) do
+    {:ok, [%{"type" => "text", "text" => to_string(a + b)}]}
+  end
+
+  def handle_call_tool(name, _arguments, %ToolContext{}, _config) do
+    {:error, -32_601, "Unknown tool: #{name}"}
   end
 end
 ```
 
-### Handler Callback Signatures
+Callbacks cannot replace the launch configuration. Put mutable domain state
+behind a supervised process and store only its pid or registered name in that
+configuration. Never derive `ToolContext.identity` from tool arguments,
+request metadata, or unverified headers.
 
-| Callback | Arity | Return |
-|----------|-------|--------|
-| `init/1` | 1 | `{:ok, state}` |
-| `handle_list_tools/2` | 2 | `{:ok, tools, next_cursor, state}` |
-| `handle_call_tool/3` | 3 | `{:ok, content, state}` or `{:error, code, message, state}` |
-| `handle_call_tool/4` | 4 | Same as /3, but receives `ToolContext` for async ops |
-| `handle_list_resources/2` | 2 | `{:ok, resources, next_cursor, state}` |
-| `handle_read_resource/2` | 2 | `{:ok, contents, state}` or `{:error, code, message, state}` |
-| `handle_list_prompts/2` | 2 | `{:ok, prompts, next_cursor, state}` |
-| `handle_get_prompt/3` | 3 | `{:ok, result, state}` or `{:error, code, message, state}` |
-| `handle_complete/3` | 3 | `{:ok, completion, state}` |
-| `handle_set_log_level/2` | 2 | `{:ok, state}` |
-| `handle_subscribe/2` | 2 | `{:ok, state}` or `{:error, code, message, state}` |
-| `handle_unsubscribe/2` | 2 | `{:ok, state}` or `{:error, code, message, state}` |
-| `handle_list_resource_templates/2` | 2 | `{:ok, templates, next_cursor, state}` |
+The complete runnable handler is
+[`examples/quickstart_server.exs`](examples/quickstart_server.exs), and its
+public callback contract is exercised by the test suite. Run it as a stdio
+server with:
 
-### Starting a Server
-
-**Stdio:**
-
-```elixir
-{:ok, server} = MCP.Server.start_link(
-  transport: {MCP.Transport.Stdio, mode: :server},
-  handler: {MyHandler, []},
-  server_info: %{name: "my_server", version: "1.0.0"}
-)
+```sh
+mix run examples/quickstart_server.exs -- --stdio
 ```
 
-**Streamable HTTP (Plug + Bandit):**
+## Starting a server
+
+For stdio or an in-process transport, start `MCP.Server.Connection`:
 
 ```elixir
-plug_config = MCP.Transport.StreamableHTTP.Plug.init(
-  server_mod: MyHandler,
-  server_opts: [server_info: %{name: "my_server", version: "1.0.0"}]
-)
-
-{:ok, _bandit} = Bandit.start_link(
-  plug: {MCP.Transport.StreamableHTTP.Plug, plug_config},
-  port: 8080,
-  ip: {127, 0, 0, 1}
-)
+{:ok, connection} =
+  MCP.Server.Connection.start_link(
+    transport: {MCP.Transport.Stdio, mode: :server},
+    handler: {MyApp.MCPHandler, []},
+    server_info: %{name: "my_server", version: "1.0.0"}
+  )
 ```
 
-### Async Tool Execution with ToolContext
-
-Implement `handle_call_tool/4` (4-arity) instead of `/3` to get a `ToolContext` for sending log messages, progress updates, and making server-to-client requests:
+For Streamable HTTP, mount the SDK Plug after authentication:
 
 ```elixir
-def handle_call_tool("analyze", args, ctx, state) do
-  ToolContext.log(ctx, "info", "Starting analysis")
-  ToolContext.send_progress(ctx, 0, 100)
+plug =
+  MCP.Transport.StreamableHTTP.Plug.new(
+    server_mod: MyApp.MCPHandler,
+    handler_opts: [],
+    server_opts: [server_info: %{name: "my_server", version: "1.0.0"}],
+    allowed_hosts: ["mcp.example.com"],
+    allowed_origins: ["https://app.example.com"]
+  )
 
-  {:ok, result} = ToolContext.request_sampling(ctx, %{
-    "messages" => [%{"role" => "user", "content" => %{"type" => "text", "text" => "Analyze: #{args["code"]}"}}],
-    "maxTokens" => 1000
-  })
-
-  ToolContext.send_progress(ctx, 100, 100)
-  {:ok, [%{"type" => "text", "text" => result["content"]["text"]}], state}
-end
+{:ok, _bandit} = Bandit.start_link(plug: plug, port: 4000)
 ```
 
-**ToolContext functions:** `log/3`, `send_progress/3`, `send_notification/3`, `request/4`, `request_sampling/2`, `request_elicitation/2`.
+An authenticated HTTP application may pass a `handler_opts` function that
+reads a verified principal from `conn.assigns`. It must not trust raw identity
+headers by itself. Use the gateway security policy and explicit host/origin
+allowlists for production endpoints.
 
-## Transport Rules
-
-### Stdio Transport
-
-- Client mode: `{MCP.Transport.Stdio, command: "cmd", args: ["arg1"]}`
-- Server mode: `{MCP.Transport.Stdio, mode: :server}`
-- Messages are newline-delimited JSON-RPC. Must NOT contain embedded newlines.
-- Works with zero additional dependencies.
-
-### Streamable HTTP Transport
-
-- Client: `{MCP.Transport.StreamableHTTP.Client, url: "http://host:port/mcp"}`
-- Server: Use `MCP.Transport.StreamableHTTP.Plug` with Bandit (see above)
-- Requires `:req`, `:plug`, and `:bandit` dependencies.
-- Uses POST for sending, GET for SSE listening, `MCP-Session-Id` header for stateful sessions.
-
-## Critical Gotchas
-
-1. **Always call `connect/1` first.** No operations work before the initialization handshake completes (except ping).
-
-2. **Sampling over HTTP times out.** When using `ToolContext.request_sampling/2` over Streamable HTTP, the client's `Req.post` blocks until the SSE stream completes, so the client cannot respond to the sampling request. The server's `request_timeout` (default 30s) returns `{:error, :timeout}`. **Always handle the error case.** Sampling works correctly over stdio.
-
-3. **Content is always a list of maps.** Tool results, resource contents, and prompt messages use `[%{"type" => "text", "text" => "..."}]` format. Never return a bare string.
-
-4. **Tool input schemas use JSON Schema.** The `"inputSchema"` field must be a valid JSON Schema object with `"type" => "object"`.
-
-5. **Cursors for pagination.** List callbacks receive a cursor and must return `{:ok, items, next_cursor, state}`. Return `nil` for next_cursor when there are no more pages.
-
-6. **Error tuples include state.** All error returns are `{:error, code, message, state}` — don't forget to return the handler state.
-
-7. **Capability auto-detection.** The server only advertises capabilities for callbacks your handler implements. No need to configure capabilities manually.
-
-8. **JSON-RPC 2.0 compliance.** All messages are valid JSON-RPC 2.0. IDs are unique per session, never null.
-
-## Common Error Codes
-
-| Code | Meaning |
-|------|---------|
-| `-32700` | Parse error |
-| `-32600` | Invalid request |
-| `-32601` | Method not found |
-| `-32602` | Invalid params |
-| `-32603` | Internal error |
-| `-32002` | Resource not found (MCP-specific) |
-
-## Module Reference
+## Public entry points
 
 | Module | Purpose |
-|--------|---------|
-| `MCP.Client` | High-level client API |
-| `MCP.Server` | High-level server API |
-| `MCP.Server.Handler` | Server handler behaviour |
-| `MCP.Server.ToolContext` | Async tool execution context |
-| `MCP.Transport` | Transport behaviour |
-| `MCP.Transport.Stdio` | Stdio transport |
-| `MCP.Transport.StreamableHTTP.Client` | HTTP client transport |
-| `MCP.Transport.StreamableHTTP.Plug` | HTTP server transport (Plug) |
-| `MCP.Protocol` | JSON-RPC 2.0 framing and ID generation |
-| `MCP.Protocol.Types.*` | MCP type structs (Tool, Resource, Prompt, Content, etc.) |
-| `MCP.Protocol.Messages.*` | Request/response/notification structs |
-| `MCP.Protocol.Capabilities.*` | Client and server capability structs |
+|---|---|
+| `MCP.Client` | High-level client lifecycle and operations |
+| `MCP.Client.SubscriptionHandle` | Consume and close subscription streams |
+| `MCP.Server.Handler` | Consumer server behavior |
+| `MCP.Server.Connection` | Stdio and in-process server connection |
+| `MCP.Server.ToolContext` | Request identity, metadata, and notification context |
+| `MCP.Server.SubscriptionPublisher` | Publish filtered subscription events |
+| `MCP.Transport.Stdio` | Unix stdio transport |
+| `MCP.Transport.StreamableHTTP.Client` | Streamable HTTP client transport |
+| `MCP.Transport.StreamableHTTP.Plug` | Plug-compatible HTTP server transport |
+| `MCP.Protocol.*` | Protocol messages, types, capabilities, and revisions |
+
+Use the high-level client and handler interfaces where possible. Access the
+protocol modules directly only when implementing extensions, adapters, or a
+custom transport.

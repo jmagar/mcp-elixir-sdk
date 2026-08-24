@@ -40,14 +40,18 @@ defmodule MCP.Protocol.Messages.Resources do
     Result of `resources/list`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Resource
 
-    defstruct [:resources, :next_cursor, :meta]
+    @known_keys ["resources", "nextCursor", "_meta"]
+
+    defstruct [:resources, :next_cursor, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             resources: [Resource.t()],
             next_cursor: String.t() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -55,16 +59,24 @@ defmodule MCP.Protocol.Messages.Resources do
       %__MODULE__{
         resources: map |> Map.fetch!("resources") |> Enum.map(&Resource.from_map/1),
         next_cursor: Map.get(map, "nextCursor"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    def to_map(%__MODULE__{} = result) do
+      %{"resources" => result.resources}
+      |> maybe_put("nextCursor", result.next_cursor)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "resources/list result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{resources: struct.resources}
-        map = if struct.next_cursor, do: Map.put(map, :nextCursor, struct.next_cursor), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end
@@ -102,28 +114,40 @@ defmodule MCP.Protocol.Messages.Resources do
     Result of `resources/read`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.ResourceContents
 
-    defstruct [:contents, :meta]
+    @known_keys ["contents", "_meta"]
+
+    defstruct [:contents, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             contents: [ResourceContents.t()],
-            meta: map() | nil
+            meta: map() | nil,
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
     def from_map(map) when is_map(map) do
       %__MODULE__{
         contents: map |> Map.fetch!("contents") |> Enum.map(&ResourceContents.from_map/1),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    def to_map(%__MODULE__{} = result) do
+      %{"contents" => result.contents}
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "resources/read result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{contents: struct.contents}
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end
@@ -190,14 +214,18 @@ defmodule MCP.Protocol.Messages.Resources do
     Result of `resources/templates/list`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.ResourceTemplate
 
-    defstruct [:resource_templates, :next_cursor, :meta]
+    @known_keys ["resourceTemplates", "nextCursor", "_meta"]
+
+    defstruct [:resource_templates, :next_cursor, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             resource_templates: [ResourceTemplate.t()],
             next_cursor: String.t() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -206,16 +234,24 @@ defmodule MCP.Protocol.Messages.Resources do
         resource_templates:
           map |> Map.fetch!("resourceTemplates") |> Enum.map(&ResourceTemplate.from_map/1),
         next_cursor: Map.get(map, "nextCursor"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    def to_map(%__MODULE__{} = result) do
+      %{"resourceTemplates" => result.resource_templates}
+      |> maybe_put("nextCursor", result.next_cursor)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "resources/templates/list result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{resourceTemplates: struct.resource_templates}
-        map = if struct.next_cursor, do: Map.put(map, :nextCursor, struct.next_cursor), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end

@@ -28,9 +28,16 @@ defmodule MCP.Transport.SSE do
           optional(:retry) => non_neg_integer()
         }
 
-  @type parser :: %{buffer: binary(), max_event_bytes: pos_integer()}
+  @type parser :: %{
+          buffer: binary(),
+          chunks: [binary()],
+          buffer_bytes: non_neg_integer(),
+          tail: binary(),
+          max_event_bytes: pos_integer()
+        }
 
   @event_delimiters ["\r\n\r\n", "\n\n"]
+  @legacy_max_event_bytes 1_000_000
   @event_delimiter_prefixes ["\r", "\r\n", "\r\n\r", "\n"]
 
   @doc """
@@ -122,13 +129,14 @@ defmodule MCP.Transport.SSE do
   """
   @spec new_parser(keyword()) :: binary() | parser()
   def new_parser(opts \\ [])
+
   def new_parser([]), do: ""
 
   def new_parser(opts) when is_list(opts) do
     max_event_bytes = Keyword.fetch!(opts, :max_event_bytes)
 
     if is_integer(max_event_bytes) and max_event_bytes > 0 do
-      %{buffer: "", max_event_bytes: max_event_bytes}
+      %{buffer: "", chunks: [], buffer_bytes: 0, tail: "", max_event_bytes: max_event_bytes}
     else
       raise ArgumentError, ":max_event_bytes must be a positive integer"
     end
@@ -142,18 +150,44 @@ defmodule MCP.Transport.SSE do
   """
   @spec feed(binary(), binary()) :: {[event()], binary()}
   def feed(buffer, data) when is_binary(buffer) and is_binary(data) do
-    combined = buffer <> data
-    extract_events(combined, [])
+    case extract_bounded_events(buffer <> data, [], @legacy_max_event_bytes) do
+      {:ok, events, remainder} ->
+        {events, remainder}
+
+      {:error, :event_too_large} ->
+        raise ArgumentError,
+              "legacy SSE event exceeds #{@legacy_max_event_bytes} bytes; use new_parser(max_event_bytes: limit)"
+    end
   end
 
   @spec feed(parser(), binary()) ::
           {:ok, [event()], parser()} | {:error, :event_too_large}
-  def feed(%{buffer: buffer, max_event_bytes: limit} = parser, data) when is_binary(data) do
-    combined = buffer <> data
+  def feed(%{chunks: chunks, buffer_bytes: bytes, max_event_bytes: limit} = parser, data)
+      when is_binary(data) do
+    total_bytes = bytes + byte_size(data)
 
-    case extract_bounded_events(combined, [], limit) do
-      {:ok, events, remainder} -> {:ok, events, %{parser | buffer: remainder}}
-      {:error, :event_too_large} = error -> error
+    if delimiter_arrived?(parser.tail, data) do
+      combined = IO.iodata_to_binary([Enum.reverse(chunks), data])
+
+      case extract_bounded_events(combined, [], limit) do
+        {:ok, events, remainder} -> {:ok, events, parser_with_remainder(parser, remainder)}
+        {:error, :event_too_large} = error -> error
+      end
+    else
+      tail = trailing_bytes(parser.tail, data)
+
+      if total_bytes > limit and not pending_delimiter_prefix_size?(tail, total_bytes, limit) do
+        {:error, :event_too_large}
+      else
+        {:ok, [],
+         %{
+           parser
+           | buffer: "\0",
+             chunks: [data | chunks],
+             buffer_bytes: total_bytes,
+             tail: tail
+         }}
+      end
     end
   end
 
@@ -220,22 +254,6 @@ defmodule MCP.Transport.SSE do
 
   defp finalize_data(event), do: event
 
-  defp extract_events(buffer, events) do
-    case split_event(buffer) do
-      {:ok, event_text, rest} ->
-        case decode_event(event_text) do
-          {:ok, event} ->
-            extract_events(rest, [event | events])
-
-          {:error, _} ->
-            extract_events(rest, events)
-        end
-
-      :incomplete ->
-        {Enum.reverse(events), buffer}
-    end
-  end
-
   defp extract_bounded_events(buffer, events, limit) do
     case match_event_delimiter(buffer) do
       {position, _size} when position > limit ->
@@ -261,10 +279,6 @@ defmodule MCP.Transport.SSE do
     end
   end
 
-  defp split_event(buffer), do: split_event(buffer, match_event_delimiter(buffer))
-
-  defp split_event(_buffer, :nomatch), do: :incomplete
-
   # `:binary.match/2` returns {Position, Length}: the position is the byte size
   # of the event text, and the length is the delimiter's own size.
   defp split_event(buffer, {position, size}) do
@@ -287,5 +301,40 @@ defmodule MCP.Transport.SSE do
       event_size >= 0 and event_size <= limit and
         binary_part(buffer, event_size, prefix_size) == prefix
     end)
+  end
+
+  defp delimiter_arrived?(tail, data) do
+    :binary.match(data, @event_delimiters) != :nomatch or
+      :binary.match(tail <> leading_bytes(data), @event_delimiters) != :nomatch
+  end
+
+  defp leading_bytes(data), do: binary_part(data, 0, min(byte_size(data), 3))
+
+  defp trailing_bytes(previous_tail, data) do
+    candidate = previous_tail <> data
+    size = byte_size(candidate)
+    binary_part(candidate, max(size - 3, 0), min(size, 3))
+  end
+
+  defp pending_delimiter_prefix_size?(tail, total_bytes, limit) do
+    Enum.any?(@event_delimiter_prefixes, fn prefix ->
+      prefix_size = byte_size(prefix)
+
+      total_bytes - prefix_size <= limit and byte_size(tail) >= prefix_size and
+        binary_part(tail, byte_size(tail) - prefix_size, prefix_size) == prefix
+    end)
+  end
+
+  defp parser_with_remainder(parser, ""),
+    do: %{parser | buffer: "", chunks: [], buffer_bytes: 0, tail: ""}
+
+  defp parser_with_remainder(parser, remainder) do
+    %{
+      parser
+      | buffer: remainder,
+        chunks: [remainder],
+        buffer_bytes: byte_size(remainder),
+        tail: trailing_bytes("", remainder)
+    }
   end
 end

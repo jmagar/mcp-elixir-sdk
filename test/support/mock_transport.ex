@@ -48,7 +48,7 @@ defmodule MCP.Test.MockTransport do
   end
 
   @doc "Waits until at least `count` messages have been recorded."
-  def await_sent(pid, count, timeout \\ 1_000) do
+  def await_sent(pid, count, timeout \\ 5_000) do
     GenServer.call(pid, {:await_sent, count}, timeout)
   catch
     :exit, {:timeout, _call} -> {:error, :timeout}

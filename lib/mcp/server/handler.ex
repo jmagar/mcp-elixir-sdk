@@ -10,12 +10,24 @@ defmodule MCP.Server.Handler do
   Every request callback receives `MCP.Server.ToolContext` immediately before
   the launch configuration. All request callbacks are optional; capabilities
   are advertised only for implemented callback families.
+
+  When configuration is built, any `init/1` failure is returned as
+  `{:error, MCP.Server.Config.handler_init_error()}`. This includes ordinary
+  handler errors as well as normalized raises, throws, exits, and malformed
+  callback returns.
   """
 
   @type handler_config :: term()
   @type cursor :: String.t() | nil
   @type context :: MCP.Server.ToolContext.t()
 
+  @doc """
+  Builds immutable launch configuration once when the server configuration is
+  created.
+
+  Returned errors are wrapped by `MCP.Server.Config.build/2` in the stable
+  `{:handler_init_failed, detail}` error contract.
+  """
   @callback init(opts :: keyword()) :: {:ok, handler_config()} | {:error, term()}
 
   @callback handle_list_tools(cursor(), context(), handler_config()) ::

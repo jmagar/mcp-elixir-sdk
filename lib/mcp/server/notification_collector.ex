@@ -35,8 +35,42 @@ defmodule MCP.Server.NotificationCollector do
   @doc """
   Starts a per-request collector, linked to the calling (request) process.
   """
-  @spec start_link() :: {:ok, pid()}
-  def start_link, do: Agent.start_link(fn -> [] end)
+  @default_max_notifications 256
+  @default_max_bytes 1_000_000
+
+  @spec start_link(keyword()) :: {:ok, pid()}
+  def start_link(opts \\ []) do
+    max_notifications = Keyword.get(opts, :max_notifications, @default_max_notifications)
+    max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
+
+    unless is_integer(max_notifications) and max_notifications > 0,
+      do: raise(ArgumentError, ":max_notifications must be a positive integer")
+
+    unless is_integer(max_bytes) and max_bytes > 0,
+      do: raise(ArgumentError, ":max_bytes must be a positive integer")
+
+    Agent.start_link(fn ->
+      %{
+        notifications: [],
+        count: 0,
+        bytes: 0,
+        max_notifications: max_notifications,
+        max_bytes: max_bytes,
+        overflowed?: false
+      }
+    end)
+  end
+
+  @doc false
+  @spec configure(pid(), keyword()) :: :ok
+  def configure(collector, opts) do
+    max_notifications = Keyword.fetch!(opts, :max_notifications)
+    max_bytes = Keyword.fetch!(opts, :max_bytes)
+
+    Agent.update(collector, fn state ->
+      %{state | max_notifications: max_notifications, max_bytes: max_bytes}
+    end)
+  end
 
   @doc """
   Appends a notification to the collector, preserving emission order.
@@ -44,17 +78,39 @@ defmodule MCP.Server.NotificationCollector do
   The notification is encoded to its wire map in the caller process; only a
   trivial list prepend runs inside the collector.
   """
-  @spec push(pid(), String.t(), map()) :: :ok
+  @spec push(pid(), String.t(), map()) :: :ok | {:error, :notification_limit_reached}
   def push(collector, method, params) do
-    encoded = Jason.decode!(Jason.encode!(Notification.new(method, params)))
-    Agent.update(collector, fn acc -> [encoded | acc] end)
+    encoded_json = Jason.encode_to_iodata!(Notification.new(method, params))
+    encoded_bytes = IO.iodata_length(encoded_json)
+
+    Agent.get_and_update(collector, fn state ->
+      if state.overflowed? or state.count + 1 > state.max_notifications or
+           state.bytes + encoded_bytes > state.max_bytes do
+        {{:error, :notification_limit_reached}, %{state | overflowed?: true}}
+      else
+        encoded = encoded_json |> IO.iodata_to_binary() |> Jason.decode!()
+
+        {:ok,
+         %{
+           state
+           | notifications: [encoded | state.notifications],
+             count: state.count + 1,
+             bytes: state.bytes + encoded_bytes
+         }}
+      end
+    end)
   end
 
   @doc """
   Returns all collected notifications in emission order.
   """
   @spec drain(pid()) :: [map()]
-  def drain(collector), do: Agent.get(collector, &Enum.reverse/1)
+  def drain(collector),
+    do: Agent.get(collector, fn state -> Enum.reverse(state.notifications) end)
+
+  @doc "Returns whether the collector rejected one or more notifications."
+  @spec overflowed?(pid()) :: boolean()
+  def overflowed?(collector), do: Agent.get(collector, & &1.overflowed?)
 
   @doc """
   Stops the collector. Hygiene: the safety property holds without it (see the

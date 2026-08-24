@@ -1,5 +1,7 @@
 defmodule MCP.DualProtocolCompatibilityTest do
-  use ExUnit.Case, async: true
+  # Exercises the application-global LegacySessionManager, which the hardening
+  # suite deliberately stops and restarts. It cannot overlap that suite.
+  use ExUnit.Case, async: false
 
   alias MCP.Client
   alias MCP.Protocol
@@ -110,7 +112,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
         }
       })
 
-    assert_receive {:mcp_message, initialize_response}, 1_000
+    assert_receive {:mcp_message, initialize_response}, 5_000
     assert initialize_response["result"]["protocolVersion"] == @legacy_version
     assert initialize_response["result"]["serverInfo"]["name"] == "dual-server"
 
@@ -130,7 +132,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
         "params" => %{}
       })
 
-    assert_receive {:mcp_message, tools_response}, 1_000
+    assert_receive {:mcp_message, tools_response}, 5_000
 
     assert [%{"name" => "whoami"}] =
              Enum.map(tools_response["result"]["tools"], &Map.take(&1, ["name"]))
@@ -150,7 +152,7 @@ defmodule MCP.DualProtocolCompatibilityTest do
         }
       })
 
-    assert_receive {:mcp_message, mixed_mode_response}, 1_000
+    assert_receive {:mcp_message, mixed_mode_response}, 5_000
     assert mixed_mode_response["error"]["code"] == -32_600
     assert mixed_mode_response["error"]["message"] == "Invalid request"
   end

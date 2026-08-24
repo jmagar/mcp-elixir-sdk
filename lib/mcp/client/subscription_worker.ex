@@ -83,6 +83,10 @@ defmodule MCP.Client.SubscriptionWorker do
   end
 
   @impl true
+  def handle_call({:enqueue, _event}, _from, %__MODULE__{terminal?: true} = state) do
+    {:reply, {:error, :closed}, state}
+  end
+
   def handle_call({:enqueue, event}, _from, %__MODULE__{waiter: waiter} = state)
       when not is_nil(waiter) do
     complete_waiter(waiter, {:ok, event})

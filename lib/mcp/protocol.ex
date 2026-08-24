@@ -19,6 +19,8 @@ defmodule MCP.Protocol do
           | [json_value()]
           | %{required(String.t()) => json_value()}
 
+  @type extra_fields :: %{optional(String.t()) => json_value()}
+
   @doc """
   Returns the MCP protocol version this library targets.
   """

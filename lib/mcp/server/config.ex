@@ -43,10 +43,33 @@ defmodule MCP.Server.Config do
   @skills_extension "io.modelcontextprotocol/skills"
   @default_skills_callback_timeout 30_000
 
+  @typedoc """
+  Stable failure returned when a handler's `init/1` callback cannot produce
+  its immutable launch configuration.
+
+  A handler's ordinary `{:error, reason}` becomes
+  `{:handler_init_failed, reason}`. Raises, throws, exits, and malformed return
+  values use the tagged detail forms so callers never need to parse exception
+  text.
+  """
+  @type handler_init_error ::
+          {:handler_init_failed,
+           term()
+           | {:raised, struct()}
+           | {:thrown, term()}
+           | {:exited, term()}
+           | {:invalid_return, term()}}
+
   @doc """
   Builds the dispatch config from a handler module and options.
 
   Returns `{:ok, config}` or `{:error, reason}` if `handler.init/1` fails.
+
+  All handler failures use the stable outer shape
+  `{:error, {:handler_init_failed, detail}}`. For a handler-returned
+  `{:error, reason}`, `detail` is that reason. Abnormal failures use one of
+  `{:raised, exception}`, `{:thrown, value}`, `{:exited, reason}`, and
+  `{:invalid_return, value}`.
 
   ## Options of note
 
@@ -81,7 +104,7 @@ defmodule MCP.Server.Config do
            validate_skills_callback_timeout(
              Keyword.get(opts, :skills_callback_timeout, @default_skills_callback_timeout)
            ),
-         {:ok, handler_state} <- handler_module.init(handler_opts) do
+         {:ok, handler_state} <- init_handler(handler_module, handler_opts) do
       capabilities =
         handler_module
         |> detect_capabilities(subscriptions_enabled?(handler_module, opts))
@@ -105,6 +128,7 @@ defmodule MCP.Server.Config do
       {:error, {:invalid_cache_defaults, _value} = reason} -> {:error, reason}
       {:error, {:invalid_skills_extension, _reason} = reason} -> {:error, reason}
       {:error, {:invalid_skills_callback_timeout, _value} = reason} -> {:error, reason}
+      {:error, {:handler_init_failed, _detail} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:handler_init_failed, reason}}
     end
   end
@@ -228,6 +252,24 @@ defmodule MCP.Server.Config do
 
   defp validate_skills_callback_timeout(value),
     do: {:error, {:invalid_skills_callback_timeout, value}}
+
+  # Keep handler bugs at the configuration boundary instead of crashing the
+  # process constructing a connection. The tagged shapes are intentionally
+  # stable so callers can log or present them without parsing exception text.
+  defp init_handler(handler_module, handler_opts) do
+    result = handler_module.init(handler_opts)
+
+    case result do
+      {:ok, state} -> {:ok, state}
+      {:error, reason} -> {:error, {:handler_init_failed, reason}}
+      other -> {:error, {:handler_init_failed, {:invalid_return, other}}}
+    end
+  rescue
+    exception -> {:error, {:handler_init_failed, {:raised, exception}}}
+  catch
+    :throw, value -> {:error, {:handler_init_failed, {:thrown, value}}}
+    :exit, reason -> {:error, {:handler_init_failed, {:exited, reason}}}
+  end
 
   defp default_info, do: %{name: "mcp_elixir_sdk", version: "1.0.0"}
 end
