@@ -47,7 +47,9 @@ defmodule MCP.Protocol.Types.Skill do
   def validate(%__MODULE__{frontmatter: frontmatter, meta: meta, resources: resources} = skill)
       when is_map(frontmatter) and (is_nil(meta) or is_map(meta)) and
              (resources == :dynamic or is_list(resources)) do
-    with {:ok, root} <- skill_root(skill.uri, skill.frontmatter),
+    with :ok <- bounded_json(frontmatter, []),
+         :ok <- bounded_meta(meta, []),
+         {:ok, root} <- skill_root(skill.uri, skill.frontmatter),
          do: validate_resources(skill.resources, skill.uri, root)
   end
 
@@ -118,7 +120,8 @@ defmodule MCP.Protocol.Types.Skill do
   end
 
   defp validate_resource(resource, skill_uri, root, {:ok, seen, has_skill}) do
-    with {:ok, canonical_uri} <- contained_resource?(resource.uri, root),
+    with {:ok, _validated} <- resource |> SkillResource.to_map() |> SkillResource.decode(),
+         {:ok, canonical_uri} <- contained_resource?(resource.uri, root),
          false <- MapSet.member?(seen, canonical_uri) do
       {:cont, {:ok, MapSet.put(seen, canonical_uri), has_skill or resource.uri == skill_uri}}
     else
@@ -129,7 +132,7 @@ defmodule MCP.Protocol.Types.Skill do
 
   defp skill_root(uri, %{"name" => name, "description" => description})
        when is_binary(name) and is_binary(description) do
-    with true <- byte_size(name) <= 64 and Regex.match?(@name, name),
+    with :ok <- validate_frontmatter_fields(name, description),
          {:ok, parsed, segments} <- parse_safe_uri(uri),
          true <- List.last(segments) == "SKILL.md",
          skill_segments = Enum.drop(segments, -1),
@@ -143,6 +146,12 @@ defmodule MCP.Protocol.Types.Skill do
   end
 
   defp skill_root(_uri, _frontmatter), do: {:error, :invalid_skill_frontmatter}
+
+  defp validate_frontmatter_fields(name, description) do
+    if byte_size(name) <= 64 and byte_size(description) <= 1_024 and Regex.match?(@name, name),
+      do: :ok,
+      else: {:error, :invalid_skill_frontmatter}
+  end
 
   defp contained_resource?(uri, {scheme, authority, root_segments}) do
     with {:ok, parsed, segments} <- parse_safe_uri(uri),
@@ -194,6 +203,7 @@ defmodule MCP.Protocol.Types.Skill do
       decoded = URI.decode(encoded)
 
       if decoded in ["", ".", ".."] or String.contains?(decoded, ["/", "\\", <<0>>]) or
+           Regex.match?(~r/[\x00-\x1F\x7F]/u, decoded) or
            Regex.match?(~r/%[0-9A-Fa-f]{2}/, decoded) do
         {:halt, {:error, :unsafe_skill_uri}}
       else
@@ -214,40 +224,53 @@ defmodule MCP.Protocol.Types.Skill do
   defp bounded_json(value, opts) do
     limits = Keyword.merge(@default_limits, opts)
 
-    with {:ok, nodes, depth} <- json_shape([{value, 1}], 0, 0, limits[:max_nodes]),
+    with {:ok, nodes, depth} <-
+           json_shape([{value, 1}], 0, 0, limits[:max_nodes], limits[:max_depth]),
          true <- nodes <= limits[:max_nodes] and depth <= limits[:max_depth],
          {:ok, encoded} <- Jason.encode(value),
          true <- byte_size(encoded) <= limits[:max_bytes] do
       :ok
     else
-      false -> {:error, :skill_metadata_limit}
-      {:error, _reason} -> {:error, :invalid_skill_metadata}
+      false ->
+        {:error, :skill_metadata_limit}
+
+      {:error, reason} when reason in [:too_many_nodes, :too_deep] ->
+        {:error, :skill_metadata_limit}
+
+      {:error, _reason} ->
+        {:error, :invalid_skill_metadata}
     end
   end
 
-  defp json_shape([], nodes, depth, _max_nodes), do: {:ok, nodes, depth}
+  defp json_shape([], nodes, depth, _max_nodes, _max_depth), do: {:ok, nodes, depth}
 
-  defp json_shape(_work, nodes, _depth, max_nodes) when nodes > max_nodes,
+  defp json_shape(_work, nodes, _depth, max_nodes, _max_depth) when nodes > max_nodes,
     do: {:error, :too_many_nodes}
 
-  defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_map(value) do
+  defp json_shape([{_value, level} | _rest], _nodes, _depth, _max_nodes, max_depth)
+       when level > max_depth,
+       do: {:error, :too_deep}
+
+  defp json_shape([{value, level} | rest], nodes, depth, max_nodes, max_depth)
+       when is_map(value) do
     if Enum.all?(Map.keys(value), &is_binary/1) do
       children =
         Enum.flat_map(value, fn {key, child} -> [{key, level + 1}, {child, level + 1}] end)
 
-      json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes)
+      json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes, max_depth)
     else
       {:error, :invalid_json_object}
     end
   end
 
-  defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_list(value) do
+  defp json_shape([{value, level} | rest], nodes, depth, max_nodes, max_depth)
+       when is_list(value) do
     children = Enum.map(value, &{&1, level + 1})
-    json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes)
+    json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes, max_depth)
   end
 
-  defp json_shape([{_value, level} | rest], nodes, depth, max_nodes),
-    do: json_shape(rest, nodes + 1, max(depth, level), max_nodes)
+  defp json_shape([{_value, level} | rest], nodes, depth, max_nodes, max_depth),
+    do: json_shape(rest, nodes + 1, max(depth, level), max_nodes, max_depth)
 
   defp only_keys(map, keys) do
     if Enum.all?(Map.keys(map), &(&1 in keys)), do: :ok, else: {:error, :unknown_skill_field}

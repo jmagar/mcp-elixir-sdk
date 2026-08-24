@@ -17,6 +17,8 @@ defmodule MCP.Protocol.Messages.ResourcesDirectoryTest do
 
     assert {:error, :invalid_directory_read_params} =
              DirectoryReadParams.decode(%{"uri" => uri, "future" => true})
+
+    assert {:error, :invalid_directory_read_params} = DirectoryReadParams.decode(%{"uri" => ""})
   end
 
   test "directory result round-trips direct children and complete envelope" do

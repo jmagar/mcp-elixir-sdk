@@ -200,7 +200,7 @@ defmodule MCP.Client do
   @doc "Gets a skill by URI, including skills omitted from a partial listing."
   def get_skill(client, uri, opts \\ [])
 
-  def get_skill(client, uri, opts) when is_binary(uri) do
+  def get_skill(client, uri, opts) when is_binary(uri) and uri != "" do
     with :ok <- validate_call_options(opts) do
       GenServer.call(
         client,
@@ -215,7 +215,7 @@ defmodule MCP.Client do
   @doc "Reads one page of a skill resource directory when `directoryRead` is negotiated."
   def read_resource_directory(client, uri, opts \\ [])
 
-  def read_resource_directory(client, uri, opts) when is_binary(uri) do
+  def read_resource_directory(client, uri, opts) when is_binary(uri) and uri != "" do
     with :ok <- validate_call_options(opts) do
       {timeout, opts} = Keyword.pop(opts, :timeout)
       GenServer.call(client, {:read_resource_directory, uri, opts, timeout}, :infinity)
@@ -2460,16 +2460,36 @@ defmodule MCP.Client do
 
   defp require_skills_extension(state) do
     case skills_extension_settings(state) do
-      settings when is_map(settings) -> :ok
-      _missing -> {:error, {:extension_not_negotiated, @skills_extension}}
+      nil -> {:error, {:extension_not_negotiated, @skills_extension}}
+      settings when is_map(settings) -> validate_skills_settings(settings)
+      settings -> {:error, {:invalid_extension_capability, @skills_extension, settings}}
     end
   end
 
   defp require_directory_read(state) do
     case skills_extension_settings(state) do
-      %{"directoryRead" => true} -> :ok
-      _unsupported -> {:error, {:extension_capability_not_negotiated, "directoryRead"}}
+      %{"directoryRead" => true} = settings ->
+        validate_skills_settings(settings)
+
+      settings when is_map(settings) ->
+        with :ok <- validate_skills_settings(settings),
+             do: {:error, {:extension_capability_not_negotiated, "directoryRead"}}
+
+      nil ->
+        {:error, {:extension_not_negotiated, @skills_extension}}
+
+      settings ->
+        {:error, {:invalid_extension_capability, @skills_extension, settings}}
     end
+  end
+
+  defp validate_skills_settings(settings) do
+    if Enum.all?(settings, fn
+         {"directoryRead", value} when is_boolean(value) -> true
+         _other -> false
+       end),
+       do: :ok,
+       else: {:error, {:invalid_extension_capability, @skills_extension, settings}}
   end
 
   defp skills_extension_settings(%{server_capabilities: %{extensions: extensions}})

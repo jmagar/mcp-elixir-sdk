@@ -29,6 +29,10 @@ defmodule MCP.Protocol.Messages.SkillsTest do
     assert GetParams.to_map(params) == map
   end
 
+  test "get params reject empty URIs" do
+    assert {:error, :invalid_skills_get_params} = GetParams.decode(%{"uri" => ""})
+  end
+
   test "list result preserves envelope and lossless entries" do
     map = %{
       "resultType" => "complete",

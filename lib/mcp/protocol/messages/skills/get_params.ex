@@ -6,7 +6,7 @@ defmodule MCP.Protocol.Messages.Skills.GetParams do
   @type t :: %__MODULE__{uri: String.t(), meta: map() | nil}
 
   @spec decode(term()) :: {:ok, t()} | {:error, term()}
-  def decode(%{"uri" => uri} = map) when is_binary(uri) do
+  def decode(%{"uri" => uri} = map) when is_binary(uri) and uri != "" do
     meta = Map.get(map, "_meta")
 
     if Enum.all?(Map.keys(map), &(&1 in ["uri", "_meta"])) and

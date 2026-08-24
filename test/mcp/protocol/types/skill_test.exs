@@ -83,6 +83,7 @@ defmodule MCP.Protocol.Types.SkillTest do
           "skill://demo/../secret",
           "skill://demo/%2e%2e/secret",
           "skill://demo/%252e%252e/secret",
+          "skill://demo/%0Asecret",
           "skill://demo//secret",
           "skill://demo/a%2fb",
           "skill://demo/a%5cb",
@@ -126,6 +127,19 @@ defmodule MCP.Protocol.Types.SkillTest do
              |> Skill.decode_and_validate()
   end
 
+  test "enforces frontmatter description and direct struct resource contracts" do
+    assert {:error, :invalid_skill_frontmatter} =
+             skill()
+             |> put_in(["frontmatter", "description"], String.duplicate("x", 1_025))
+             |> Skill.decode_and_validate()
+
+    assert {:ok, decoded} = Skill.decode_and_validate(skill())
+    [resource] = decoded.resources
+
+    assert {:error, :invalid_digest} =
+             Skill.validate(%{decoded | resources: [%{resource | digest: "sha256:BAD"}]})
+  end
+
   test "bounds and validates lossless frontmatter and metadata" do
     assert {:error, :skill_metadata_limit} =
              skill()
@@ -135,6 +149,13 @@ defmodule MCP.Protocol.Types.SkillTest do
     assert {:error, :invalid_skill_metadata} =
              skill()
              |> Map.put("_meta", %{atom_key: "not JSON"})
+             |> Skill.decode()
+
+    deeply_nested = Enum.reduce(1..33, "leaf", fn _, acc -> %{"child" => acc} end)
+
+    assert {:error, :skill_metadata_limit} =
+             skill()
+             |> put_in(["frontmatter", "future"], deeply_nested)
              |> Skill.decode()
   end
 end

@@ -6,7 +6,7 @@ defmodule MCP.Protocol.Messages.Resources.DirectoryReadParams do
   @type t :: %__MODULE__{uri: String.t(), cursor: String.t() | nil, meta: map() | nil}
 
   @spec decode(term()) :: {:ok, t()} | {:error, term()}
-  def decode(%{"uri" => uri} = map) when is_binary(uri) do
+  def decode(%{"uri" => uri} = map) when is_binary(uri) and uri != "" do
     cursor = Map.get(map, "cursor")
     meta = Map.get(map, "_meta")
 

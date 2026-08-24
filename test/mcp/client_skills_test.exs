@@ -87,6 +87,21 @@ defmodule MCP.ClientSkillsTest do
     assert length(MockTransport.sent_messages(transport)) == 1
   end
 
+  test "rejects empty URIs and malformed negotiated settings locally" do
+    {client, transport} = start_client()
+    connect(client, transport, %{"directoryRead" => "yes"})
+
+    assert {:error, {:invalid_skill_uri, ""}} = Client.get_skill(client, "")
+
+    assert {:error, {:invalid_resource_directory_uri, ""}} =
+             Client.read_resource_directory(client, "")
+
+    assert {:error, {:invalid_extension_capability, @extension, _settings}} =
+             Client.list_skills(client)
+
+    assert length(MockTransport.sent_messages(transport)) == 1
+  end
+
   test "sends list/get/directory params and safely decodes typed results" do
     {client, transport} = start_client()
     connect(client, transport, %{"directoryRead" => true})
