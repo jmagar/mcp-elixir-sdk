@@ -340,10 +340,13 @@ defmodule MCP.Transport.Stdio.Process do
     # Signal identities already proven to belong to this transport before any
     # additional /proc discovery. A second scan is useful for children spawned
     # during shutdown, but it must not delay TERM for a child we already know.
-    signal_alive(identities, :sigterm, deadline)
+    signal_result = signal_alive(identities, :sigterm, deadline)
     discovered = marked_processes(marker, deadline)
     newly_discovered = discovered -- identities
-    signal_alive(newly_discovered, :sigterm, deadline)
+
+    signal_result =
+      merge_signal_result(signal_result, signal_alive(newly_discovered, :sigterm, deadline))
+
     identities = Enum.uniq(identities ++ discovered)
 
     term_deadline = min(deadline, now_ms() + 500)
@@ -354,35 +357,52 @@ defmodule MCP.Transport.Stdio.Process do
     # still be discovered, killed, and confirmed after that budget expires.
     kill_deadline = cleanup_deadline(@kill_confirmation_timeout)
     remaining = Enum.uniq(identities ++ marked_processes(marker, kill_deadline))
-    signal_alive(remaining, :sigkill, kill_deadline)
+
+    signal_result =
+      merge_signal_result(signal_result, signal_alive(remaining, :sigkill, kill_deadline))
 
     if wait_until_stopped(remaining, kill_deadline) and
          not deadline_expired?(kill_deadline) and
          marked_processes(marker, kill_deadline) == [] do
-      :ok
+      signal_result
     else
       {:error, :process_group_cleanup_failed}
     end
   end
 
   defp signal_alive(identities, signal, deadline) do
-    Enum.reduce_while(identities, :ok, fn {pid, _start_time} = identity, :ok ->
-      if deadline_expired?(deadline) do
-        {:halt, :timeout}
-      else
-        signal_if_alive(identity, signal, pid, deadline)
-        {:cont, :ok}
+    Enum.reduce_while(identities, :ok, fn identity, result ->
+      case signal_identity(identity, signal, deadline) do
+        {:cont, next_result} -> {:cont, merge_signal_result(result, next_result)}
+        {:halt, next_result} -> {:halt, merge_signal_result(result, next_result)}
       end
     end)
   end
 
+  defp signal_identity({pid, _start_time} = identity, signal, deadline) do
+    if deadline_expired?(deadline) do
+      {:halt, :timeout}
+    else
+      {:cont, signal_if_alive(identity, signal, pid, deadline)}
+    end
+  end
+
+  defp merge_signal_result(:ok, result), do: result
+  defp merge_signal_result(result, _later_result), do: result
+
   defp signal_if_alive(identity, signal, pid, deadline) do
     if process_alive?(identity) do
       Signal.dispatch(pid, signal, remaining_ms(deadline))
+      |> normalize_signal_result(identity)
     else
       :ok
     end
   end
+
+  defp normalize_signal_result({:error, _reason} = error, identity),
+    do: if(process_alive?(identity), do: error, else: :ok)
+
+  defp normalize_signal_result(result, _identity), do: result
 
   defp wait_until_stopped(identities, deadline) do
     wait_until_stopped(identities, deadline, Enum.any?(identities, &process_alive?/1))

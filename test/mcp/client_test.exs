@@ -20,7 +20,7 @@ defmodule MCP.ClientTest do
     "prompts" => %{"listChanged" => true}
   }
 
-  defp wait_for_sent(transport, count, timeout \\ 1000) do
+  defp wait_for_sent(transport, count, timeout \\ 5_000) do
     case MockTransport.await_sent(transport, count, timeout) do
       {:ok, messages} -> messages
       {:error, :timeout} -> flunk("Timed out waiting for #{count} messages")

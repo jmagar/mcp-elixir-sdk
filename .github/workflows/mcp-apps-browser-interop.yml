@@ -1,6 +1,13 @@
 name: MCP Apps browser interoperability
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/mcp-apps-browser-interop.yml"
+      - "conformance/apps_browser_*"
+      - "conformance/browser/**"
+      - "lib/mcp/apps.ex"
+      - "lib/mcp/apps/**"
   workflow_dispatch:
 
 permissions:
@@ -56,16 +63,32 @@ jobs:
             MCP_AUTO_OPEN_ENABLED=false MCP_INSPECTOR_API_TOKEN="${token}" \
             conformance/browser/node_modules/.bin/mcp-inspector --web >"${inspector_log}" 2>&1 &
           inspector_pid=$!
+          cleanup_process() {
+            local name=$1 pid=$2 status=0
+            if kill -0 "${pid}" 2>/dev/null; then
+              kill "${pid}" || return 1
+            fi
+            wait "${pid}" || status=$?
+            if [[ ${status} -ne 0 && ${status} -ne 143 ]]; then
+              echo "${name} exited unexpectedly with status ${status}" >&2
+              return 1
+            fi
+          }
           cleanup() {
-            kill "${inspector_pid}" "${server_pid}" 2>/dev/null || true
-            wait "${inspector_pid}" "${server_pid}" 2>/dev/null || true
+            local primary_status=$? cleanup_status=0
+            trap - EXIT
+            set +e
+            cleanup_process inspector "${inspector_pid}" || cleanup_status=1
+            cleanup_process server "${server_pid}" || cleanup_status=1
+            if [[ ${primary_status} -ne 0 ]]; then exit "${primary_status}"; fi
+            exit "${cleanup_status}"
           }
           trap cleanup EXIT
 
-          for url in http://127.0.0.1:43101/mcp http://127.0.0.1:6274; do
+          for url in http://127.0.0.1:43101/health http://127.0.0.1:6274; do
             ready=false
             for _ in $(seq 1 45); do
-              if curl -sS -o /dev/null "${url}"; then ready=true; break; fi
+              if curl -fsS -o /dev/null "${url}"; then ready=true; break; fi
               sleep 1
             done
             if [[ "${ready}" != true ]]; then

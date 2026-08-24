@@ -804,7 +804,19 @@ defmodule MCP.Client do
 
   def handle_info({:mcp_legacy_sse_failed, :session_expired}, state) do
     Logger.warning("MCP legacy SSE listener unavailable: :session_expired")
-    {:noreply, state}
+
+    if map_size(state.pending_requests) > 0 do
+      {:noreply, state}
+    else
+      {:noreply,
+       %{
+         state
+         | legacy_ready: false,
+           connect_result: nil,
+           server_capabilities: nil,
+           server_info: nil
+       }}
+    end
   end
 
   def handle_info({:mcp_legacy_sse_failed, reason}, state) do

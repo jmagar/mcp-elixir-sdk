@@ -185,6 +185,24 @@ defmodule MCP.ClientReviewRemediationTest do
     assert {:ok, %{"tools" => []}} = Task.await(call)
   end
 
+  test "asynchronous legacy SSE expiry invalidates cached initialization" do
+    {client, transport} = start_legacy_client()
+    connect_legacy(client, transport)
+
+    send(client, {:mcp_legacy_sse_failed, :session_expired})
+    assert {:error, :not_ready} = Client.list_tools(client)
+
+    reconnect = Task.async(fn -> Client.connect(client) end)
+    assert_receive {:client_review_sent, ^transport, reinitialize, _}, 5_000
+    assert reinitialize["method"] == "initialize"
+
+    ClientReviewTransport.inject(transport, initialize_result(reinitialize["id"]))
+    assert {:ok, _result} = Task.await(reconnect)
+
+    assert_receive {:client_review_sent, ^transport, %{"method" => "notifications/initialized"},
+                    _}
+  end
+
   test "HTTP 400 JSON-RPC -32022 response drives legacy downgrade" do
     %{url: url} = start_http_plug(downgrade?: true)
 

@@ -300,7 +300,14 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     Process.demonitor(state.legacy_sse_ref, [:flush])
     state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
     state = if reason == :session_expired, do: clear_legacy_session(state), else: state
-    send(state.owner, {:mcp_legacy_sse_failed, reason})
+
+    # A concurrent POST reports session expiry through its correlated reply,
+    # which owns the client's bounded reinitialize-and-retry path. Avoid racing
+    # that recovery with an uncorrelated stale listener notification.
+    if reason != :session_expired or map_size(state.post_tasks) == 0 do
+      send(state.owner, {:mcp_legacy_sse_failed, reason})
+    end
+
     {:noreply, state}
   end
 

@@ -121,22 +121,25 @@ defmodule MCP.Server.StateHandle do
   def consume(_store, _handle, _principal), do: :error
 
   @doc "Deletes a principal-independent handle."
-  @spec delete(Agent.agent(), String.t()) :: :ok
+  @spec delete(Agent.agent(), String.t()) :: :ok | :error
   def delete(store, handle), do: delete(store, handle, nil)
 
   @doc "Deletes a handle only when it is bound to `principal`."
-  @spec delete(Agent.agent(), String.t(), principal()) :: :ok
-  def delete(store, handle, principal) do
-    Agent.update(store, fn state ->
-      entries =
-        case resolve(state.entries, handle, principal) do
-          {:ok, _value} -> remove_entry(state, handle)
-          :error -> state
-        end
+  @spec delete(Agent.agent(), String.t(), principal()) :: :ok | :error
+  def delete(store, handle, principal) when is_binary(handle) do
+    now = now_ms()
 
-      entries
+    Agent.get_and_update(store, fn state ->
+      state = discard_expired(state, now)
+
+      case resolve(state.entries, handle, principal) do
+        {:ok, _value} -> {:ok, remove_entry(state, handle)}
+        :error -> {:error, state}
+      end
     end)
   end
+
+  def delete(_store, _handle, _principal), do: :error
 
   defp resolve(entries, handle, principal) do
     case Map.fetch(entries, handle) do
