@@ -7,18 +7,15 @@ defmodule MCP.Transport.StdioTest do
   @project_dir Path.expand("../../..", __DIR__)
 
   defp start_echo_transport do
-    mix_path = System.find_executable("mix")
+    elixir_path = System.find_executable("elixir")
+    jason_ebin = Path.join([@project_dir, "_build", "test", "lib", "jason", "ebin"])
 
     {:ok, transport} =
       Stdio.start_link(
         owner: self(),
-        command: mix_path,
-        args: ["run", "--no-start", @echo_server],
-        env: [{"MIX_ENV", "test"}, {"MIX_BUILD_PATH", Path.join(@project_dir, "_build/test")}]
+        command: elixir_path,
+        args: ["--erl", "+S 2:2", "-pa", jason_ebin, @echo_server]
       )
-
-    # Give the echo server time to compile and start
-    Process.sleep(2000)
 
     transport
   end

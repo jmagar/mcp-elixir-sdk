@@ -568,12 +568,16 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           {:cont, {:ok, headers}}
 
         {:ok, value} ->
-          {:cont, {:ok, headers ++ [{name, encode_header_value(value)}]}}
+          {:cont, {:ok, [{name, encode_header_value(value)} | headers]}}
 
         {:error, reason} ->
           {:halt, {:error, {:invalid_routing_argument, name, reason}}}
       end
     end)
+    |> case do
+      {:ok, headers} -> {:ok, Enum.reverse(headers)}
+      {:error, _reason} = error -> error
+    end
   end
 
   defp custom_routing_headers(_message, _descriptors), do: {:ok, []}

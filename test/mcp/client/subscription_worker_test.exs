@@ -97,4 +97,13 @@ defmodule MCP.Client.SubscriptionWorkerTest do
     assert SubscriptionWorker.start(supervisor, "bad", self(), queue_limit: 0) ==
              {:error, {:invalid_queue_limit, 0}}
   end
+
+  test "enqueue after completion cannot overwrite the terminal result", %{supervisor: supervisor} do
+    {:ok, worker} = SubscriptionWorker.start(supervisor, "completed", self())
+    handle = SubscriptionHandle.new("completed", worker)
+
+    SubscriptionWorker.complete(worker, :done)
+    assert SubscriptionWorker.enqueue(worker, :too_late) == {:error, :closed}
+    assert SubscriptionHandle.next(handle, 1_000) == {:ok, :done}
+  end
 end

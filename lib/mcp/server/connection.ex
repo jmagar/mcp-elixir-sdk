@@ -66,7 +66,10 @@ defmodule MCP.Server.Connection do
     :pending_client_requests,
     :request_timeout,
     :task_supervisor,
+    :max_concurrent_handlers,
+    :handler_timeout,
     subscription_queue_limit: 256,
+    handler_tasks: %{},
     subscriptions: %{}
   ]
 
@@ -164,6 +167,7 @@ defmodule MCP.Server.Connection do
 
     with :ok <- validate_subscription_options(opts),
          :ok <- validate_request_timeout(Keyword.get(opts, :request_timeout, 30_000)),
+         :ok <- validate_handler_limits(opts),
          {:ok, task_supervisor} <- Task.Supervisor.start_link(),
          {:ok, config} <- Config.build(handler_module, config_opts),
          {:ok, module, pid} <- start_transport(transport_spec) do
@@ -184,6 +188,9 @@ defmodule MCP.Server.Connection do
          pending_client_requests: %{},
          request_timeout: Keyword.get(opts, :request_timeout, 30_000),
          task_supervisor: task_supervisor,
+         max_concurrent_handlers: Keyword.get(opts, :max_concurrent_handlers, 32),
+         handler_timeout: Keyword.get(opts, :handler_timeout, 30_000),
+         handler_tasks: %{},
          subscriptions: %{}
        }}
     else
@@ -292,8 +299,19 @@ defmodule MCP.Server.Connection do
   end
 
   @impl GenServer
-  def handle_info({:mcp_message, message}, state),
-    do: message |> Protocol.decode_message() |> handle_decoded_message(state)
+  def handle_info({:mcp_message, message}, state) do
+    case Protocol.decode_message(message) do
+      {:error, %Error{} = error} ->
+        Logger.warning("MCP.Server.Connection: failed to decode message: #{inspect(error)}")
+
+        id = error_response_id(message)
+
+        send_protocol_error(state, id, error)
+
+      decoded ->
+        handle_decoded_message(decoded, state)
+    end
+  end
 
   def handle_info({:mcp_transport_closed, reason}, state) do
     {:stop, :normal, fail_pending_client_requests(state, {:transport_closed, reason})}
@@ -321,13 +339,75 @@ defmodule MCP.Server.Connection do
   end
 
   def handle_info({:legacy_inputs_failed, id, reason}, state),
-    do: send_protocol_error(state, id, Error.internal_error(%{"reason" => inspect(reason)}))
+    do:
+      send_protocol_error(
+        state,
+        id,
+        Error.internal_error(%{"reason" => legacy_input_failure(reason)})
+      )
+
+  def handle_info({:handler_result, ref, result}, state) do
+    case pop_handler_task(state, ref) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {%{kind: {:stateless, _message}}, state} ->
+        finish_stateless_handler(result, state)
+
+      {%{kind: {:legacy, request}}, state} ->
+        finish_legacy_handler(result, request, state)
+
+      {%{kind: {:subscription, request, requested}}, state} ->
+        finish_subscription_authorization(result, request, requested, state)
+    end
+  end
+
+  def handle_info({:handler_timeout, ref}, state) do
+    case pop_handler_task(state, ref) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {%{pid: pid, kind: kind}, state} ->
+        Process.exit(pid, :kill)
+        request_id = handler_request_id(kind)
+
+        if is_nil(request_id) do
+          {:noreply, state}
+        else
+          send_protocol_error(state, request_id, Error.internal_error("handler timeout"))
+        end
+    end
+  end
 
   def handle_info({:mcp_subscription_ready, id, worker}, state) do
     deliver_subscription_message(id, worker, state)
   end
 
   def handle_info({:DOWN, ref, :process, worker, reason}, state) do
+    case handler_by_monitor(state.handler_tasks, ref, worker) do
+      {handler_ref, %{kind: kind}} ->
+        {_task, state} = pop_handler_task(state, handler_ref)
+        request_id = handler_request_id(kind)
+
+        if reason == :normal or is_nil(request_id) do
+          {:noreply, state}
+        else
+          send_protocol_error(state, request_id, Error.internal_error("handler failed"))
+        end
+
+      nil ->
+        handle_non_handler_down(ref, worker, reason, state)
+    end
+  end
+
+  def handle_info(msg, state) do
+    Logger.debug("MCP.Server.Connection: unexpected message: #{inspect(msg)}")
+    {:noreply, state}
+  end
+
+  # --- Internals ---
+
+  defp handle_non_handler_down(ref, worker, reason, state) do
     case subscription_by_monitor(state.subscriptions, ref, worker) do
       nil ->
         {:noreply, remove_pending_client_request(state, ref)}
@@ -346,13 +426,6 @@ defmodule MCP.Server.Connection do
     end
   end
 
-  def handle_info(msg, state) do
-    Logger.debug("MCP.Server.Connection: unexpected message: #{inspect(msg)}")
-    {:noreply, state}
-  end
-
-  # --- Internals ---
-
   defp handle_decoded_message({:ok, %Request{method: "initialize"} = request}, state),
     do: initialize_legacy(request, state)
 
@@ -366,7 +439,7 @@ defmodule MCP.Server.Connection do
          {:ok, %Request{method: "subscriptions/listen"} = request},
          state
        ),
-       do: open_subscription(request, %{state | protocol_mode: :stateless})
+       do: open_subscription(request, state)
 
   defp handle_decoded_message({:ok, %Request{} = request}, state),
     do: dispatch_versioned(request, state)
@@ -396,11 +469,6 @@ defmodule MCP.Server.Connection do
   defp handle_decoded_message({:ok, %Response{} = response}, state),
     do: handle_client_response(response, state)
 
-  defp handle_decoded_message({:error, error}, state) do
-    Logger.warning("MCP.Server.Connection: failed to decode message: #{inspect(error)}")
-    {:noreply, state}
-  end
-
   defp handle_client_response(%Response{id: id} = response, state) do
     case Map.pop(state.pending_client_requests, id) do
       {{from, timeout_ref, monitor_ref}, pending} ->
@@ -421,16 +489,7 @@ defmodule MCP.Server.Connection do
     if state.legacy_status == :waiting do
       case LegacyDispatch.initialize(request, state.config) do
         {:ok, response, initialize} ->
-          state.transport_module.send_message(state.transport_pid, response)
-
-          {:noreply,
-           %{
-             state
-             | protocol_mode: :legacy,
-               legacy_status: :initialized,
-               legacy_client_info: initialize.client_info,
-               legacy_client_capabilities: initialize.capabilities
-           }}
+          finish_legacy_initialization(state, response, initialize)
 
         {:error, response} ->
           state.transport_module.send_message(state.transport_pid, response)
@@ -443,6 +502,23 @@ defmodule MCP.Server.Connection do
 
   defp initialize_legacy(%Request{id: id}, state),
     do: send_protocol_error(state, id, Error.invalid_request("Protocol mode already selected"))
+
+  defp finish_legacy_initialization(state, response, initialize) do
+    case state.transport_module.send_message(state.transport_pid, response) do
+      :ok ->
+        {:noreply,
+         %{
+           state
+           | protocol_mode: :legacy,
+             legacy_status: :initialized,
+             legacy_client_info: initialize.client_info,
+             legacy_client_capabilities: initialize.capabilities
+         }}
+
+      {:error, reason} ->
+        {:stop, {:transport_send_failed, reason}, state}
+    end
+  end
 
   defp initialize_legacy_notification(
          %{protocol_mode: :legacy, legacy_status: :initialized} = state
@@ -462,8 +538,12 @@ defmodule MCP.Server.Connection do
     end
   end
 
-  defp dispatch_versioned(request, state),
-    do: dispatch(request, request.id, %{state | protocol_mode: :stateless})
+  defp dispatch_versioned(request, state) do
+    case Dispatch.validate_request(request.params, state.config) do
+      :ok -> dispatch(request, request.id, %{state | protocol_mode: :stateless})
+      {:error, _error} -> dispatch(request, request.id, state)
+    end
+  end
 
   defp dispatch_legacy(%Request{id: id}, %{legacy_status: status} = state)
        when status != :ready,
@@ -477,10 +557,18 @@ defmodule MCP.Server.Connection do
       reply_sink: reply_sink(state, request.id)
     }
 
-    case LegacyDispatch.dispatch(request, context, state.config) do
+    start_handler_task(state, {:legacy, request}, fn ->
+      LegacyDispatch.dispatch(request, context, state.config)
+    end)
+  end
+
+  defp finish_legacy_handler(result, request, state) do
+    case result do
       {:reply, response} ->
-        state.transport_module.send_message(state.transport_pid, response)
-        {:noreply, update_legacy_request_state(state, request, response)}
+        case state.transport_module.send_message(state.transport_pid, response) do
+          :ok -> {:noreply, update_legacy_request_state(state, request, response)}
+          {:error, reason} -> {:stop, {:transport_send_failed, reason}, state}
+        end
 
       {:input_required, requests, request_state} ->
         case resolve_legacy_inputs(
@@ -510,7 +598,7 @@ defmodule MCP.Server.Connection do
               request.id,
               Error.internal_error(%{
                 "message" => "Unable to start legacy input request",
-                "reason" => inspect(reason)
+                "reason" => legacy_input_failure(reason)
               })
             )
         end
@@ -653,6 +741,15 @@ defmodule MCP.Server.Connection do
       else: {:error, {:invalid_request_timeout, timeout}}
   end
 
+  defp validate_handler_limits(opts) do
+    max_concurrent = Keyword.get(opts, :max_concurrent_handlers, 32)
+    timeout = Keyword.get(opts, :handler_timeout, 30_000)
+
+    if is_integer(max_concurrent) and max_concurrent > 0 and is_integer(timeout) and timeout > 0,
+      do: :ok,
+      else: {:error, :invalid_handler_limits}
+  end
+
   defp require_client_capability(
          method,
          params,
@@ -721,10 +818,18 @@ defmodule MCP.Server.Connection do
       reply_sink: reply_sink(state, request_id)
     }
 
-    case Dispatch.dispatch(message, ctx, state.config) do
+    start_handler_task(state, {:stateless, message}, fn ->
+      Dispatch.dispatch(message, ctx, state.config)
+    end)
+  end
+
+  defp finish_stateless_handler(result, state) do
+    case result do
       {:reply, response} ->
-        state.transport_module.send_message(state.transport_pid, response)
-        {:noreply, state}
+        case state.transport_module.send_message(state.transport_pid, response) do
+          :ok -> {:noreply, state}
+          {:error, reason} -> {:stop, {:transport_send_failed, reason}, state}
+        end
 
       :noreply ->
         {:noreply, state}
@@ -734,24 +839,68 @@ defmodule MCP.Server.Connection do
   defp open_subscription(%Request{id: id, params: params}, state) do
     with :ok <- Dispatch.validate_request(params, state.config),
          :ok <- subscription_configuration(state),
-         false <- Map.has_key?(state.subscriptions, id),
-         {:ok, requested} <- parse_subscription_filter(params),
-         {:ok, honored} <- authorize_subscription(id, params, requested, state),
-         {:ok, worker} <- start_subscription_worker(id, requested, honored, state) do
-      monitor_ref = Process.monitor(worker)
-      subscription = %{worker: worker, monitor_ref: monitor_ref}
-
-      {:noreply, %{state | subscriptions: Map.put(state.subscriptions, id, subscription)}}
+         {:ok, requested} <- parse_subscription_filter(params) do
+      begin_subscription_authorization(state, id, params, requested)
     else
-      true ->
-        send_protocol_error(state, id, Error.invalid_request(:duplicate_request_id))
-
       {:error, %Error{} = error} ->
         send_protocol_error(state, id, error)
 
       {:error, reason} ->
-        send_protocol_error(state, id, Error.internal_error(inspect(reason)))
+        Logger.error("MCP subscription authorization failed: #{inspect(reason)}")
+        send_protocol_error(state, id, Error.internal_error("subscription authorization failed"))
     end
+  end
+
+  defp begin_subscription_authorization(state, id, params, requested) do
+    if duplicate_subscription?(state, id) do
+      send_protocol_error(state, id, Error.invalid_request(:duplicate_request_id))
+    else
+      state = %{state | protocol_mode: :stateless}
+
+      start_handler_task(
+        state,
+        {:subscription, %Request{id: id, params: params}, requested},
+        fn -> authorize_subscription(id, params, requested, state) end
+      )
+    end
+  end
+
+  defp duplicate_subscription?(state, id) do
+    Map.has_key?(state.subscriptions, id) or
+      Enum.any?(state.handler_tasks, fn {_ref, task} ->
+        match?({:subscription, %Request{id: ^id}, _requested}, task.kind)
+      end)
+  end
+
+  defp finish_subscription_authorization(
+         {:ok, %SubscriptionFilter{} = honored},
+         %Request{id: id},
+         requested,
+         state
+       ) do
+    case start_subscription_worker(id, requested, honored, state) do
+      {:ok, worker} ->
+        monitor_ref = Process.monitor(worker)
+        subscription = %{worker: worker, monitor_ref: monitor_ref}
+
+        {:noreply,
+         %{
+           state
+           | subscriptions: Map.put(state.subscriptions, id, subscription)
+         }}
+
+      {:error, reason} ->
+        Logger.error("MCP subscription worker failed to start: #{inspect(reason)}")
+        send_protocol_error(state, id, Error.internal_error("subscription unavailable"))
+    end
+  end
+
+  defp finish_subscription_authorization({:error, %Error{} = error}, %Request{id: id}, _, state),
+    do: send_protocol_error(state, id, error)
+
+  defp finish_subscription_authorization({:error, reason}, %Request{id: id}, _, state) do
+    Logger.error("MCP subscription authorization failed: #{inspect(reason)}")
+    send_protocol_error(state, id, Error.internal_error("subscription authorization failed"))
   end
 
   defp subscription_configuration(%{
@@ -934,11 +1083,14 @@ defmodule MCP.Server.Connection do
   end
 
   defp subscription_exit_reason(:queue_overflow), do: "subscription_queue_overflow"
-  defp subscription_exit_reason(reason), do: inspect(reason)
+  defp subscription_exit_reason(_reason), do: "subscription_closed_abruptly"
 
   defp subscription_delivery_error(:closed), do: "subscription_closed_abruptly"
   defp subscription_delivery_error({:noproc, _call}), do: "subscription_closed_abruptly"
-  defp subscription_delivery_error(reason), do: inspect(reason)
+  defp subscription_delivery_error(_reason), do: "subscription_delivery_failed"
+
+  defp legacy_input_failure(:timeout), do: "legacy_input_timeout"
+  defp legacy_input_failure(_reason), do: "legacy_input_failed"
 
   defp close_all_subscriptions(state) do
     Enum.reduce(Map.keys(state.subscriptions), state, fn id, acc ->
@@ -976,6 +1128,85 @@ defmodule MCP.Server.Connection do
   end
 
   defp encode(struct), do: Jason.decode!(Jason.encode!(struct))
+
+  defp valid_error_response_id?(id), do: is_integer(id) or is_binary(id)
+
+  @dialyzer {:nowarn_function, error_response_id: 1}
+  defp error_response_id(message) when is_map(message) do
+    id = Map.get(message, "id")
+    if valid_error_response_id?(id), do: id, else: nil
+  end
+
+  defp error_response_id(_message), do: nil
+
+  defp start_handler_task(state, kind, fun) do
+    if map_size(state.handler_tasks) >= state.max_concurrent_handlers do
+      reject_handler_at_capacity(state, kind)
+    else
+      do_start_handler_task(state, kind, fun)
+    end
+  end
+
+  defp do_start_handler_task(state, kind, fun) do
+    owner = self()
+    ref = make_ref()
+
+    result =
+      Task.Supervisor.start_child(state.task_supervisor, fn ->
+        result = fun.()
+        send(owner, {:handler_result, ref, result})
+      end)
+
+    finish_start_handler_task(result, state, kind, ref, owner)
+  end
+
+  defp finish_start_handler_task({:ok, pid}, state, kind, ref, owner) do
+    monitor_ref = Process.monitor(pid)
+    timer_ref = Process.send_after(owner, {:handler_timeout, ref}, state.handler_timeout)
+    task = %{pid: pid, monitor_ref: monitor_ref, timer_ref: timer_ref, kind: kind}
+    {:noreply, put_in(state.handler_tasks[ref], task)}
+  end
+
+  defp finish_start_handler_task({:error, reason}, state, kind, _ref, _owner) do
+    Logger.error("MCP handler task failed to start: #{inspect(reason)}")
+    reject_unavailable_handler(state, kind)
+  end
+
+  defp reject_handler_at_capacity(state, kind) do
+    case handler_request_id(kind) do
+      nil -> {:noreply, state}
+      id -> send_protocol_error(state, id, Error.internal_error("handler capacity reached"))
+    end
+  end
+
+  defp reject_unavailable_handler(state, kind) do
+    case handler_request_id(kind) do
+      nil -> {:noreply, state}
+      id -> send_protocol_error(state, id, Error.internal_error("handler unavailable"))
+    end
+  end
+
+  defp handler_request_id({:subscription, %Request{id: id}, _requested}), do: id
+  defp handler_request_id({_era, %Request{id: id}}), do: id
+  defp handler_request_id(_kind), do: nil
+
+  defp pop_handler_task(state, ref) do
+    case Map.pop(state.handler_tasks, ref) do
+      {nil, _tasks} ->
+        {nil, state}
+
+      {task, tasks} ->
+        Process.cancel_timer(task.timer_ref)
+        Process.demonitor(task.monitor_ref, [:flush])
+        {task, %{state | handler_tasks: tasks}}
+    end
+  end
+
+  defp handler_by_monitor(tasks, monitor_ref, pid) do
+    Enum.find(tasks, fn {_ref, task} ->
+      task.monitor_ref == monitor_ref and task.pid == pid
+    end)
+  end
 
   defp extract_meta(%Request{params: params}) when is_map(params), do: Map.get(params, "_meta")
   defp extract_meta(_), do: nil

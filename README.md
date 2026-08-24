@@ -42,8 +42,19 @@ implementation tracks the pinned official schema revision documented in
 No production installation coordinate is currently advertised. The package
 metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
 exist until the branch-finishing and publication workflows complete. Evaluation
-may use an immutable Git SHA, but no published production coordinate is
-currently advertised.
+may use the current immutable `main` SHA:
+
+```elixir
+def deps do
+  [
+    {:mcp_elixir_sdk,
+     git: "https://github.com/jmagar/mcp-elixir-sdk.git",
+     ref: "1349fd74e896b871438420762f289211923230ec"}
+  ]
+end
+```
+
+No published production coordinate is currently advertised.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
 is supported across `>= 0.5.0 and < 0.8.0`.
@@ -193,6 +204,8 @@ end
 The callback forms are documented in `MCP.Server.Handler`. A handler may
 return `{:input_required, requests_map, request_state}` from `handle_call_tool/4`;
 the client resolves the requests and retries with a new JSON-RPC id.
+The complete [quick-start handler](examples/quickstart_server.exs) is compiled
+and exercised by the test suite.
 
 ### Skills extension security boundary
 

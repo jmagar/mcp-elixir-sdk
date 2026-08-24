@@ -3,6 +3,8 @@ defmodule MCP.Transport.Stdio.Process do
 
   use GenServer
 
+  @kill_confirmation_timeout 1_000
+
   defstruct [
     :owner,
     :exec_pid,
@@ -344,12 +346,17 @@ defmodule MCP.Transport.Stdio.Process do
 
     term_deadline = min(deadline, now_ms() + 500)
     _ = wait_until_stopped(identities, term_deadline)
-    remaining = Enum.uniq(identities ++ marked_processes(marker, deadline))
-    signal_alive(remaining, :sigkill, deadline)
 
-    if wait_until_stopped(remaining, deadline) and
-         not deadline_expired?(deadline) and
-         marked_processes(marker, deadline) == [] do
+    # `shutdown_timeout` is the graceful TERM budget. Forced cleanup needs a
+    # fresh bounded window so a descendant spawned by a late TERM handler can
+    # still be discovered, killed, and confirmed after that budget expires.
+    kill_deadline = cleanup_deadline(@kill_confirmation_timeout)
+    remaining = Enum.uniq(identities ++ marked_processes(marker, kill_deadline))
+    signal_alive(remaining, :sigkill, kill_deadline)
+
+    if wait_until_stopped(remaining, kill_deadline) and
+         not deadline_expired?(kill_deadline) and
+         marked_processes(marker, kill_deadline) == [] do
       :ok
     else
       {:error, :process_group_cleanup_failed}

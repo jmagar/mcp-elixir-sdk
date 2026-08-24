@@ -32,4 +32,67 @@ defmodule MCP.Server.StateHandleTest do
     assert :ok = StateHandle.delete(store, handle)
     assert StateHandle.fetch(store, handle) == :error
   end
+
+  test "principal-bound handles reject a different principal", %{store: store} do
+    handle = StateHandle.mint(store, :secret, %{subject: "alice"})
+
+    assert StateHandle.fetch(store, handle, %{subject: "alice"}) == {:ok, :secret}
+    assert StateHandle.fetch(store, handle, %{subject: "mallory"}) == :error
+    assert StateHandle.fetch(store, handle) == :error
+
+    assert :ok = StateHandle.delete(store, handle)
+    assert StateHandle.fetch(store, handle, %{subject: "alice"}) == {:ok, :secret}
+
+    assert :ok = StateHandle.delete(store, handle, %{subject: "alice"})
+    assert StateHandle.fetch(store, handle, %{subject: "alice"}) == :error
+  end
+
+  test "consume has exactly one winner under concurrency", %{store: store} do
+    handle = StateHandle.mint(store, :once, :alice)
+
+    results =
+      1..20
+      |> Task.async_stream(fn _ -> StateHandle.consume(store, handle, :alice) end,
+        ordered: false,
+        timeout: :infinity
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+
+    assert Enum.count(results, &(&1 == {:ok, :once})) == 1
+    assert Enum.count(results, &(&1 == :error)) == 19
+  end
+
+  test "handles expire", _context do
+    {:ok, store} = StateHandle.start_link(ttl_ms: 1)
+    handle = StateHandle.mint(store, :short_lived)
+    Process.sleep(2)
+    assert StateHandle.fetch(store, handle) == :error
+  end
+
+  test "capacity evicts the oldest live handle", _context do
+    {:ok, store} = StateHandle.start_link(max_entries: 1)
+    first = StateHandle.mint(store, :first)
+    second = StateHandle.mint(store, :second)
+
+    assert StateHandle.fetch(store, first) == :error
+    assert StateHandle.fetch(store, second) == {:ok, :second}
+  end
+
+  test "expiry and insertion indexes stay synchronized after removal", %{store: store} do
+    handle = StateHandle.mint(store, :value, :alice)
+    assert StateHandle.consume(store, handle, :alice) == {:ok, :value}
+
+    state = Agent.get(store, & &1)
+    assert state.entries == %{}
+    assert :gb_sets.is_empty(state.expirations)
+    assert :gb_sets.is_empty(state.insertion_order)
+  end
+
+  test "rejects invalid bounds" do
+    assert StateHandle.start_link(max_entries: 0) ==
+             {:error, {:invalid_option, :max_entries, 0}}
+
+    assert StateHandle.start_link(ttl_ms: :infinity) ==
+             {:error, {:invalid_option, :ttl_ms, :infinity}}
+  end
 end

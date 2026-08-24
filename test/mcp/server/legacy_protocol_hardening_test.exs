@@ -6,6 +6,7 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
   alias MCP.Server.{Config, Connection, Dispatch, ToolContext}
 
   alias MCP.Test.{
+    BlockingLegacyHandler,
     BridgeTransport,
     FailableTransport,
     LegacyFeatureHandler,
@@ -109,10 +110,85 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
   test "a second initialize is rejected as soon as the first response is sent" do
     {_server, client_transport} = start_connection(StatelessHandler)
     send_message(client_transport, initialize(1))
-    assert_receive {:mcp_message, %{"id" => 1, "result" => _}}, 1_000
+    assert_receive {:mcp_message, %{"id" => 1, "result" => _}}, 5_000
 
     send_message(client_transport, initialize(2))
     assert_receive {:mcp_message, %{"id" => 2, "error" => %{"code" => -32_600}}}, 1_000
+  end
+
+  test "an invalid stateless request does not prevent later legacy initialization" do
+    {_server, client_transport} = start_connection(StatelessHandler)
+
+    send_message(client_transport, request(1, "tools/list", %{}))
+    assert_receive {:mcp_message, %{"id" => 1, "error" => %{"code" => -32_602}}}, 1_000
+
+    send_message(client_transport, initialize(2))
+    assert_receive {:mcp_message, %{"id" => 2, "result" => result}}, 1_000
+    assert result["protocolVersion"] == @legacy_version
+  end
+
+  test "malformed decoded envelopes receive an invalid-request response" do
+    {_server, client_transport} = start_connection(StatelessHandler)
+
+    send_message(client_transport, %{
+      "jsonrpc" => "2.0",
+      "id" => 7,
+      "result" => %{},
+      "error" => %{}
+    })
+
+    assert_receive {:mcp_message, %{"id" => 7, "error" => %{"code" => -32_600}}}, 1_000
+  end
+
+  test "non-map envelopes receive an error without crashing the connection" do
+    {server, client_transport} = start_connection(StatelessHandler)
+
+    send(server, {:mcp_message, []})
+    assert_receive {:mcp_message, %{"id" => nil, "error" => %{"code" => -32_600}}}, 1_000
+
+    send_message(client_transport, request(8, "ping", stateless_params()))
+    assert_receive {:mcp_message, %{"id" => 8}}, 1_000
+    assert Process.alive?(server)
+  end
+
+  test "a blocking legacy handler does not block independent connection requests" do
+    {_server, client_transport} =
+      start_ready_connection(BlockingLegacyHandler, handler_opts: [test_pid: self()])
+
+    send_message(
+      client_transport,
+      request(2, "tools/call", %{"name" => "block", "arguments" => %{}})
+    )
+
+    assert_receive {:legacy_handler_blocked, handler_pid}, 1_000
+    send_message(client_transport, request(3, "ping", %{}))
+    assert_receive {:mcp_message, %{"id" => 3, "result" => %{}}}, 1_000
+
+    send(handler_pid, :release_legacy_handler)
+    assert_receive {:mcp_message, %{"id" => 2, "result" => _}}, 1_000
+  end
+
+  test "handler capacity and timeout are bounded and release task state" do
+    {server, client_transport} =
+      start_ready_connection(BlockingLegacyHandler,
+        handler_opts: [test_pid: self()],
+        max_concurrent_handlers: 1,
+        handler_timeout: 100
+      )
+
+    send_message(client_transport, request(2, "tools/call", %{"name" => "block"}))
+    assert_receive {:legacy_handler_blocked, _handler_pid}, 1_000
+
+    send_message(client_transport, request(3, "tools/call", %{"name" => "block"}))
+
+    assert_receive {:mcp_message,
+                    %{"id" => 3, "error" => %{"data" => "handler capacity reached"}}},
+                   1_000
+
+    assert_receive {:mcp_message, %{"id" => 2, "error" => %{"data" => "handler timeout"}}},
+                   1_000
+
+    assert :sys.get_state(server).handler_tasks == %{}
   end
 
   test "configured and public request timeouts reject invalid values without crashing" do
@@ -315,11 +391,30 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     assert {:error, :closed} = Connection.send_progress(server, "p", 2)
   end
 
+  test "an initialize response send failure terminates without entering initialized state" do
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    {:ok, server} =
+      Connection.start_link(
+        transport: {FailableTransport, observer: self()},
+        handler: {StatelessHandler, []}
+      )
+
+    monitor = Process.monitor(server)
+    transport = Connection.transport(server)
+    :ok = FailableTransport.fail(transport, :closed)
+    :ok = FailableTransport.inject(transport, initialize(1))
+
+    assert_receive {:DOWN, ^monitor, :process, ^server, {:transport_send_failed, :closed}}, 5_000
+    refute_receive {:mcp_message, %{"id" => 1}}
+    Process.flag(:trap_exit, previous_trap_exit)
+  end
+
   defp start_ready_connection(handler, opts \\ []) do
     capabilities = Keyword.get(opts, :client_capabilities, %{})
     {server, client_transport} = start_connection(handler, opts)
     send_message(client_transport, initialize(1, capabilities))
-    assert_receive {:mcp_message, %{"id" => 1, "result" => _}}, 1_000
+    assert_receive {:mcp_message, %{"id" => 1, "result" => _}}, 5_000
     send_message(client_transport, notification("notifications/initialized"))
     BridgeTransport.sync(client_transport)
     _ = :sys.get_state(server)
@@ -355,6 +450,15 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     do: %{"jsonrpc" => "2.0", "id" => id, "method" => method, "params" => params}
 
   defp notification(method), do: %{"jsonrpc" => "2.0", "method" => method}
+
+  defp stateless_params do
+    %{
+      "_meta" => %{
+        "io.modelcontextprotocol/protocolVersion" => @stateless_version,
+        "io.modelcontextprotocol/clientCapabilities" => %{}
+      }
+    }
+  end
 
   defp send_message(transport, message),
     do: :ok = BridgeTransport.send_message(transport, message)

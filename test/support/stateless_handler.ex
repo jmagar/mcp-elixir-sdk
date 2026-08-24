@@ -95,6 +95,17 @@ defmodule MCP.Test.StatelessHandler do
     raise "boom after emitting a notification"
   end
 
+  def handle_call_tool("emit_many", %{"count" => count}, %ToolContext{} = ctx, _state)
+      when is_integer(count) and count >= 0 do
+    if count > 0 do
+      Enum.each(1..count, fn index ->
+        ToolContext.log(ctx, "info", %{"index" => index})
+      end)
+    end
+
+    {:ok, [%{"type" => "text", "text" => "emitted"}]}
+  end
+
   def handle_call_tool(_name, _args, %ToolContext{}, _config) do
     {:error, -32_602, "unknown tool"}
   end

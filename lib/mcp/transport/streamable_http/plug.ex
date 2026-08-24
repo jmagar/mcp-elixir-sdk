@@ -187,7 +187,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     :allowed_hosts,
     :allowed_origins,
     :config,
-    :collector_start
+    :collector_start,
+    :max_notifications_per_request,
+    :max_notification_bytes
   ]
 
   @localhost_patterns ~w(localhost 127.0.0.1 ::1)
@@ -214,6 +216,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     subscription_queue_limit = Keyword.get(opts, :subscription_queue_limit, 256)
     subscription_keepalive_interval = Keyword.get(opts, :subscription_keepalive_interval, 15_000)
     max_body_length = Keyword.get(opts, :max_body_length, 8_000_000)
+    max_notifications_per_request = Keyword.get(opts, :max_notifications_per_request, 256)
+    max_notification_bytes = Keyword.get(opts, :max_notification_bytes, 1_000_000)
     legacy_sse_timeout = Keyword.get(opts, :legacy_sse_timeout, 25_000)
     legacy_session_manager = Keyword.get(opts, :legacy_session_manager, LegacySessionManager)
     legacy_endpoint_id = Keyword.get(opts, :legacy_endpoint_id, UUID.uuid4())
@@ -240,6 +244,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     unless is_integer(max_body_length) and max_body_length > 0 do
       raise ArgumentError, ":max_body_length must be a positive integer"
     end
+
+    validate_positive_integer!(max_notifications_per_request, :max_notifications_per_request)
+    validate_positive_integer!(max_notification_bytes, :max_notification_bytes)
 
     unless is_integer(legacy_sse_timeout) and legacy_sse_timeout > 0 do
       raise ArgumentError, ":legacy_sse_timeout must be a positive integer"
@@ -318,7 +325,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       allowed_hosts: allowed_hosts,
       allowed_origins: allowed_origins,
       config: dispatch_config,
-      collector_start: collector_start
+      collector_start: collector_start,
+      max_notifications_per_request: max_notifications_per_request,
+      max_notification_bytes: max_notification_bytes
     }
   end
 
@@ -372,8 +381,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           "request body exceeds configured maximum"
         )
 
-      {:error, %Jason.DecodeError{} = e} ->
-        send_json_error(conn, 400, Error.parse_error_code(), "Parse error", inspect(e))
+      {:error, %Jason.DecodeError{}} ->
+        send_json_error(conn, 400, Error.parse_error_code(), "Parse error", "invalid_json")
 
       {:error, reason} ->
         send_json_error(
@@ -381,7 +390,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           400,
           Error.invalid_request_code(),
           "Invalid request",
-          inspect(reason)
+          invalid_request_detail(reason)
         )
     end
   end
@@ -457,7 +466,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           400,
           Error.invalid_request_code(),
           "Invalid request",
-          inspect(reason),
+          invalid_request_detail(reason),
           Map.get(message, "id")
         )
     end
@@ -523,7 +532,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           400,
           Error.invalid_request_code(),
           "Invalid request",
-          inspect(reason),
+          invalid_request_detail(reason),
           Map.get(message, "id")
         )
     end
@@ -533,8 +542,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     session_id = first_header(conn, "mcp-session-id")
 
     with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
-         {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, session} <- legacy_session(config, session_id, identity),
+         {:ok, handler_opts} <- resolve_handler_options(config.handler_opts, conn),
+         identity = Keyword.get(handler_opts, :identity),
+         {:ok, session} <- legacy_session(config, session_id, identity, handler_opts),
          :ok <- validate_session_protocol(session, presented_version) do
       dispatch_legacy_http(conn, config, message, session)
     else
@@ -570,7 +580,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           400,
           Error.invalid_request_code(),
           "Invalid request",
-          inspect(reason),
+          invalid_request_detail(reason),
           Map.get(message, "id")
         )
     end
@@ -580,8 +590,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     session_id = first_header(conn, "mcp-session-id")
 
     with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
-         {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, session} <- legacy_session(config, session_id, identity),
+         {:ok, handler_opts} <- resolve_handler_options(config.handler_opts, conn),
+         identity = Keyword.get(handler_opts, :identity),
+         {:ok, session} <- legacy_session(config, session_id, identity, handler_opts),
          :ok <- validate_session_protocol(session, presented_version),
          :ok <- delete_legacy_session(config, session_id) do
       Plug.Conn.send_resp(conn, 200, "")
@@ -637,14 +648,15 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     send_json_error(conn, 503, Error.internal_error_code(), "Session manager unavailable", nil)
   end
 
-  defp legacy_session(_config, nil, _identity), do: :error
+  defp legacy_session(_config, nil, _identity, _authorization_context), do: :error
 
-  defp legacy_session(config, session_id, identity) do
+  defp legacy_session(config, session_id, identity, authorization_context) do
     case LegacySessionManager.lookup(
            config.legacy_session_manager,
            config.legacy_endpoint_id,
            session_id,
-           identity
+           identity,
+           authorization_context
          ) do
       {:ok, session} -> {:ok, session}
       {:error, :identity_mismatch} -> {:identity_error, :identity_mismatch}
@@ -693,7 +705,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       idle_timeout: config.legacy_session_idle_timeout,
       absolute_timeout: config.legacy_session_absolute_timeout,
       endpoint_owner: config.legacy_endpoint_owner,
-      protocol_version: protocol_version
+      protocol_version: protocol_version,
+      authorization_context: handler_opts
     ]
 
     LegacySessionManager.create(
@@ -761,10 +774,19 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   # Starts the per-request notification collector, mapping a start failure to a
   # controlled error rather than crashing on an unguarded match.
-  defp start_collector(start_fun) do
+  defp start_collector(start_fun, config) do
     case start_fun.() do
-      {:ok, _collector} = ok -> ok
-      {:error, reason} -> {:error, {:collector_start_failed, reason}}
+      {:ok, collector} = ok ->
+        :ok =
+          NotificationCollector.configure(collector,
+            max_notifications: config.max_notifications_per_request,
+            max_bytes: config.max_notification_bytes
+          )
+
+        ok
+
+      {:error, reason} ->
+        {:error, {:collector_start_failed, reason}}
     end
   end
 
@@ -786,7 +808,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp dispatch(conn, config, decoded, raw_message, identity) do
-    case start_collector(config.collector_start) do
+    case start_collector(config.collector_start, config) do
       {:ok, collector} ->
         dispatch(conn, config, decoded, raw_message, identity, collector)
 
@@ -824,7 +846,18 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     try do
       case Dispatch.dispatch(decoded, ctx, config.config) do
         {:reply, response} ->
-          send_response(conn, config, response, NotificationCollector.drain(collector))
+          if NotificationCollector.overflowed?(collector) do
+            send_json_error(
+              conn,
+              500,
+              Error.internal_error_code(),
+              "Internal error",
+              "notification limit reached",
+              Map.get(raw_message, "id")
+            )
+          else
+            send_response(conn, config, response, NotificationCollector.drain(collector))
+          end
 
         :noreply ->
           Plug.Conn.send_resp(conn, 202, "")
@@ -849,8 +882,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   defp handle_legacy_get(conn, config, session_id) do
     with {:ok, presented_version} <- validate_legacy_protocol_header(conn),
-         {:ok, identity} <- resolve_identity(config.handler_opts, conn),
-         {:ok, session} <- legacy_session(config, session_id, identity),
+         {:ok, handler_opts} <- resolve_handler_options(config.handler_opts, conn),
+         identity = Keyword.get(handler_opts, :identity),
+         {:ok, session} <- legacy_session(config, session_id, identity, handler_opts),
          :ok <- validate_session_protocol(session, presented_version) do
       case LegacySession.next_event(session, config.legacy_sse_timeout) do
         {:ok, message} ->
@@ -862,8 +896,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         {:error, :closed} ->
           send_json_error(conn, 404, -32_000, "Session closed", session_id)
 
-        {:error, reason} ->
-          send_json_error(conn, 503, -32_603, "Session unavailable", inspect(reason))
+        {:error, _reason} ->
+          send_json_error(conn, 503, -32_603, "Session unavailable", "session_unavailable")
       end
     else
       {:error, {:factory_failed, reason}} -> legacy_identity_resolution_error(conn, reason)
@@ -1121,12 +1155,14 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         send_json_error(conn, 400, error.code, error.message, inspect(error.data), id)
 
       {:error, reason} ->
+        Logger.error("MCP subscription authorization failed: #{inspect(reason)}")
+
         send_json_error(
           conn,
           500,
           Error.internal_error_code(),
           "Internal error",
-          inspect(reason),
+          "subscription authorization failed",
           id
         )
     end
@@ -1154,7 +1190,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     module = config.config.handler_module
 
     if function_exported?(module, :handle_listen_subscriptions, 3) do
-      with {:ok, collector} <- start_collector(config.collector_start) do
+      with {:ok, collector} <- start_collector(config.collector_start, config) do
         context = %ToolContext{
           request_id: id,
           meta: Map.get(params || %{}, "_meta"),
@@ -1437,6 +1473,13 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       do: {:error, :initialize_must_not_include_session_id},
       else: :ok
   end
+
+  defp invalid_request_detail(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp invalid_request_detail({category, _detail}) when is_atom(category),
+    do: Atom.to_string(category)
+
+  defp invalid_request_detail(_reason), do: "invalid_request"
 
   defp validate_positive_integer!(value, name) do
     unless is_integer(value) and value > 0,

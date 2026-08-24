@@ -144,7 +144,7 @@ defmodule MCP.Transport.StdioSecurityTest do
         {StdioProcess,
          owner: self(),
          command: System.find_executable("elixir"),
-         args: [@fixture, "frame_burst"],
+         args: ["--erl", "+S 2:2", @fixture, "frame_burst"],
          env: [],
          security_policy: policy}
       )
@@ -250,7 +250,11 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   defp start_transport(mode, policy_opts \\ []) do
-    start_command_transport(System.find_executable("elixir"), [@fixture, mode], policy_opts)
+    start_command_transport(
+      System.find_executable("elixir"),
+      ["--erl", "+S 2:2", @fixture, mode],
+      policy_opts
+    )
   end
 
   defp start_command_transport(command, args, policy_opts) do

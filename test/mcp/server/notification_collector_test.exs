@@ -35,6 +35,30 @@ defmodule MCP.Server.NotificationCollectorTest do
     Collector.stop(c)
   end
 
+  test "rejects notifications after the count budget without retaining them" do
+    {:ok, c} = Collector.start_link(max_notifications: 1, max_bytes: 10_000)
+
+    assert :ok = Collector.push(c, "notifications/progress", %{"progress" => 1})
+
+    assert {:error, :notification_limit_reached} =
+             Collector.push(c, "notifications/progress", %{"progress" => 2})
+
+    assert Collector.overflowed?(c)
+    assert [%{"params" => %{"progress" => 1}}] = Collector.drain(c)
+    Collector.stop(c)
+  end
+
+  test "rejects a notification that exceeds the byte budget" do
+    {:ok, c} = Collector.start_link(max_notifications: 10, max_bytes: 1)
+
+    assert {:error, :notification_limit_reached} =
+             Collector.push(c, "notifications/message", %{"data" => "too large"})
+
+    assert Collector.overflowed?(c)
+    assert Collector.drain(c) == []
+    Collector.stop(c)
+  end
+
   test "two collectors are independent — one holds no reference to the other (AC2)" do
     {:ok, a} = Collector.start_link()
     {:ok, b} = Collector.start_link()

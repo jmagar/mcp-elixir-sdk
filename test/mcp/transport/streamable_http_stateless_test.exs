@@ -657,6 +657,25 @@ defmodule MCP.Transport.StreamableHTTPStatelessTest do
     end
   end
 
+  test "notification budgets bound a stateless handler response" do
+    plug_opts =
+      opts(
+        max_notifications_per_request: 1,
+        max_notification_bytes: 10_000
+      )
+
+    conn =
+      post(
+        plug_opts,
+        rpc("tools/call", with_meta(%{"name" => "emit_many", "arguments" => %{"count" => 2}}))
+      )
+
+    assert conn.status == 500
+    assert error(conn)["code"] == -32_603
+    assert error(conn)["data"] == "notification limit reached"
+    refute conn.resp_body =~ "notifications/message"
+  end
+
   # --- DoD: two-instance / no-affinity smoke ---
 
   describe "two-instance / no-affinity smoke (DoD)" do

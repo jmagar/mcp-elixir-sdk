@@ -47,6 +47,7 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
       client_transport: client_transport,
       registry: registry,
       server: server,
+      server_supervisor: server_supervisor,
       server_transport: server_transport
     }
   end
@@ -98,6 +99,61 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     assert {:ok, tool_event} = SubscriptionHandle.next(tools, 1_000)
     assert tool_event["method"] == Methods.tools_list_changed()
     assert tool_event["params"]["_meta"][@subscription_id_key] == 1
+  end
+
+  test "blocked subscription authorization does not stall the connection", context do
+    {client_transport, server_transport} = BridgeTransport.create_pair()
+
+    server =
+      start_supervised!(
+        {Connection,
+         transport: {BridgeTransport, pid: server_transport},
+         handler: {SubscriptionHandler, test_pid: self(), block_authorization?: true},
+         identity: :stdio_principal,
+         subscription_supervisor: context.server_supervisor,
+         subscription_registry: context.registry,
+         subscription_endpoint: :stdio_test,
+         handler_timeout: 100},
+        id: make_ref()
+      )
+
+    {:ok, ^client_transport} = BridgeTransport.start_link(pid: client_transport, owner: self())
+
+    :ok =
+      BridgeTransport.send_message(client_transport, %{
+        "jsonrpc" => "2.0",
+        "id" => 91,
+        "method" => Methods.subscriptions_listen(),
+        "params" => %{
+          "notifications" => %{"toolsListChanged" => true},
+          "_meta" => %{
+            "io.modelcontextprotocol/protocolVersion" => "2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities" => %{}
+          }
+        }
+      })
+
+    assert_receive {:subscription_authorized, 91, :stdio_principal}, 1_000
+    assert %Connection{} = :sys.get_state(server)
+
+    :ok =
+      BridgeTransport.send_message(client_transport, %{
+        "jsonrpc" => "2.0",
+        "id" => 92,
+        "method" => "initialize",
+        "params" => %{
+          "protocolVersion" => "2025-11-25",
+          "capabilities" => %{},
+          "clientInfo" => %{"name" => "race-test", "version" => "1"}
+        }
+      })
+
+    assert_receive {:mcp_message, %{"id" => 92, "error" => %{"code" => -32_600}}}, 1_000
+
+    assert_receive {:mcp_message, %{"id" => 91, "error" => %{"message" => "Internal error"}}},
+                   1_000
+
+    assert :sys.get_state(server).handler_tasks == %{}
   end
 
   test "close sends a scoped stdio cancellation and leaves siblings active", context do

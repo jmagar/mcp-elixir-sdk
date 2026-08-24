@@ -126,6 +126,14 @@ defmodule MCP.Transport.SSETest do
   end
 
   describe "stream parser" do
+    test "legacy binary parser has a hard event-size ceiling" do
+      oversized = :binary.copy("x", 1_000_001)
+
+      assert_raise ArgumentError, ~r/legacy SSE event exceeds/, fn ->
+        SSE.feed("", oversized)
+      end
+    end
+
     test "rejects an incomplete event before its buffer exceeds the configured limit" do
       parser = SSE.new_parser(max_event_bytes: 8)
 
@@ -178,8 +186,25 @@ defmodule MCP.Transport.SSETest do
       assert parser.buffer == ""
     end
 
+    test "reassembles a bounded event fed one byte at a time" do
+      parser = SSE.new_parser(max_event_bytes: 64)
+
+      {events, parser} =
+        "data: fragmented\n\n"
+        |> :binary.bin_to_list()
+        |> Enum.reduce({[], parser}, fn byte, {events, parser} ->
+          assert {:ok, next_events, parser} = SSE.feed(parser, <<byte>>)
+          {events ++ next_events, parser}
+        end)
+
+      assert [%{data: "fragmented"}] = events
+      assert parser.buffer_bytes == 0
+      assert parser.chunks == []
+    end
+
     test "the unbounded parser also splits CRLF-terminated events" do
       parser = SSE.new_parser()
+      assert parser == ""
 
       {events, _parser} = SSE.feed(parser, "event: message\r\ndata: hello\r\n\r\n")
       assert [%{event: "message", data: "hello"}] = events

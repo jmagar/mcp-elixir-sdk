@@ -45,10 +45,10 @@ defmodule MCPElixirSDK.MixProject do
           "https://modelcontextprotocol.io/specification/2026-07-28",
         "MCP 2025-11-25 Specification" =>
           "https://modelcontextprotocol.io/specification/2025-11-25",
-        "Examples" => "#{@source_url}#server-handler"
+        "Examples" => "#{@source_url}/tree/main/examples"
       },
       files:
-        ~w(lib docs conformance usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
+        ~w(lib docs examples conformance usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 
@@ -162,7 +162,7 @@ defmodule MCPElixirSDK.MixProject do
       # Optional: Streamable HTTP transport
       {:req, ">= 0.5.0 and < 0.8.0", optional: true},
       {:plug, "~> 1.16", optional: true},
-      {:bandit, "~> 1.5", optional: true},
+      {:bandit, "~> 1.12.5", optional: true},
 
       # Dev/test
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

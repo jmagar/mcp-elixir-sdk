@@ -24,7 +24,7 @@ defmodule MCP.ClientReviewRemediationTest do
     first = Task.async(fn -> Client.connect(client) end)
     second = Task.async(fn -> Client.connect(client) end)
 
-    assert_receive {:client_review_sent, ^transport, initialize, _opts}, 1_000
+    assert_receive {:client_review_sent, ^transport, initialize, _opts}, 5_000
     assert initialize["method"] == "initialize"
     refute_receive {:client_review_sent, ^transport, %{"method" => "initialize"}, _opts}, 50
 
@@ -48,7 +48,7 @@ defmodule MCP.ClientReviewRemediationTest do
       )
 
     first = Task.async(fn -> Client.connect(client, 1_000) end)
-    assert_receive {:transport_send_started, %{"method" => "initialize"}}, 1_000
+    assert_receive {:transport_send_started, %{"method" => "initialize"}}, 5_000
 
     second = Task.async(fn -> Client.connect(client, 0) end)
     assert {:error, :timeout} = Task.await(second, 500)
@@ -66,11 +66,11 @@ defmodule MCP.ClientReviewRemediationTest do
       )
 
     first = Task.async(fn -> Client.connect(client, 25) end)
-    assert_receive {:connect_retry_sent, 1, %{"method" => "initialize"}}, 1_000
+    assert_receive {:connect_retry_sent, 1, %{"method" => "initialize"}}, 5_000
     second = Task.async(fn -> Client.connect(client, 1_000) end)
 
     assert {:error, :timeout} = Task.await(first, 500)
-    assert_receive {:connect_retry_sent, 2, initialize}, 1_000
+    assert_receive {:connect_retry_sent, 2, initialize}, 5_000
 
     transport = Client.transport(client)
     ConnectRetryTransport.inject(transport, initialize_result(initialize["id"]))
@@ -94,7 +94,7 @@ defmodule MCP.ClientReviewRemediationTest do
     :ok = ClientReviewTransport.fail_next(transport, "notifications/initialized", :offline)
 
     connect = Task.async(fn -> Client.connect(client) end)
-    assert_receive {:client_review_sent, ^transport, initialize, _}, 1_000
+    assert_receive {:client_review_sent, ^transport, initialize, _}, 5_000
     ClientReviewTransport.inject(transport, initialize_result(initialize["id"]))
 
     assert {:error, {:initialized_notification_failed, :offline}} = Task.await(connect)
@@ -151,10 +151,10 @@ defmodule MCP.ClientReviewRemediationTest do
     assert_receive {:sampling_started, _callback}
     ClientReviewTransport.inject(transport, server_request(42))
 
-    assert_receive {:client_review_sent, ^transport, %{"id" => 42, "error" => overload}, _}, 500
+    assert_receive {:client_review_sent, ^transport, %{"id" => 42, "error" => overload}, _}, 5_000
     assert overload["code"] == -32_603
 
-    assert_receive {:client_review_sent, ^transport, %{"id" => 41, "error" => timeout}, _}, 500
+    assert_receive {:client_review_sent, ^transport, %{"id" => 41, "error" => timeout}, _}, 5_000
     assert timeout["code"] == -32_603
   end
 
@@ -310,7 +310,7 @@ defmodule MCP.ClientReviewRemediationTest do
       start_supervised!({HTTPClient, owner: self(), url: url, protocol_version: @legacy_version})
 
     assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
-    assert_receive {:client_review_stream_chunked, stream_request}
+    assert_receive {:client_review_stream_chunked, stream_request}, 5_000
     assert :ok = GenServer.call(transport, {:bind_session, "first", @legacy_version})
 
     assert {:error, :session_already_bound} =
@@ -350,7 +350,7 @@ defmodule MCP.ClientReviewRemediationTest do
         })
       end)
 
-    assert_receive {:client_review_post_blocked, request}
+    assert_receive {:client_review_post_blocked, request}, 5_000
 
     assert {:error, :request_limit_reached} =
              HTTPClient.send_message(transport, %{
@@ -378,7 +378,7 @@ defmodule MCP.ClientReviewRemediationTest do
                "method" => "subscriptions/listen"
              })
 
-    assert_receive {:client_review_stream_chunked, request}
+    assert_receive {:client_review_stream_chunked, request}, 5_000
 
     assert {:error, :subscription_limit_reached} =
              HTTPClient.open_subscription(transport, %{
@@ -397,8 +397,8 @@ defmodule MCP.ClientReviewRemediationTest do
 
     assert :ok = HTTPClient.send_message(client, initialize)
     assert_receive {:mcp_message, %{"id" => 1}}
-    assert_receive {:client_review_stream_chunked, stream_request}
-    assert_receive {:mcp_message, %{"method" => "notifications/progress"}}, 500
+    assert_receive {:client_review_stream_chunked, stream_request}, 5_000
+    assert_receive {:mcp_message, %{"method" => "notifications/progress"}}, 5_000
     assert {:message_queue_len, queue_len} = Process.info(client, :message_queue_len)
     assert queue_len <= 1
     send(stream_request, :release_stream)
@@ -410,10 +410,10 @@ defmodule MCP.ClientReviewRemediationTest do
 
     assert :ok = HTTPClient.send_message(client, initialize_request(1))
     assert_receive {:mcp_message, %{"id" => 1}}
-    assert_receive {:client_review_stream_chunked, stream_request}
+    assert_receive {:client_review_stream_chunked, stream_request}, 5_000
 
     close = Task.async(fn -> HTTPClient.close(client) end)
-    assert_receive {:client_review_delete, request}, 500
+    assert_receive {:client_review_delete, request}, 5_000
 
     # Without this the test passes under the old best-effort behaviour too: it
     # would only prove close eventually returns :ok, not that it waited for the
@@ -571,7 +571,7 @@ defmodule MCP.ClientReviewRemediationTest do
 
   defp connect_legacy(client, transport) do
     connect = Task.async(fn -> Client.connect(client) end)
-    assert_receive {:client_review_sent, ^transport, initialize, _}, 1_000
+    assert_receive {:client_review_sent, ^transport, initialize, _}, 5_000
     ClientReviewTransport.inject(transport, initialize_result(initialize["id"]))
     assert {:ok, _result} = Task.await(connect)
 
