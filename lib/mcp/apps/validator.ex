@@ -14,7 +14,7 @@ defmodule MCP.Apps.Validator do
     ui = Map.get(meta, "ui") || Map.get(meta, :ui)
     flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
 
-    with {:ok, ui} <- require_map(ui, :missing_ui_metadata),
+    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata),
          nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
          :ok <- compatible_uri(nested, flat),
          {:ok, uri} <- ui_uri(nested || flat, limits),
@@ -47,6 +47,10 @@ defmodule MCP.Apps.Validator do
     end
   end
 
+  def resource_metadata(meta, opts \\ []), do: resource_meta(meta, limits(opts))
+
+  def validate_json(value, opts \\ []), do: json_budget(value, limits(opts))
+
   def ui_uri(uri, %Limits{} = limits) when is_binary(uri) do
     parsed = URI.parse(uri)
 
@@ -59,9 +63,6 @@ defmodule MCP.Apps.Validator do
 
       is_nil(parsed.host) or parsed.host == "" ->
         {:error, :invalid_ui_uri}
-
-      not is_nil(parsed.query) or not is_nil(parsed.fragment) ->
-        {:error, :ui_uri_query_or_fragment}
 
       contains_control?(uri) ->
         {:error, :invalid_ui_uri}
@@ -264,7 +265,7 @@ defmodule MCP.Apps.Validator do
   end
 
   defp valid_origin_wildcard?(host, field) do
-    not String.starts_with?(host, "*.") or field in ["resourceDomains", "frameDomains"]
+    not String.starts_with?(host, "*.") or field == "resourceDomains"
   end
 
   defp require_map(value, _reason) when is_map(value), do: {:ok, value}

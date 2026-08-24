@@ -23,7 +23,7 @@ defmodule MCP.AppsTest do
              Validator.tool_meta(%{"ui" => %{"resourceUri" => @uri}})
 
     assert {:ok, %{resource_uri: @uri}} =
-             Validator.tool_meta(%{"ui" => %{}, "ui/resourceUri" => @uri})
+             Validator.tool_meta(%{"ui/resourceUri" => @uri})
 
     assert {:error, :conflicting_resource_uri} =
              Validator.tool_meta(%{
@@ -61,8 +61,10 @@ defmodule MCP.AppsTest do
     assert {:error, :resource_too_large} =
              Validator.resource(@uri, @mime, "12345", nil, nil, limits: [max_resource_bytes: 4])
 
-    assert {:error, :ui_uri_query_or_fragment} =
+    assert {:ok, %{uri: uri}} =
              Validator.resource(@uri <> "?token=secret", @mime, "html", nil, nil)
+
+    assert uri == @uri <> "?token=secret"
 
     refute Validator.safe_uri(@uri <> "?token=secret") =~ "secret"
   end
@@ -87,6 +89,14 @@ defmodule MCP.AppsTest do
              AppDefinition.read_resource(catalog, @uri)
 
     assert {:error, :duplicate_app_definition} = AppDefinition.catalog([definition, definition])
+
+    invalid_resource =
+      Map.put(definition.resource, "_meta", %{
+        "ui" => %{"permissions" => %{"camera" => true}}
+      })
+
+    assert {:error, :invalid_permissions} =
+             AppDefinition.new(definition.tool, invalid_resource, definition.contents)
   end
 
   test "bridge codec enforces stable methods, byte bounds, and lifecycle order" do
@@ -94,12 +104,28 @@ defmodule MCP.AppsTest do
       "jsonrpc" => "2.0",
       "id" => 1,
       "method" => "ui/initialize",
-      "params" => %{"protocolVersion" => "2026-01-26"}
+      "params" => %{
+        "protocolVersion" => "2026-01-26",
+        "appInfo" => %{"name" => "test", "version" => "1"},
+        "appCapabilities" => %{}
+      }
     }
 
     assert {:ok, encoded} = Bridge.encode(initialize)
     assert {:ok, ^initialize} = Bridge.decode(encoded)
     assert {:error, :message_too_large} = Bridge.decode(encoded, limits: [max_message_bytes: 8])
+    assert {:error, :invalid_bridge_response} = Bridge.decode(%{"jsonrpc" => "2.0", "id" => 1})
+
+    assert {:error, :metadata_too_deep} =
+             Bridge.decode(
+               %{
+                 "jsonrpc" => "2.0",
+                 "method" => "ui/message",
+                 "id" => 2,
+                 "params" => %{"a" => %{"b" => %{}}}
+               },
+               limits: [max_depth: 2]
+             )
 
     state = %Bridge{}
     assert {:ok, state, [:reply_initialize]} = Bridge.transition(state, initialize)
@@ -115,6 +141,12 @@ defmodule MCP.AppsTest do
 
     assert {:error, :invalid_lifecycle_transition} =
              Bridge.transition(%Bridge{}, %{"method" => "ui/notifications/tool-result"})
+
+    assert {:error, :invalid_lifecycle_transition} =
+             Bridge.transition(
+               %{state | complete_input?: false},
+               %{"method" => "ui/notifications/tool-result"}
+             )
   end
 
   test "resource-family open objects preserve unknown JSON fields" do
@@ -148,8 +180,33 @@ defmodule MCP.AppsTest do
 
     transport = MCP.Client.transport(client)
     tool = definition(["model", "app"]).tool
-    resolve = Task.async(fn -> MCP.Apps.Client.resolve(client, tool) end)
+    assert {:error, :apps_not_negotiated} = MCP.Apps.Client.resolve(client, tool)
+    assert MockTransport.sent_messages(transport) == []
+
+    connect = Task.async(fn -> MCP.Client.connect(client) end)
     request = await_request(transport, 1)
+    assert request["method"] == "server/discover"
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => request["id"],
+      "result" => %{
+        "supportedVersions" => ["2026-07-28"],
+        "capabilities" => %{"extensions" => MCP.Apps.extensions()},
+        "resultType" => "complete",
+        "ttlMs" => 0,
+        "cacheScope" => "public",
+        "_meta" => %{
+          "io.modelcontextprotocol/serverInfo" => %{"name" => "apps", "version" => "1"}
+        }
+      }
+    })
+
+    assert {:ok, _result} = Task.await(connect)
+
+    resolve = Task.async(fn -> MCP.Apps.Client.resolve(client, tool) end)
+
+    request = await_request(transport, 2)
     assert request["method"] == "resources/read"
     assert request["params"]["uri"] == @uri
 
@@ -165,10 +222,10 @@ defmodule MCP.AppsTest do
 
     assert {:ok, app} = Task.await(resolve)
     assert {:text, "<!doctype html>"} = app.content
-    assert length(MockTransport.sent_messages(transport)) == 1
+    assert length(MockTransport.sent_messages(transport)) == 2
 
-    call = Task.async(fn -> MCP.Apps.Client.call_tool(app, "weather", %{}) end)
-    request = await_request(transport, 2)
+    call = Task.async(fn -> MCP.Apps.Client.call_tool(app, %{}) end)
+    request = await_request(transport, 3)
     assert request["method"] == "tools/call"
 
     MockTransport.inject(transport, %{

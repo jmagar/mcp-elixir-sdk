@@ -4,21 +4,26 @@
   "source": "https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx",
   "coreConformanceDenominatorChanged": false,
   "evidence": {
-    "protocolFixtures": "test/mcp/apps_test.exs",
-    "transports": "generic metadata and resource transport suites; no Apps transport branch",
-    "coreEras": ["2026-07-28", "2025-11-25"],
+    "unitContract": "test/mcp/apps_test.exs",
+    "transports": "unverified Apps-specific flow; generic transport suites prove metadata and resource preservation",
+    "coreEras": "unverified Apps-specific cross-era flow; generic dual-era suites remain unchanged",
     "browserHost": "external verification boundary; not claimed by local tests"
   },
-  "scenarios": [
-    "capability-negotiation",
-    "canonical-tool-linkage",
-    "deprecated-linkage-conflict",
-    "resource-uri-mime-content",
-    "csp-permission-declarations",
+  "verifiedScenarios": [
+    "capability-shape-and-local-intersection",
+    "canonical-and-deprecated-tool-linkage",
+    "resource-uri-mime-content-validation",
+    "csp-permission-declaration-validation",
     "immutable-app-definition",
     "exact-client-one-read-resolution",
-    "bridge-codec-lifecycle",
+    "bridge-envelope-and-lifecycle-validation",
     "open-object-roundtrip",
-    "bounded-resource-and-message-inputs"
+    "bounded-resource-map-and-message-inputs"
+  ],
+  "unverifiedScenarios": [
+    "stdio-app-flow",
+    "streamable-http-app-flow",
+    "dual-core-era-app-flow",
+    "real-browser-host-hydration"
   ]
 }

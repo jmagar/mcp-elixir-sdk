@@ -8,8 +8,7 @@ defmodule MCP.Apps.Limits do
             max_depth: 32,
             max_nodes: 10_000,
             max_csp_entries: 64,
-            max_csp_entry_bytes: 2_048,
-            max_correlations: 256
+            max_csp_entry_bytes: 2_048
 
   @type t :: %__MODULE__{}
 

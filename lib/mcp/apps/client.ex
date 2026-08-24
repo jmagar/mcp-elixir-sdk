@@ -8,9 +8,13 @@ defmodule MCP.Apps.Client do
     meta = Map.get(tool, "_meta") || Map.get(tool, :_meta) || %{}
 
     with true <- Process.alive?(client) or {:error, :stale_client_binding},
+         :ok <- negotiated(client),
          {:ok, tool_ui} <- Validator.tool_meta(meta, opts),
+         {:ok, listing_meta} <-
+           listing_metadata(Keyword.get(opts, :resource), tool_ui.resource_uri, opts),
          {:ok, result} <- MCP.Client.read_resource(client, tool_ui.resource_uri, opts),
-         {:ok, content, merged_ui} <- resolve_result(result, tool_ui.resource_uri, opts) do
+         {:ok, content, merged_ui} <-
+           resolve_result(result, tool_ui.resource_uri, listing_meta, opts) do
       {:ok,
        %ResolvedApp{
          client: client,
@@ -28,7 +32,8 @@ defmodule MCP.Apps.Client do
   end
 
   @doc "Calls an app-visible tool through the exact client binding used to resolve it."
-  def call_tool(%ResolvedApp{client: client, tool: tool}, name, arguments \\ %{}, opts \\ []) do
+  def call_tool(%ResolvedApp{client: client, tool: tool}, arguments \\ %{}, opts \\ []) do
+    name = Map.get(tool, "name") || Map.get(tool, :name)
     call_tool_descriptor(client, tool, name, arguments, opts)
   end
 
@@ -53,7 +58,7 @@ defmodule MCP.Apps.Client do
     end
   end
 
-  defp resolve_result(%{"contents" => [content]}, uri, opts) do
+  defp resolve_result(%{"contents" => [content]}, uri, listing_meta, opts) do
     content_uri = Map.get(content, "uri")
     mime = Map.get(content, "mimeType")
     text = Map.get(content, "text")
@@ -61,18 +66,56 @@ defmodule MCP.Apps.Client do
     meta = Map.get(content, "_meta")
 
     with true <- content_uri == uri or {:error, :resource_uri_mismatch},
-         {:ok, validated} <- Validator.resource(content_uri, mime, text, blob, meta, opts) do
-      {:ok, validated.content, validated.ui}
+         {:ok, validated} <- Validator.resource(content_uri, mime, text, blob, meta, opts),
+         {:ok, merged_ui} <- Validator.merge_resource_meta(listing_meta, meta, opts) do
+      {:ok, validated.content, merged_ui}
     end
   end
 
-  defp resolve_result(%{contents: [content]}, uri, opts) when is_map(content) do
-    resolve_result(
-      %{"contents" => [Map.new(content, fn {key, value} -> {Atom.to_string(key), value} end)]},
-      uri,
-      opts
-    )
+  defp resolve_result(%{contents: [content]}, uri, listing_meta, opts) when is_map(content) do
+    normalized = %{
+      "uri" => value(content, "uri", :uri),
+      "mimeType" => value(content, "mimeType", :mimeType),
+      "text" => value(content, "text", :text),
+      "blob" => value(content, "blob", :blob),
+      "_meta" => value(content, "_meta", :_meta)
+    }
+
+    resolve_result(%{"contents" => [normalized]}, uri, listing_meta, opts)
   end
 
-  defp resolve_result(_result, _uri, _opts), do: {:error, :expected_one_app_resource}
+  defp resolve_result(_result, _uri, _listing_meta, _opts),
+    do: {:error, :expected_one_app_resource}
+
+  defp listing_metadata(nil, _uri, _opts), do: {:ok, nil}
+
+  defp listing_metadata(resource, uri, opts) when is_map(resource) do
+    resource_uri = value(resource, "uri", :uri)
+    mime = value(resource, "mimeType", :mimeType)
+    meta = value(resource, "_meta", :_meta)
+
+    with true <- resource_uri == uri or {:error, :resource_uri_mismatch},
+         true <- mime == MCP.Apps.mime_type() or {:error, :resource_mime_mismatch},
+         {:ok, _validated} <- Validator.resource_metadata(meta, opts) do
+      {:ok, meta}
+    end
+  end
+
+  defp listing_metadata(_resource, _uri, _opts), do: {:error, :invalid_resource_descriptor}
+
+  defp negotiated(client) do
+    client_support = MCP.Client.client_capabilities(client)
+    server_support = MCP.Client.server_capabilities(client)
+
+    if MCP.Apps.negotiated?(client_support) and MCP.Apps.negotiated?(server_support),
+      do: :ok,
+      else: {:error, :apps_not_negotiated}
+  end
+
+  defp value(map, string_key, atom_key) do
+    case Map.fetch(map, string_key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, atom_key)
+    end
+  end
 end
