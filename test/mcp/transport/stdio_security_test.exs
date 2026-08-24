@@ -104,11 +104,12 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   @tag @linux_only
-  test "an extremely small cleanup deadline returns a failure instead of crashing the caller" do
+  test "an extremely small graceful deadline still forces descendant cleanup" do
     transport = start_transport("descendant", shutdown_timeout: 1)
-    assert_receive {:mcp_message, %{"result" => %{"pid" => _child_pid}}}, 5_000
+    assert_receive {:mcp_message, %{"result" => %{"pid" => child_pid}}}, 5_000
 
-    assert Stdio.close(transport) in [:ok, {:error, :process_group_cleanup_failed}]
+    assert :ok = Stdio.close(transport)
+    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
     assert Process.alive?(self())
   end
 

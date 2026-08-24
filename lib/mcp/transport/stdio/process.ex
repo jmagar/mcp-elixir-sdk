@@ -340,11 +340,12 @@ defmodule MCP.Transport.Stdio.Process do
     # Signal identities already proven to belong to this transport before any
     # additional /proc discovery. A second scan is useful for children spawned
     # during shutdown, but it must not delay TERM for a child we already know.
-    _ = signal_alive(identities, :sigterm, deadline)
+    term_result = signal_alive(identities, :sigterm, deadline)
     discovered = marked_processes(marker, deadline)
     newly_discovered = discovered -- identities
 
-    _ = signal_alive(newly_discovered, :sigterm, deadline)
+    term_result =
+      merge_signal_result(term_result, signal_alive(newly_discovered, :sigterm, deadline))
 
     identities = Enum.uniq(identities ++ discovered)
 
@@ -357,7 +358,7 @@ defmodule MCP.Transport.Stdio.Process do
     kill_deadline = cleanup_deadline(@kill_confirmation_timeout)
     remaining = Enum.uniq(identities ++ marked_processes(marker, kill_deadline))
 
-    _ = signal_alive(remaining, :sigkill, kill_deadline)
+    kill_result = signal_alive(remaining, :sigkill, kill_deadline)
 
     if wait_until_stopped(remaining, kill_deadline) and
          not deadline_expired?(kill_deadline) and
@@ -368,9 +369,20 @@ defmodule MCP.Transport.Stdio.Process do
       # stale intermediate diagnostic.
       :ok
     else
-      {:error, :process_group_cleanup_failed}
+      cleanup_confirmation_error(kill_result, term_result)
     end
   end
+
+  defp cleanup_confirmation_error(kill_result, term_result) do
+    case signal_cleanup_reason(kill_result) || signal_cleanup_reason(term_result) do
+      nil -> {:error, :process_group_cleanup_failed}
+      reason -> {:error, {:process_group_cleanup_failed, reason}}
+    end
+  end
+
+  defp signal_cleanup_reason({:error, reason}), do: reason
+  defp signal_cleanup_reason(:timeout), do: :signal_timeout
+  defp signal_cleanup_reason(:ok), do: nil
 
   defp signal_alive(identities, signal, deadline) do
     Enum.reduce_while(identities, :ok, fn identity, result ->

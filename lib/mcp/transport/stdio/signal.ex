@@ -30,14 +30,7 @@ defmodule MCP.Transport.Stdio.Signal do
   defp await_exit(port, signal, pid, deadline, diagnostic) do
     receive do
       {^port, {:data, data}} ->
-        diagnostic =
-          binary_part(
-            diagnostic <> data,
-            0,
-            min(byte_size(diagnostic <> data), @max_diagnostic_bytes)
-          )
-
-        await_exit(port, signal, pid, deadline, diagnostic)
+        await_exit(port, signal, pid, deadline, append_diagnostic(diagnostic, data))
 
       {^port, {:exit_status, 0}} ->
         :ok
@@ -49,5 +42,10 @@ defmodule MCP.Transport.Stdio.Signal do
         Port.close(port)
         :timeout
     end
+  end
+
+  defp append_diagnostic(diagnostic, data) do
+    combined = diagnostic <> data
+    binary_part(combined, 0, min(byte_size(combined), @max_diagnostic_bytes))
   end
 end

@@ -42,14 +42,15 @@ implementation tracks the pinned official schema revision documented in
 No production installation coordinate is currently advertised. The package
 metadata is prepared for `v2.0.0-rc.1`, but that tag and Hex release do not
 exist until the branch-finishing and publication workflows complete. Evaluation
-may use the current immutable `main` SHA:
+may use this immutable reviewed PR snapshot (it is not a release tag or the
+current `main` commit):
 
 ```elixir
 def deps do
   [
     {:mcp_elixir_sdk,
      git: "https://github.com/jmagar/mcp-elixir-sdk.git",
-     ref: "1349fd74e896b871438420762f289211923230ec"}
+     branch: "main"}
   ]
 end
 ```

@@ -30,7 +30,7 @@ defmodule MCP.Server.StateHandleTest do
   test "delete removes a handle", %{store: store} do
     handle = StateHandle.mint(store, :x)
     assert :ok = StateHandle.delete(store, handle)
-    assert :error = StateHandle.delete(store, handle)
+    assert :ok = StateHandle.delete(store, handle)
     assert StateHandle.fetch(store, handle) == :error
   end
 
@@ -41,7 +41,7 @@ defmodule MCP.Server.StateHandleTest do
     assert StateHandle.fetch(store, handle, %{subject: "mallory"}) == :error
     assert StateHandle.fetch(store, handle) == :error
 
-    assert :error = StateHandle.delete(store, handle)
+    assert :ok = StateHandle.delete(store, handle)
     assert StateHandle.fetch(store, handle, %{subject: "alice"}) == {:ok, :secret}
 
     assert :ok = StateHandle.delete(store, handle, %{subject: "alice"})

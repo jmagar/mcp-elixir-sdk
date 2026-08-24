@@ -13,7 +13,7 @@ defmodule MCP.Protocol.Messages.Subscriptions.ListenResult do
   @type t :: %__MODULE__{
           meta: map(),
           result_type: String.t(),
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec from_map(map()) :: t()

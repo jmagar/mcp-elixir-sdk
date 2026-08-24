@@ -51,7 +51,7 @@ defmodule MCP.Protocol.Messages.Resources do
             resources: [Resource.t()],
             next_cursor: String.t() | nil,
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -124,7 +124,7 @@ defmodule MCP.Protocol.Messages.Resources do
     @type t :: %__MODULE__{
             contents: [ResourceContents.t()],
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -225,7 +225,7 @@ defmodule MCP.Protocol.Messages.Resources do
             resource_templates: [ResourceTemplate.t()],
             next_cursor: String.t() | nil,
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

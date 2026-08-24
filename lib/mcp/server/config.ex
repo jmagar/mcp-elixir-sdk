@@ -261,7 +261,7 @@ defmodule MCP.Server.Config do
 
     case result do
       {:ok, state} -> {:ok, state}
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, {:handler_init_failed, reason}}
       other -> {:error, {:handler_init_failed, {:invalid_return, other}}}
     end
   rescue

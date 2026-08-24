@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
+import { buildBrowserReport } from "./apps_browser_report.mjs";
 
 const require = createRequire(new URL("./browser/package.json", import.meta.url));
 const { chromium } = require("playwright");
@@ -99,9 +100,14 @@ try {
   });
   await page.screenshot({ path: path.join(outputDir, "inspector-page.png"), fullPage: true });
 
-  const report = {
+  const report = buildBrowserReport({
     host: { name: "@modelcontextprotocol/inspector", version: hostVersion },
-    auth: { enabled: true, mode: "per-launch random token", cleanProfile: true },
+    inspectorControlAuth: {
+      enabled: true,
+      mode: "per-launch random token",
+      scope: "Inspector API/control plane; fixture MCP server is unauthenticated",
+      cleanProfile: true
+    },
     policyConfirmation: {
       hasApp: appInfo.hasApp,
       resourceUri: appInfo.resourceUri,
@@ -113,16 +119,13 @@ try {
       viewRendered: true,
       sameServerCallback: true,
       screenshots: ["apps-view.png", "inspector-page.png"]
-    },
-    console: consoleEvents,
-    networkErrors
-  };
+    }
+  }, consoleEvents, networkErrors);
   fs.writeFileSync(path.join(outputDir, "report.json"), JSON.stringify(report, null, 2));
 
-  if (consoleEvents.some(event => event.type === "error" || event.type === "pageerror")) {
-    throw new Error("browser console errors were captured; inspect report.json");
+  if (report.status === "failed") {
+    throw new Error(`${report.failures.join("; ")}; inspect report.json`);
   }
-  if (networkErrors.length > 0) throw new Error("browser network errors were captured");
 } finally {
   await browser.close();
 }

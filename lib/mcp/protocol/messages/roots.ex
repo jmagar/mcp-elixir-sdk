@@ -34,7 +34,7 @@ defmodule MCP.Protocol.Messages.Roots do
     @type t :: %__MODULE__{
             roots: [Root.t()],
             meta: map() | nil,
-            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

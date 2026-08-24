@@ -307,9 +307,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
     state = if reason == :session_expired, do: clear_legacy_session(state), else: state
 
-    if reason != :session_expired do
-      send(state.owner, {:mcp_legacy_sse_failed, reason})
-    end
+    send(state.owner, {:mcp_legacy_sse_failed, reason})
 
     {:noreply, state}
   end

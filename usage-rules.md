@@ -21,7 +21,7 @@ def deps do
   [
     {:mcp_elixir_sdk,
      git: "https://github.com/jmagar/mcp-elixir-sdk.git",
-     ref: "1349fd74e896b871438420762f289211923230ec"}
+     ref: "874761727f95f54a9182b8c956b7030b72e77812"}
   ]
 end
 ```

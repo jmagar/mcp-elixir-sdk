@@ -41,7 +41,7 @@ defmodule MCP.Protocol.Types.Resource do
           annotations: Annotations.t() | nil,
           icons: [Icon.t()] | nil,
           meta: map() | nil,
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec from_map(map()) :: t()

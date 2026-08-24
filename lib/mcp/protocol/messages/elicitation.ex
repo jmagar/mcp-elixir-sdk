@@ -75,7 +75,7 @@ defmodule MCP.Protocol.Messages.Elicitation do
             action: String.t(),
             content: map() | nil,
             meta: map() | nil,
-            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

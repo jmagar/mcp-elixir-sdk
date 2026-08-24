@@ -203,6 +203,22 @@ defmodule MCP.ClientReviewRemediationTest do
                     _}
   end
 
+  test "a real legacy GET 404 invalidates the high-level client's cached initialization" do
+    %{url: url} = start_http_plug(legacy_get_status: 404)
+
+    client =
+      start_supervised!(
+        {Client,
+         transport: {HTTPClient, url: url, legacy_sse_retry_limit: 0},
+         protocol_version: @legacy_version,
+         client_info: %{name: "review", version: "1"}}
+      )
+
+    assert {:ok, _result} = Client.connect(client)
+    assert eventually(fn -> not :sys.get_state(client).legacy_ready end)
+    assert {:error, :not_ready} = Client.list_tools(client)
+  end
+
   test "asynchronous legacy SSE expiry is retained while a request is pending" do
     {client, transport} = start_legacy_client()
     connect_legacy(client, transport)
@@ -226,6 +242,24 @@ defmodule MCP.ClientReviewRemediationTest do
     assert {:ok, _result} = Task.await(reconnect)
   end
 
+  test "deferred legacy SSE expiry is finalized when the pending request times out" do
+    {client, transport} = start_legacy_client(request_timeout: 25)
+    connect_legacy(client, transport)
+
+    request = Task.async(fn -> Client.list_tools(client) end)
+    assert_receive {:client_review_sent, ^transport, %{"method" => "tools/list"}, _}, 5_000
+    send(client, {:mcp_legacy_sse_failed, :session_expired})
+
+    assert {:error, :timeout} = Task.await(request, 1_000)
+    assert {:error, :not_ready} = Client.list_tools(client)
+
+    reconnect = Task.async(fn -> Client.connect(client) end)
+    assert_receive {:client_review_sent, ^transport, reinitialize, _}, 5_000
+    assert reinitialize["method"] == "initialize"
+    ClientReviewTransport.inject(transport, initialize_result(reinitialize["id"]))
+    assert {:ok, _result} = Task.await(reconnect)
+  end
+
   test "HTTP 400 JSON-RPC -32022 response drives legacy downgrade" do
     %{url: url} = start_http_plug(downgrade?: true)
 
@@ -239,7 +273,9 @@ defmodule MCP.ClientReviewRemediationTest do
 
   test "HTTP 404 session expiry reinitializes once and retries the request" do
     recovery_agent = start_supervised!({Agent, fn -> %{} end})
-    %{url: url} = start_http_plug(recovery: :once, recovery_agent: recovery_agent)
+
+    %{url: url} =
+      start_http_plug(recovery: :once, recovery_agent: recovery_agent, stream?: true)
 
     client =
       start_supervised!(
@@ -250,13 +286,16 @@ defmodule MCP.ClientReviewRemediationTest do
       )
 
     assert {:ok, _result} = Client.connect(client)
+    assert_receive {:client_review_stream_chunked, _stream_request}, 5_000
     assert {:ok, %{"tools" => []}} = Client.list_tools(client)
     assert Agent.get(recovery_agent, & &1) == %{initializes: 2, tools: 2}
   end
 
   test "HTTP 404 recovery is bounded to one reinitialize attempt" do
     recovery_agent = start_supervised!({Agent, fn -> %{} end})
-    %{url: url} = start_http_plug(recovery: :always, recovery_agent: recovery_agent)
+
+    %{url: url} =
+      start_http_plug(recovery: :always, recovery_agent: recovery_agent, stream?: true)
 
     client =
       start_supervised!(
@@ -267,7 +306,9 @@ defmodule MCP.ClientReviewRemediationTest do
       )
 
     assert {:ok, _result} = Client.connect(client)
-    assert {:error, :session_expired} = Client.list_tools(client)
+    assert_receive {:client_review_stream_chunked, _stream_request}, 5_000
+    assert {:error, reason} = Client.list_tools(client)
+    assert reason in [:session_expired, :not_ready]
     assert Agent.get(recovery_agent, & &1) == %{initializes: 2, tools: 2}
   end
 
@@ -652,6 +693,22 @@ defmodule MCP.ClientReviewRemediationTest do
       "method" => "sampling/createMessage",
       "params" => %{"messages" => []}
     }
+  end
+
+  defp eventually(fun, attempts \\ 100)
+
+  defp eventually(fun, attempts) do
+    cond do
+      fun.() ->
+        true
+
+      attempts == 0 ->
+        false
+
+      true ->
+        Process.sleep(10)
+        eventually(fun, attempts - 1)
+    end
   end
 
   defp start_http_plug(opts) do

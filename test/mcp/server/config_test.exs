@@ -24,6 +24,10 @@ defmodule MCP.Server.ConfigTest do
     def init(_opts), do: {:error, :application_error}
   end
 
+  defmodule ConfigurationShapedErrorHandler do
+    def init(_opts), do: {:error, {:invalid_cache_defaults, :backend}}
+  end
+
   test "accepts only nonnegative cache TTLs and protocol cache scopes" do
     assert {:ok, %{cache_defaults: {0, "public"}}} = Config.build(EchoHandler, [])
 
@@ -67,5 +71,8 @@ defmodule MCP.Server.ConfigTest do
   test "normalizes errors returned normally by handler init" do
     assert Config.build(ErrorHandler, []) ==
              {:error, {:handler_init_failed, :application_error}}
+
+    assert Config.build(ConfigurationShapedErrorHandler, []) ==
+             {:error, {:handler_init_failed, {:invalid_cache_defaults, :backend}}}
   end
 end

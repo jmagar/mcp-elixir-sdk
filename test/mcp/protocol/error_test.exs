@@ -116,7 +116,16 @@ defmodule MCP.Protocol.ErrorTest do
       error = Error.from_map(map)
 
       assert error.code == -32_603
+      assert error.data == :absent
+      assert Error.to_map(error) == map
+    end
+
+    test "preserves explicit null data separately from an absent member" do
+      map = %{"code" => -32_603, "message" => "Internal error", "data" => nil}
+      error = Error.from_map(map)
+
       assert error.data == nil
+      assert Error.to_map(error) == map
     end
 
     test "round-trips unknown fields at the schema-open Error boundary" do

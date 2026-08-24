@@ -120,9 +120,18 @@ defmodule MCP.Server.StateHandle do
 
   def consume(_store, _handle, _principal), do: :error
 
-  @doc "Deletes a principal-independent handle."
-  @spec delete(Agent.agent(), String.t()) :: :ok | :error
-  def delete(store, handle), do: delete(store, handle, nil)
+  @doc """
+  Idempotently deletes a principal-independent handle.
+
+  This compatibility API always returns `:ok`, including when the handle is
+  absent, expired, or principal-bound. Use `delete/3` when the caller needs a
+  checked, principal-aware result.
+  """
+  @spec delete(Agent.agent(), String.t()) :: :ok
+  def delete(store, handle) do
+    _result = delete(store, handle, nil)
+    :ok
+  end
 
   @doc "Deletes a handle only when it is bound to `principal`."
   @spec delete(Agent.agent(), String.t(), principal()) :: :ok | :error

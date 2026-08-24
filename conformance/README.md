@@ -8,8 +8,9 @@ MCP Apps evidence is tracked separately in
 hydration, CSP, View/host lifecycle, or same-server App callback routing. Local
 SDK tests prove the wire types, validation, exact resource read, binding, and
 pure bridge contract. The separately triggered `MCP Apps browser
-interoperability` workflow uses a fresh, token-authenticated official Inspector
-host and uploads its policy probe, host version, screenshots, console/network
+interoperability` workflow uses a fresh official Inspector host whose control
+API is token-authenticated; the fixture MCP server is unauthenticated. It uploads
+the policy probe, host version, screenshots, console/network
 events, and server-side `resources/read`/same-server callback evidence. It is
 deliberately not a dependency of package CI.
 

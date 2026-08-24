@@ -23,7 +23,7 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
           ttl_ms: non_neg_integer() | nil,
           cache_scope: String.t() | nil,
           meta: map() | nil,
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec decode(term(), keyword()) :: {:ok, t()} | {:error, term()}

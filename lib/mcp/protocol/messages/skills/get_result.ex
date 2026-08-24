@@ -12,7 +12,7 @@ defmodule MCP.Protocol.Messages.Skills.GetResult do
           skill: Skill.t(),
           result_type: String.t(),
           meta: map() | nil,
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec decode(term(), keyword()) :: {:ok, t()} | {:error, term()}

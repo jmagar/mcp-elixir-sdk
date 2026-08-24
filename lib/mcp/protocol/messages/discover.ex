@@ -66,7 +66,7 @@ defmodule MCP.Protocol.Messages.Discover do
             result_type: String.t(),
             ttl_ms: non_neg_integer(),
             cache_scope: String.t(),
-            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
+            extra: MCP.Protocol.extra_fields()
           }
 
     def server_info_meta_key, do: @server_info_meta_key

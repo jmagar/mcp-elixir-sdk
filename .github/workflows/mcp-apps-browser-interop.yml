@@ -25,6 +25,7 @@ jobs:
           cache-dependency-path: conformance/browser/package-lock.json
       - run: npm ci --ignore-scripts
         working-directory: conformance/browser
+      - run: node --test conformance/apps_browser_report.test.mjs
       - run: npx playwright install --with-deps chromium
         working-directory: conformance/browser
       - run: mix deps.get

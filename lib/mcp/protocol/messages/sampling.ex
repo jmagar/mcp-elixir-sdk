@@ -97,7 +97,7 @@ defmodule MCP.Protocol.Messages.Sampling do
             model: String.t(),
             stop_reason: String.t() | nil,
             meta: map() | nil,
-            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

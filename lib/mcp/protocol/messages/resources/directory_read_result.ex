@@ -13,7 +13,7 @@ defmodule MCP.Protocol.Messages.Resources.DirectoryReadResult do
           next_cursor: String.t() | nil,
           result_type: String.t(),
           meta: map() | nil,
-          extra: map()
+          extra: MCP.Protocol.extra_fields()
         }
 
   @spec decode(term()) :: {:ok, t()} | {:error, term()}

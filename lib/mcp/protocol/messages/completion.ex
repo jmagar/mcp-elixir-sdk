@@ -51,7 +51,7 @@ defmodule MCP.Protocol.Messages.Completion do
     @type t :: %__MODULE__{
             completion: map(),
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

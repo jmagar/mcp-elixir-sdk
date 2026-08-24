@@ -38,7 +38,7 @@ defmodule MCP.Protocol.Messages.Prompts do
             prompts: [Prompt.t()],
             next_cursor: String.t() | nil,
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -115,7 +115,7 @@ defmodule MCP.Protocol.Messages.Prompts do
             description: String.t() | nil,
             messages: [PromptMessage.t()],
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()

@@ -51,7 +51,7 @@ defmodule MCP.Protocol.Messages.Tools do
             tools: [Tool.t()],
             next_cursor: String.t() | nil,
             meta: map() | nil,
-            extra: map()
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
@@ -133,7 +133,7 @@ defmodule MCP.Protocol.Messages.Tools do
             structured_content: MCP.Protocol.json_value() | :absent,
             is_error: boolean() | nil,
             meta: map() | nil,
-            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
+            extra: MCP.Protocol.extra_fields()
           }
 
     @spec from_map(map()) :: t()
