@@ -50,7 +50,7 @@ def deps do
   [
     {:mcp_elixir_sdk,
      git: "https://github.com/jmagar/mcp-elixir-sdk.git",
-     branch: "main"}
+     ref: "e9c7fb8927de1d54c74ffecd21bfed63ba1a19ef"}
   ]
 end
 ```
