@@ -1,7 +1,7 @@
 defmodule MCP.Apps.Client do
   @moduledoc "Apps-aware helpers over an existing `MCP.Client` process."
 
-  alias MCP.Apps.{ResolvedApp, Validator}
+  alias MCP.Apps.{AppDefinition, ResolvedApp, Validator}
 
   @spec resolve(pid(), map(), keyword()) :: {:ok, ResolvedApp.t()} | {:error, term()}
   def resolve(client, tool, opts \\ []) when is_pid(client) and is_map(tool) do
@@ -37,11 +37,12 @@ defmodule MCP.Apps.Client do
     call_tool_descriptor(client, tool, name, arguments, opts)
   end
 
-  @doc "Calls an app-visible sibling descriptor through a resolved App's exact client."
-  def call_sibling_tool(%ResolvedApp{client: client}, tool, arguments \\ %{}, opts \\ [])
-      when is_map(tool) do
-    name = Map.get(tool, "name") || Map.get(tool, :name)
-    call_tool_descriptor(client, tool, name, arguments, opts)
+  @doc "Calls a helper-owned app-visible sibling through a resolved App's exact client."
+  def call_sibling_tool(%ResolvedApp{client: client}, catalog, name, arguments \\ %{}, opts \\ [])
+      when is_binary(name) do
+    with {:ok, tool} <- AppDefinition.app_tool(catalog, name) do
+      call_tool_descriptor(client, tool, name, arguments, opts)
+    end
   end
 
   defp call_tool_descriptor(client, tool, name, arguments, opts) do

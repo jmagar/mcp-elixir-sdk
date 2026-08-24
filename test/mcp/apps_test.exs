@@ -63,6 +63,9 @@ defmodule MCP.AppsTest do
                "ui" => %{"csp" => %{"connectDomains" => ["https://user:pass@example.com"]}}
              })
 
+    assert {:error, :invalid_resource_metadata} =
+             Validator.resource(@uri, @mime, "html", nil, %{"ui" => %{"domain" => false}})
+
     assert {:error, :resource_too_large} =
              Validator.resource(@uri, @mime, "12345", nil, nil, limits: [max_resource_bytes: 4])
 
@@ -132,6 +135,29 @@ defmodule MCP.AppsTest do
     assert {:error, :message_too_large} = Bridge.decode(encoded, limits: [max_message_bytes: 8])
     assert {:error, :invalid_bridge_response} = Bridge.decode(%{"jsonrpc" => "2.0", "id" => 1})
 
+    assert {:ok, _request} =
+             Bridge.decode(%{
+               "jsonrpc" => "2.0",
+               "id" => 2,
+               "method" => "tools/call",
+               "params" => %{"name" => "refresh", "arguments" => %{}}
+             })
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(%{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "method" => "ui/open-link",
+               "params" => %{"url" => "not a URL"}
+             })
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(%{
+               "jsonrpc" => "2.0",
+               "method" => "ui/notifications/tool-input",
+               "params" => %{}
+             })
+
     assert {:error, :metadata_too_deep} =
              Bridge.decode(
                %{
@@ -163,6 +189,15 @@ defmodule MCP.AppsTest do
                %{state | complete_input?: false},
                %{"method" => "ui/notifications/tool-result"}
              )
+  end
+
+  test "helper-owned catalogs enforce sibling app visibility" do
+    app_only = definition(["app"], "refresh", "ui://weather/refresh.html")
+    model_only = definition(["model"], "admin", "ui://weather/admin.html")
+    assert {:ok, catalog} = AppDefinition.catalog([app_only, model_only])
+
+    assert {:ok, %{"name" => "refresh"}} = AppDefinition.app_tool(catalog, "refresh")
+    assert {:error, :tool_not_app_visible} = AppDefinition.app_tool(catalog, "admin")
   end
 
   test "resource-family open objects preserve unknown JSON fields" do

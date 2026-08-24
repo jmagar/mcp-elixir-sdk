@@ -201,8 +201,7 @@ defmodule MCP.Apps.Validator do
   defp exact_mime(_mime), do: {:error, :invalid_mime_type}
 
   defp optional_binary(map, key) do
-    value =
-      if key == "domain", do: Map.get(map, key) || Map.get(map, :domain), else: Map.get(map, key)
+    value = if key == "domain", do: fetch_any(map, key, :domain), else: Map.get(map, key)
 
     if is_nil(value) or is_binary(value), do: :ok, else: {:error, :invalid_resource_metadata}
   end
