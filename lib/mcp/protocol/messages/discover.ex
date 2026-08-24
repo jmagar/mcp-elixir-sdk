@@ -31,9 +31,19 @@ defmodule MCP.Protocol.Messages.Discover do
     """
 
     alias MCP.Protocol.Capabilities.ServerCapabilities
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Implementation
 
     @server_info_meta_key "io.modelcontextprotocol/serverInfo"
+    @known_keys [
+      "supportedVersions",
+      "capabilities",
+      "instructions",
+      "resultType",
+      "ttlMs",
+      "cacheScope",
+      "_meta"
+    ]
 
     defstruct [
       :supported_versions,
@@ -80,16 +90,7 @@ defmodule MCP.Protocol.Messages.Discover do
         cache_scope: Map.get(map, "cacheScope", "public"),
         server_info: server_info,
         meta: meta,
-        extra:
-          Map.drop(map, [
-            "supportedVersions",
-            "capabilities",
-            "instructions",
-            "resultType",
-            "ttlMs",
-            "cacheScope",
-            "_meta"
-          ])
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
@@ -100,18 +101,19 @@ defmodule MCP.Protocol.Messages.Discover do
         |> put_server_info(result.server_info)
 
       map =
-        Map.merge(result.extra, %{
+        %{
           "supportedVersions" => result.supported_versions,
           "capabilities" => Jason.decode!(Jason.encode!(result.capabilities)),
           "resultType" => result.result_type,
           "ttlMs" => result.ttl_ms,
           "cacheScope" => result.cache_scope
-        })
+        }
 
       map =
         if result.instructions, do: Map.put(map, "instructions", result.instructions), else: map
 
-      if map_size(meta) > 0, do: Map.put(map, "_meta", meta), else: map
+      map = if map_size(meta) > 0, do: Map.put(map, "_meta", meta), else: map
+      OpenObject.merge!(map, result.extra, @known_keys, "server/discover result")
     end
 
     defp put_server_info(meta, nil), do: meta

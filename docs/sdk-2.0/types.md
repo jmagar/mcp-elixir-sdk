@@ -38,6 +38,39 @@ boundaries contain an `extra: extra_fields()` member. `_meta` keeps a canonical
 maps. Closed protocol objects reject unknown members with a stable decoding
 error rather than silently promising universal preservation.
 
+### Open-boundary audit
+
+The audit below is pinned to
+`5f5440bb26a62e2cf3440b92da5a667efa03b267:schema/2026-07-28/schema.ts`.
+At that revision, `Result` and `Error` carry a string-keyed unknown-member
+index signature; every type extending `Result` inherits that open boundary.
+
+| Schema-open boundary | SDK representation | Classification |
+| --- | --- | --- |
+| `Error` | `MCP.Protocol.Error.extra` | Lossless; collisions and non-JSON extras rejected |
+| `DiscoverResult` | `MCP.Protocol.Messages.Discover.Result.extra` | Lossless |
+| `ListToolsResult` | `MCP.Protocol.Messages.Tools.ListResult.extra` | Lossless |
+| `CallToolResult` | `MCP.Protocol.Messages.Tools.CallResult.extra` | Lossless |
+| `ListResourcesResult` | `MCP.Protocol.Messages.Resources.ListResult.extra` | Lossless |
+| `ListResourceTemplatesResult` | `MCP.Protocol.Messages.Resources.ListTemplatesResult.extra` | Lossless |
+| `ReadResourceResult` | `MCP.Protocol.Messages.Resources.ReadResult.extra` | Lossless |
+| `ListPromptsResult` | `MCP.Protocol.Messages.Prompts.ListResult.extra` | Lossless |
+| `GetPromptResult` | `MCP.Protocol.Messages.Prompts.GetResult.extra` | Lossless |
+| `CompleteResult` | `MCP.Protocol.Messages.Completion.Result.extra` | Lossless |
+| `SubscriptionsListenResult` | `MCP.Protocol.Messages.Subscriptions.ListenResult.extra` | Lossless |
+| Empty/untyped `Result` values | Raw maps in dispatch/client envelopes | Lossless; intentionally untyped |
+| `MetaObject` variants | Raw `_meta` maps; `MCP.Protocol.Meta.raw` when parsed | Lossless; intentionally opaque |
+| `JSONObject`, schemas, arguments, and payload maps | Raw string-keyed maps/JSON values | Lossless; intentionally opaque |
+
+The Skills extension results (`skills/list`, `skills/get`, and
+`resources/directory/read`) also inherit the core `Result` extensibility rule
+and use the same `extra`/collision contract. Other typed request parameters,
+capability leaf objects, content blocks, annotations, icons, implementations,
+prompts, roots, and sampling objects are intentionally closed unless their
+own extension specification explicitly declares an open member set. Resource
+descriptor structs additionally preserve unknown members for stable MCP Apps
+forward compatibility; this is a deliberate superset of the core schema.
+
 ## JSON-RPC envelope types — current
 
 | Elixir module | Required fields | Notes |

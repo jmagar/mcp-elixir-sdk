@@ -1,0 +1,89 @@
+name: MCP Apps browser interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspector:
+    name: Official Inspector host
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.4"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: conformance/browser/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: conformance/browser
+      - run: npx playwright install --with-deps chromium
+        working-directory: conformance/browser
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - name: Run fresh-host browser hydration
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="${RUNNER_TEMP}/mcp-apps-interop"
+          events="${output}/server-events.log"
+          app_info="${output}/app-info.json"
+          server_log="${output}/server.log"
+          inspector_log="${output}/inspector.log"
+          mkdir -p "${output}"
+
+          token="$(openssl rand -hex 24)"
+          host_version="$(node -p 'require("./conformance/browser/node_modules/@modelcontextprotocol/inspector/package.json").version')"
+          export MCP_APPS_INTEROP_OUTPUT="${output}"
+          export MCP_APPS_INTEROP_EVENTS="${events}"
+          export MCP_APPS_APP_INFO="${app_info}"
+          export MCP_APPS_HOST_VERSION="${host_version}"
+          export MCP_APPS_SERVER_URL="http://127.0.0.1:43101/mcp"
+          export MCP_INSPECTOR_API_TOKEN="${token}"
+          export MCP_CATALOG_PATH="${output}/mcp.json"
+          export MCP_CLIENT_CONFIG_PATH="${output}/client.json"
+
+          mix run --no-halt conformance/apps_browser_adapter.exs >"${server_log}" 2>&1 &
+          server_pid=$!
+          HOST=127.0.0.1 CLIENT_PORT=6274 MCP_SANDBOX_PORT=6275 \
+            MCP_AUTO_OPEN_ENABLED=false MCP_INSPECTOR_API_TOKEN="${token}" \
+            conformance/browser/node_modules/.bin/mcp-inspector --web >"${inspector_log}" 2>&1 &
+          inspector_pid=$!
+          cleanup() {
+            kill "${inspector_pid}" "${server_pid}" 2>/dev/null || true
+            wait "${inspector_pid}" "${server_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for url in http://127.0.0.1:43101/mcp http://127.0.0.1:6274; do
+            ready=false
+            for _ in $(seq 1 45); do
+              if curl -sS -o /dev/null "${url}"; then ready=true; break; fi
+              sleep 1
+            done
+            if [[ "${ready}" != true ]]; then
+              cat "${server_log}" "${inspector_log}"
+              exit 1
+            fi
+          done
+
+          conformance/browser/node_modules/.bin/mcp-inspector --cli \
+            --transport http --server-url "${MCP_APPS_SERVER_URL}" \
+            --method tools/call --tool-name apps_interop_view --app-info \
+            >"${app_info}"
+          node conformance/apps_browser_interop.mjs
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mcp-apps-browser-interop
+          path: ${{ runner.temp }}/mcp-apps-interop
+          if-no-files-found: error
+          retention-days: 14

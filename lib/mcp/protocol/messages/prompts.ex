@@ -27,14 +27,18 @@ defmodule MCP.Protocol.Messages.Prompts do
     Result of `prompts/list`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Prompt
 
-    defstruct [:prompts, :next_cursor, :meta]
+    @known_keys ["prompts", "nextCursor", "_meta"]
+
+    defstruct [:prompts, :next_cursor, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             prompts: [Prompt.t()],
             next_cursor: String.t() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: map()
           }
 
     @spec from_map(map()) :: t()
@@ -42,16 +46,24 @@ defmodule MCP.Protocol.Messages.Prompts do
       %__MODULE__{
         prompts: map |> Map.fetch!("prompts") |> Enum.map(&Prompt.from_map/1),
         next_cursor: Map.get(map, "nextCursor"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    def to_map(%__MODULE__{} = result) do
+      %{"prompts" => result.prompts}
+      |> maybe_put("nextCursor", result.next_cursor)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "prompts/list result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{prompts: struct.prompts}
-        map = if struct.next_cursor, do: Map.put(map, :nextCursor, struct.next_cursor), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end
@@ -92,14 +104,18 @@ defmodule MCP.Protocol.Messages.Prompts do
     Result of `prompts/get`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.PromptMessage
 
-    defstruct [:description, :messages, :meta]
+    @known_keys ["description", "messages", "_meta"]
+
+    defstruct [:description, :messages, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             description: String.t() | nil,
             messages: [PromptMessage.t()],
-            meta: map() | nil
+            meta: map() | nil,
+            extra: map()
           }
 
     @spec from_map(map()) :: t()
@@ -107,16 +123,24 @@ defmodule MCP.Protocol.Messages.Prompts do
       %__MODULE__{
         description: Map.get(map, "description"),
         messages: map |> Map.fetch!("messages") |> Enum.map(&PromptMessage.from_map/1),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    def to_map(%__MODULE__{} = result) do
+      %{"messages" => result.messages}
+      |> maybe_put("description", result.description)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "prompts/get result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{messages: struct.messages}
-        map = if struct.description, do: Map.put(map, :description, struct.description), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end

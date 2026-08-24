@@ -37,7 +37,8 @@ defmodule MCP.Protocol.Messages.ResourcesDirectoryTest do
         }
       ],
       "nextCursor" => "next",
-      "_meta" => %{"live" => true}
+      "_meta" => %{"live" => true},
+      "vendor" => %{"nested" => [false, nil, 0]}
     }
 
     assert {:ok, result} = DirectoryReadResult.decode(map)
@@ -52,7 +53,7 @@ defmodule MCP.Protocol.Messages.ResourcesDirectoryTest do
              DirectoryReadResult.decode(%{"resources" => [%{"uri" => "skill://demo/a"}]})
 
     assert {:error, :invalid_directory_read_result} =
-             DirectoryReadResult.decode(%{"resources" => [], "ttlMs" => 0})
+             DirectoryReadResult.decode(%{"resources" => [], "nextCursor" => 0})
 
     for resource <- [
           %{"uri" => 42, "name" => "bad"},

@@ -1,15 +1,19 @@
 defmodule MCP.Protocol.Messages.Resources.DirectoryReadResult do
   @moduledoc "Result of `resources/directory/read`."
 
+  alias MCP.Protocol.OpenObject
   alias MCP.Protocol.Types.Resource
 
-  defstruct [:resources, :next_cursor, :meta, result_type: "complete"]
+  @known_keys ~w(resources nextCursor resultType _meta)
+
+  defstruct [:resources, :next_cursor, :meta, extra: %{}, result_type: "complete"]
 
   @type t :: %__MODULE__{
           resources: [Resource.t()],
           next_cursor: String.t() | nil,
           result_type: String.t(),
-          meta: map() | nil
+          meta: map() | nil,
+          extra: map()
         }
 
   @spec decode(term()) :: {:ok, t()} | {:error, term()}
@@ -21,7 +25,8 @@ defmodule MCP.Protocol.Messages.Resources.DirectoryReadResult do
          %__MODULE__{
            resources: Enum.map(resources, &Resource.from_map/1),
            next_cursor: Map.get(map, "nextCursor"),
-           meta: Map.get(map, "_meta")
+           meta: Map.get(map, "_meta"),
+           extra: OpenObject.extra(map, @known_keys)
          }}
       rescue
         _error -> {:error, :invalid_directory_read_result}
@@ -34,8 +39,7 @@ defmodule MCP.Protocol.Messages.Resources.DirectoryReadResult do
   def decode(_map), do: {:error, :invalid_directory_read_result}
 
   defp validate_envelope(map) do
-    if Enum.all?(Map.keys(map), &(&1 in ~w(resources nextCursor resultType _meta))) and
-         valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
+    if valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
          Map.get(map, "resultType", "complete") == "complete" and
          valid_optional?(Map.get(map, "_meta"), &is_map/1),
        do: :ok,
@@ -90,6 +94,7 @@ defmodule MCP.Protocol.Messages.Resources.DirectoryReadResult do
     %{"resultType" => result.result_type, "resources" => result.resources}
     |> maybe_put("nextCursor", result.next_cursor)
     |> maybe_put("_meta", result.meta)
+    |> OpenObject.merge!(result.extra, @known_keys, "resources/directory/read result")
   end
 
   defp maybe_put(map, _key, nil), do: map

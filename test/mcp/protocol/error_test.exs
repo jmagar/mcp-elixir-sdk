@@ -118,5 +118,22 @@ defmodule MCP.Protocol.ErrorTest do
       assert error.code == -32_603
       assert error.data == nil
     end
+
+    test "round-trips unknown fields at the schema-open Error boundary" do
+      map = %{
+        "code" => -32_603,
+        "message" => "Internal error",
+        "data" => nil,
+        "vendor" => %{"retryable" => false}
+      }
+
+      error = Error.from_map(map)
+      assert error.extra == %{"vendor" => %{"retryable" => false}}
+      assert Jason.decode!(Jason.encode!(error)) == map
+
+      assert_raise ArgumentError, ~r/collides with code/, fn ->
+        Jason.encode!(%{error | extra: %{"code" => 1}})
+      end
+    end
   end
 end

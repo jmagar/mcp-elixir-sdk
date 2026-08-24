@@ -40,14 +40,18 @@ defmodule MCP.Protocol.Messages.Tools do
     Result of `tools/list`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Tool
 
-    defstruct [:tools, :next_cursor, :meta]
+    @known_keys ["tools", "nextCursor", "_meta"]
+
+    defstruct [:tools, :next_cursor, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             tools: [Tool.t()],
             next_cursor: String.t() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: map()
           }
 
     @spec from_map(map()) :: t()
@@ -55,18 +59,25 @@ defmodule MCP.Protocol.Messages.Tools do
       %__MODULE__{
         tools: map |> Map.fetch!("tools") |> Enum.map(&Tool.from_map/1),
         next_cursor: Map.get(map, "nextCursor"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    @spec to_map(t()) :: map()
+    def to_map(%__MODULE__{} = result) do
+      %{"tools" => result.tools}
+      |> maybe_put("nextCursor", result.next_cursor)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "tools/list result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{tools: struct.tools}
-
-        map = if struct.next_cursor, do: Map.put(map, :nextCursor, struct.next_cursor), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end
@@ -110,6 +121,7 @@ defmodule MCP.Protocol.Messages.Tools do
     Result of `tools/call`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Content
 
     @known_keys ["content", "structuredContent", "isError", "_meta"]
@@ -131,37 +143,18 @@ defmodule MCP.Protocol.Messages.Tools do
         structured_content: Map.get(map, "structuredContent", :absent),
         is_error: Map.get(map, "isError"),
         meta: Map.get(map, "_meta"),
-        extra: Map.drop(map, ["content", "structuredContent", "isError", "_meta"])
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
     @spec to_map(t()) :: map()
     def to_map(%__MODULE__{} = result) do
-      reject_extra_collisions!(result.extra)
-
       %{"content" => result.content}
       |> maybe_put("structuredContent", result.structured_content, :absent)
       |> maybe_put("isError", result.is_error, nil)
       |> maybe_put("_meta", result.meta, nil)
-      |> Map.merge(result.extra)
+      |> OpenObject.merge!(result.extra, @known_keys, "call result")
     end
-
-    defp reject_extra_collisions!(extra) when is_map(extra) do
-      case Enum.find(Map.keys(extra), &(not is_binary(&1) or &1 in @known_keys)) do
-        nil ->
-          :ok
-
-        key when is_binary(key) ->
-          raise ArgumentError, "call result extra field collides with #{key}"
-
-        key ->
-          raise ArgumentError,
-                "call result extra field names must be strings, got: #{inspect(key)}"
-      end
-    end
-
-    defp reject_extra_collisions!(_extra),
-      do: raise(ArgumentError, "call result extra fields must be a map")
 
     defp maybe_put(map, _key, value, value), do: map
     defp maybe_put(map, key, value, _absent), do: Map.put(map, key, value)

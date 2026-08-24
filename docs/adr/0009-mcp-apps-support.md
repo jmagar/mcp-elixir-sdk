@@ -40,6 +40,9 @@ Nested linkage is emitted canonically. The deprecated flat
 with a different nested value.
 
 MCP core conformance and MCP Apps evidence are separate denominators. Local
-unit/transport fixtures do not prove real-browser hydration; fresh-host proof
-must be reported separately with the host version and external auth/policy
-boundary.
+unit/transport fixtures do not prove real-browser hydration. The optional
+`MCP Apps browser interoperability` workflow reports that boundary separately:
+it uses a fresh token-authenticated official Inspector host and captures the
+host version, resource-policy probe, screenshots, console/network errors, and
+server-side proof of `resources/read` plus the View's same-server callback. It
+does not gate package CI or add Hex runtime dependencies.
