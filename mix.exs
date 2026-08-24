@@ -182,13 +182,14 @@ defmodule MCPElixirSDK.MixProject do
       {"mix", ["test", "--seed", "0"]},
       {"mix", ["credo", "--strict"]},
       {"mix", ["dialyzer"]},
-      {"mix", ["docs"]},
-      {"mix", ["hex.build"]},
+      {"mix", ["docs", "--warnings-as-errors"]},
+      {"elixir", ["scripts/package_smoke.exs"]},
       {"mix", ["hex.audit"]},
       {"mix", ["deps.unlock", "--check-unused"]},
       {"git", ["diff", "--check"]},
       {"jq", ["empty", "conformance/scenarios.json"]},
-      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]}
+      {"jq", ["empty", "conformance/compatibility-2025-11-25.json"]},
+      {"jq", ["empty", "conformance/mcp-apps-2026-01-26.json"]}
     ]
     |> Enum.each(&run_command!/1)
   end

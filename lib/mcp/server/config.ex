@@ -43,15 +43,33 @@ defmodule MCP.Server.Config do
   @skills_extension "io.modelcontextprotocol/skills"
   @default_skills_callback_timeout 30_000
 
+  @typedoc """
+  Stable failure returned when a handler's `init/1` callback cannot produce
+  its immutable launch configuration.
+
+  A handler's ordinary `{:error, reason}` becomes
+  `{:handler_init_failed, reason}`. Raises, throws, exits, and malformed return
+  values use the tagged detail forms so callers never need to parse exception
+  text.
+  """
+  @type handler_init_error ::
+          {:handler_init_failed,
+           term()
+           | {:raised, struct()}
+           | {:thrown, term()}
+           | {:exited, term()}
+           | {:invalid_return, term()}}
+
   @doc """
   Builds the dispatch config from a handler module and options.
 
   Returns `{:ok, config}` or `{:error, reason}` if `handler.init/1` fails.
 
-  Handler-returned `{:error, reason}` values are preserved. Abnormal failures
-  are normalized as `{:error, {:handler_init_failed, detail}}`, where `detail`
-  is one of `{:raised, exception}`, `{:thrown, value}`, `{:exited, reason}`,
-  and `{:invalid_return, value}`.
+  All handler failures use the stable outer shape
+  `{:error, {:handler_init_failed, detail}}`. For a handler-returned
+  `{:error, reason}`, `detail` is that reason. Abnormal failures use one of
+  `{:raised, exception}`, `{:thrown, value}`, `{:exited, reason}`, and
+  `{:invalid_return, value}`.
 
   ## Options of note
 
@@ -252,5 +270,6 @@ defmodule MCP.Server.Config do
     :throw, value -> {:error, {:handler_init_failed, {:thrown, value}}}
     :exit, reason -> {:error, {:handler_init_failed, {:exited, reason}}}
   end
+
   defp default_info, do: %{name: "mcp_elixir_sdk", version: "1.0.0"}
 end

@@ -23,13 +23,14 @@ mix compile --warnings-as-errors
 mix test --seed 0
 mix credo --strict
 mix dialyzer
-mix docs
-mix hex.build
+mix docs --warnings-as-errors
+elixir scripts/package_smoke.exs
 mix hex.audit
 mix deps.unlock --check-unused
 git diff --check
 jq empty conformance/scenarios.json
 jq empty conformance/compatibility-2025-11-25.json
+jq empty conformance/mcp-apps-2026-01-26.json
 ```
 
 Do not use sleeps to coordinate process tests. Start owned processes with
@@ -85,9 +86,17 @@ scope. Do not replace the pin with `latest` in release evidence.
 
 ## Package inspection
 
-`mix hex.build` must succeed without generated docs or build output entering the
-archive. Inspect the resulting tarball before release and verify the README,
-license, changelog, full `docs/` package, and conformance ledger are present.
+`elixir scripts/package_smoke.exs` builds and unpacks the Hex archive into a
+new temporary directory, checks the release documents, conformance ledger, and
+quick-start example are present, fetches production dependencies, compiles the
+extracted project with warnings as errors, and executes the packaged quick
+start. The temporary extraction is always removed afterward, so no untracked
+checkout file can satisfy this gate accidentally.
+
+CI also runs the full suite with two BEAM schedulers, two async threads, eight
+ExUnit cases, and an OS process limit of 1024. This is the regression gate for
+subprocess-heavy stdio tests that can pass in isolation but fail when the full
+suite competes for host resources.
 
 ## Actual-Unraid stdio cleanup probe
 

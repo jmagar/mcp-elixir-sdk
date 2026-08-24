@@ -80,6 +80,12 @@ Implement `MCP.Server.Handler`. `init/1` returns immutable launch
 configuration. Every request callback receives a request-scoped
 `MCP.Server.ToolContext` immediately before that configuration:
 
+Treat handler initialization failures as a stable public error boundary.
+`MCP.Server.Config.build/2` returns
+`{:error, {:handler_init_failed, detail}}` for normal handler errors, raises,
+throws, exits, and malformed `init/1` returns. Match the outer tag; the detail
+may contain the handler's application-specific reason.
+
 ```elixir
 defmodule MyApp.MCPHandler do
   @behaviour MCP.Server.Handler

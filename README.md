@@ -161,6 +161,13 @@ Handler configuration is immutable after `init/1`. Put mutable state behind a
 supervised process and store its pid or registered name in the launch config.
 Every request callback receives `MCP.Server.ToolContext` before that config.
 
+`MCP.Server.Config.build/2` reports every initialization failure as
+`{:error, {:handler_init_failed, detail}}`. A normal `{:error, reason}` return
+uses `reason` as the detail; raises, throws, exits, and malformed returns use
+`{:raised, exception}`, `{:thrown, value}`, `{:exited, reason}`, and
+`{:invalid_return, value}` respectively. Consumers may safely match the outer
+tag without parsing exception text.
+
 ```elixir
 defmodule MyApp.MCPHandler do
   @behaviour MCP.Server.Handler
@@ -298,8 +305,8 @@ mix format --check-formatted
 mix test
 mix credo --strict
 mix dialyzer
-mix docs
-mix hex.build
+mix docs --warnings-as-errors
+elixir scripts/package_smoke.exs
 ```
 
 The pinned official harness adapters and scenario ledger live in
