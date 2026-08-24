@@ -48,7 +48,8 @@ defmodule MCPElixirSDK.MixProject do
         "Examples" => "#{@source_url}/tree/main/examples"
       },
       files:
-        ~w(lib docs examples conformance usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
+        ~w(lib docs examples usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md) ++
+          ~w(conformance/*.ex conformance/*.exs conformance/*.json conformance/*.md conformance/*.mjs conformance/browser/package.json conformance/browser/package-lock.json)
     ]
   end
 

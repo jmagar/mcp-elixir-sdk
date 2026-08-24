@@ -51,6 +51,12 @@ defmodule MCP.PackageSmoke do
       path = Path.join(package_root, relative)
       if not File.regular?(path), do: raise("package is missing #{relative}")
     end
+
+    generated_dependency_trees = Path.wildcard(Path.join(package_root, "**/node_modules"))
+
+    if generated_dependency_trees != [] do
+      raise("package contains generated dependency trees: #{inspect(generated_dependency_trees)}")
+    end
   end
 
   defp run!(command, args, directory, extra_env \\ []) do
@@ -87,7 +93,7 @@ defmodule MCP.PackageSmoke do
   end
 
   defp package_temp_root do
-    suffix = System.unique_integer([:positive, :monotonic])
+    suffix = :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
     Path.join(System.tmp_dir!(), "mcp-elixir-sdk-package-smoke-#{suffix}")
   end
 end
