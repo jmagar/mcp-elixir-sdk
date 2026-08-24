@@ -60,7 +60,8 @@ defmodule MCP.Protocol.Messages.Skills.ListResult do
   end
 
   defp validate_envelope(map) do
-    if valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
+    if Enum.all?(Map.keys(map), &(&1 in ~w(skills nextCursor resultType ttlMs cacheScope _meta))) and
+         valid_optional?(Map.get(map, "nextCursor"), &is_binary/1) and
          Map.get(map, "resultType", "complete") == "complete" and
          valid_optional?(Map.get(map, "ttlMs"), &(is_integer(&1) and &1 >= 0)) and
          valid_optional?(Map.get(map, "cacheScope"), &(&1 in ["public", "private"])) and

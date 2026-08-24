@@ -83,6 +83,7 @@ defmodule MCP.Protocol.Types.SkillTest do
           "skill://demo/../secret",
           "skill://demo/%2e%2e/secret",
           "skill://demo/%252e%252e/secret",
+          "skill://demo//secret",
           "skill://demo/a%2fb",
           "skill://demo/a%5cb",
           "skill://demo/a\\b",
@@ -131,7 +132,7 @@ defmodule MCP.Protocol.Types.SkillTest do
              |> put_in(["frontmatter", "future"], String.duplicate("x", 1_048_577))
              |> Skill.decode()
 
-    assert {:error, :skill_metadata_limit} =
+    assert {:error, :invalid_skill_metadata} =
              skill()
              |> Map.put("_meta", %{atom_key: "not JSON"})
              |> Skill.decode()

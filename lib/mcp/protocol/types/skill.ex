@@ -7,10 +7,9 @@ defmodule MCP.Protocol.Types.Skill do
   preserve a well-formed entry even when it exceeds their local loading policy.
   """
 
-  alias MCP.Protocol.ExtensionCapabilities
   alias MCP.Protocol.Types.SkillResource
 
-  @name ~r/^[a-z0-9]+(?:-[a-z0-9]+)*$/
+  @name ~r/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
   @default_limits [max_depth: 32, max_nodes: 16_384, max_bytes: 1_048_576]
 
   defstruct [:uri, :frontmatter, :resources, :meta]
@@ -180,7 +179,7 @@ defmodule MCP.Protocol.Types.Skill do
 
   defp reject_unsafe_uri_parts(%URI{userinfo: nil, fragment: nil, query: nil, path: path})
        when is_binary(path) do
-    if String.contains?(path, ["\\", <<0>>]),
+    if String.contains?(path, ["\\", <<0>>, "//"]),
       do: {:error, :unsafe_skill_uri},
       else: :ok
   end
@@ -189,7 +188,8 @@ defmodule MCP.Protocol.Types.Skill do
 
   defp decode_segments(parsed) do
     parsed.path
-    |> String.split("/", trim: true)
+    |> String.trim_leading("/")
+    |> String.split("/", trim: false)
     |> Enum.reduce_while({:ok, []}, fn encoded, {:ok, acc} ->
       decoded = URI.decode(encoded)
 
@@ -214,8 +214,7 @@ defmodule MCP.Protocol.Types.Skill do
   defp bounded_json(value, opts) do
     limits = Keyword.merge(@default_limits, opts)
 
-    with true <- ExtensionCapabilities.json_value?(value),
-         {:ok, nodes, depth} <- json_shape([{value, 1}], 0, 0, limits[:max_nodes]),
+    with {:ok, nodes, depth} <- json_shape([{value, 1}], 0, 0, limits[:max_nodes]),
          true <- nodes <= limits[:max_nodes] and depth <= limits[:max_depth],
          {:ok, encoded} <- Jason.encode(value),
          true <- byte_size(encoded) <= limits[:max_bytes] do
@@ -232,10 +231,14 @@ defmodule MCP.Protocol.Types.Skill do
     do: {:error, :too_many_nodes}
 
   defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_map(value) do
-    children =
-      Enum.flat_map(value, fn {key, child} -> [{key, level + 1}, {child, level + 1}] end)
+    if Enum.all?(Map.keys(value), &is_binary/1) do
+      children =
+        Enum.flat_map(value, fn {key, child} -> [{key, level + 1}, {child, level + 1}] end)
 
-    json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes)
+      json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes)
+    else
+      {:error, :invalid_json_object}
+    end
   end
 
   defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_list(value) do

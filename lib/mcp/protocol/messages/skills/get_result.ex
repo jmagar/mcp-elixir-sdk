@@ -11,7 +11,8 @@ defmodule MCP.Protocol.Messages.Skills.GetResult do
   def decode(map, opts \\ [])
 
   def decode(%{"skill" => skill} = map, opts) do
-    with "complete" <- Map.get(map, "resultType", "complete"),
+    with true <- Enum.all?(Map.keys(map), &(&1 in ["skill", "resultType", "_meta"])),
+         "complete" <- Map.get(map, "resultType", "complete"),
          meta when is_nil(meta) or is_map(meta) <- Map.get(map, "_meta"),
          {:ok, decoded} <- Skill.decode_and_validate(skill, opts) do
       {:ok, %__MODULE__{skill: decoded, result_type: "complete", meta: meta}}

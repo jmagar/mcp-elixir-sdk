@@ -9,9 +9,10 @@ defmodule MCP.Protocol.Messages.Skills.GetParams do
   def decode(%{"uri" => uri} = map) when is_binary(uri) do
     meta = Map.get(map, "_meta")
 
-    if is_nil(meta) or is_map(meta),
-      do: {:ok, %__MODULE__{uri: uri, meta: meta}},
-      else: {:error, :invalid_skills_get_params}
+    if Enum.all?(Map.keys(map), &(&1 in ["uri", "_meta"])) and
+         (not Map.has_key?(map, "_meta") or is_map(meta)),
+       do: {:ok, %__MODULE__{uri: uri, meta: meta}},
+       else: {:error, :invalid_skills_get_params}
   end
 
   def decode(_map), do: {:error, :invalid_skills_get_params}

@@ -18,6 +18,11 @@ defmodule MCP.Protocol.Messages.SkillsTest do
     assert ListParams.to_map(params) == map
   end
 
+  test "list params reject explicit null and unknown members" do
+    assert {:error, :invalid_skills_list_params} = ListParams.decode(%{"cursor" => nil})
+    assert {:error, :invalid_skills_list_params} = ListParams.decode(%{"future" => true})
+  end
+
   test "get params round-trip an unlisted skill URI" do
     map = %{"uri" => "skill://demo/SKILL.md", "_meta" => %{"request" => "direct"}}
     assert {:ok, params} = GetParams.decode(map)

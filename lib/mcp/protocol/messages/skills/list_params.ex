@@ -10,7 +10,9 @@ defmodule MCP.Protocol.Messages.Skills.ListParams do
     cursor = Map.get(map, "cursor")
     meta = Map.get(map, "_meta")
 
-    if (is_nil(cursor) or is_binary(cursor)) and (is_nil(meta) or is_map(meta)) do
+    if Enum.all?(Map.keys(map), &(&1 in ["cursor", "_meta"])) and
+         optional_member?(map, "cursor", &is_binary/1) and
+         optional_member?(map, "_meta", &is_map/1) do
       {:ok, %__MODULE__{cursor: cursor, meta: meta}}
     else
       {:error, :invalid_skills_list_params}
@@ -18,6 +20,10 @@ defmodule MCP.Protocol.Messages.Skills.ListParams do
   end
 
   def decode(_map), do: {:error, :invalid_skills_list_params}
+
+  defp optional_member?(map, key, validator) do
+    not Map.has_key?(map, key) or validator.(Map.fetch!(map, key))
+  end
 
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = params) do

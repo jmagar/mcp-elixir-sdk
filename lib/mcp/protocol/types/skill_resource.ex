@@ -1,7 +1,7 @@
 defmodule MCP.Protocol.Types.SkillResource do
   @moduledoc "A file declared by a static SEP-2640 skill manifest."
 
-  @digest ~r/^sha256:[0-9a-f]{64}$/
+  @digest ~r/\Asha256:[0-9a-f]{64}\z/
 
   defstruct [:uri, :digest, :size]
 

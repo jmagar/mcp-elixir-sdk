@@ -9,6 +9,16 @@ defmodule MCP.Protocol.Messages.ResourcesDirectoryTest do
     assert DirectoryReadParams.to_map(params) == map
   end
 
+  test "directory params reject explicit null and unknown members" do
+    uri = "skill://demo/templates"
+
+    assert {:error, :invalid_directory_read_params} =
+             DirectoryReadParams.decode(%{"uri" => uri, "cursor" => nil})
+
+    assert {:error, :invalid_directory_read_params} =
+             DirectoryReadParams.decode(%{"uri" => uri, "future" => true})
+  end
+
   test "directory result round-trips direct children and complete envelope" do
     map = %{
       "resultType" => "complete",

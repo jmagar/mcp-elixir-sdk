@@ -211,7 +211,7 @@ defmodule MCP.Server.Dispatch do
 
     case continuation_context(ctx, params) do
       {:ok, ctx} ->
-        call(
+        skills_aware_call(
           config,
           ctx,
           :handle_read_resource,
@@ -404,6 +404,12 @@ defmodule MCP.Server.Dispatch do
   # be uncharted dual-era support, contra PO ruling 2). A handler that does not
   # implement the required context arity is a contract error, surfaced as
   # method-not-found rather than silently invoked without a context.
+  defp skills_aware_call(config, ctx, name, leading_args, shape, id) do
+    if skills_enabled?(config),
+      do: skills_call(config, ctx, name, leading_args, shape, id),
+      else: call(config, ctx, name, leading_args, shape, id)
+  end
+
   defp call(config, ctx, name, leading_args, shape, id) do
     mod = config.handler_module
     state = config.handler_state
