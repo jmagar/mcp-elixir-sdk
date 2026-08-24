@@ -1,6 +1,6 @@
 # ADR-009: Stable MCP Apps support
 
-**Status:** Accepted  
+**Status:** Accepted
 **Date:** 2026-08-24
 
 ## Decision
