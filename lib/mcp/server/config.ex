@@ -40,6 +40,9 @@ defmodule MCP.Server.Config do
   alias MCP.Protocol.Types.Implementation
   alias MCP.Server.Dispatch
 
+  @skills_extension "io.modelcontextprotocol/skills"
+  @default_skills_callback_timeout 30_000
+
   @doc """
   Builds the dispatch config from a handler module and options.
 
@@ -71,8 +74,13 @@ defmodule MCP.Server.Config do
 
     with {:ok, extensions} <-
            ExtensionCapabilities.validate(Keyword.get(opts, :extensions)),
+         :ok <- validate_skills_extension(handler_module, extensions),
          {:ok, cache_defaults} <-
            validate_cache_defaults(Keyword.get(opts, :cache_defaults, {0, "public"})),
+         {:ok, skills_callback_timeout} <-
+           validate_skills_callback_timeout(
+             Keyword.get(opts, :skills_callback_timeout, @default_skills_callback_timeout)
+           ),
          {:ok, handler_state} <- handler_module.init(handler_opts) do
       capabilities =
         handler_module
@@ -87,13 +95,16 @@ defmodule MCP.Server.Config do
          capabilities: capabilities,
          instructions: Keyword.get(opts, :instructions),
          protocol_version: Dispatch.protocol_version(),
-         cache_defaults: cache_defaults
+         cache_defaults: cache_defaults,
+         skills_callback_timeout: skills_callback_timeout
        }}
     else
       {:error, {:invalid_extension_identifier, _key} = reason} -> {:error, reason}
       {:error, {:invalid_extension_settings, _key} = reason} -> {:error, reason}
       {:error, :extensions_must_be_an_object = reason} -> {:error, reason}
       {:error, {:invalid_cache_defaults, _value} = reason} -> {:error, reason}
+      {:error, {:invalid_skills_extension, _reason} = reason} -> {:error, reason}
+      {:error, {:invalid_skills_callback_timeout, _value} = reason} -> {:error, reason}
       {:error, reason} -> {:error, {:handler_init_failed, reason}}
     end
   end
@@ -152,6 +163,66 @@ defmodule MCP.Server.Config do
   end
 
   defp validate_cache_defaults(value), do: {:error, {:invalid_cache_defaults, value}}
+
+  defp validate_skills_extension(_handler_module, nil), do: :ok
+
+  defp validate_skills_extension(handler_module, extensions) do
+    case Map.fetch(extensions, @skills_extension) do
+      :error ->
+        :ok
+
+      {:ok, settings} ->
+        callbacks = handler_module.__info__(:functions)
+
+        if valid_skills_settings?(settings) do
+          validate_skills_callbacks(callbacks, Map.get(settings, "directoryRead", false))
+        else
+          {:error, {:invalid_skills_extension, :invalid_settings}}
+        end
+    end
+  end
+
+  defp validate_skills_callbacks(callbacks, directory_read?) do
+    with :ok <- require_callback(callbacks, {:handle_list_skills, 3}, :missing_list_callback),
+         :ok <- require_callback(callbacks, {:handle_get_skill, 3}, :missing_get_callback),
+         :ok <-
+           require_callback(
+             callbacks,
+             {:handle_read_resource, 3},
+             :missing_read_resource_callback
+           ) do
+      require_directory_callback(callbacks, directory_read?)
+    end
+  end
+
+  defp require_callback(callbacks, callback, reason) do
+    if callback in callbacks,
+      do: :ok,
+      else: {:error, {:invalid_skills_extension, reason}}
+  end
+
+  defp require_directory_callback(_callbacks, false), do: :ok
+
+  defp require_directory_callback(callbacks, true) do
+    require_callback(
+      callbacks,
+      {:handle_read_resource_directory, 4},
+      :missing_directory_read_callback
+    )
+  end
+
+  defp valid_skills_settings?(settings) do
+    Enum.all?(settings, fn
+      {"directoryRead", value} when is_boolean(value) -> true
+      _other -> false
+    end)
+  end
+
+  defp validate_skills_callback_timeout(value) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp validate_skills_callback_timeout(value),
+    do: {:error, {:invalid_skills_callback_timeout, value}}
 
   defp default_info, do: %{name: "mcp_elixir_sdk", version: "1.0.0"}
 end
