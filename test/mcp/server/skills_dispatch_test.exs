@@ -5,6 +5,7 @@ defmodule MCP.Server.SkillsDispatchTest do
 
   alias MCP.Protocol.Messages.Request
   alias MCP.Server.{Config, Dispatch, LegacyDispatch, ToolContext}
+  alias MCP.Transport.StreamableHTTP.Plug, as: MCPPlug
 
   @extension "io.modelcontextprotocol/skills"
   @version "2026-07-28"
@@ -16,25 +17,26 @@ defmodule MCP.Server.SkillsDispatchTest do
 
     def handle_list_skills(cursor, ctx, state) do
       send(state[:test_pid], {:list_skills, cursor, ctx.identity})
-      {:ok, [state[:skill]], state[:next_cursor]}
+      state[:list_result] || {:ok, [state[:skill]], state[:next_cursor]}
     end
 
     def handle_get_skill(uri, ctx, state) do
       send(state[:test_pid], {:get_skill, uri, ctx.identity})
-      {:ok, state[:skill]}
+      state[:get_result] || {:ok, state[:skill]}
     end
 
     def handle_read_resource_directory(uri, cursor, ctx, state) do
       send(state[:test_pid], {:read_directory, uri, cursor, ctx.identity})
 
-      {:ok,
-       [
-         %{
-           "uri" => "skill://acme/demo/reference.md",
-           "name" => "reference.md",
-           "mimeType" => "text/markdown"
-         }
-       ], nil}
+      state[:directory_result] ||
+        {:ok,
+         [
+           %{
+             "uri" => "skill://acme/demo/reference.md",
+             "name" => "reference.md",
+             "mimeType" => "text/markdown"
+           }
+         ], nil}
     end
 
     def handle_read_resource(uri, _ctx, _state), do: {:ok, [%{"uri" => uri, "text" => "ok"}]}
@@ -44,7 +46,12 @@ defmodule MCP.Server.SkillsDispatchTest do
     @behaviour MCP.Server.Handler
 
     def init(opts), do: {:ok, opts}
-    def handle_list_skills(_cursor, _ctx, _state), do: Process.sleep(:infinity)
+
+    def handle_list_skills(_cursor, _ctx, state) do
+      if state[:test_pid], do: send(state[:test_pid], {:slow_callback, self()})
+      Process.sleep(:infinity)
+    end
+
     def handle_get_skill(_uri, _ctx, state), do: {:ok, state[:skill]}
     def handle_read_resource(uri, _ctx, _state), do: {:ok, [%{"uri" => uri, "text" => "ok"}]}
   end
@@ -89,6 +96,7 @@ defmodule MCP.Server.SkillsDispatchTest do
   test "configuration advertises Skills only with its complete callback family", %{skill: skill} do
     assert {:ok, config} = enabled_config(Handler, skill: skill, test_pid: self())
     assert config.capabilities.extensions[@extension] == %{}
+    assert config.capabilities.resources != nil
 
     assert Config.build(MissingGetHandler, extensions: %{@extension => %{}}) ==
              {:error, {:invalid_skills_extension, :missing_get_callback}}
@@ -178,6 +186,66 @@ defmodule MCP.Server.SkillsDispatchTest do
       end)
 
     assert log =~ "callback=handle_list_skills timeout_ms=10"
+  end
+
+  test "Streamable HTTP forwards the Skills callback timeout into dispatch config", %{
+    skill: skill
+  } do
+    plug_config =
+      MCPPlug.init(
+        server_mod: Handler,
+        handler_opts: [skill: skill, test_pid: self()],
+        server_opts: [
+          extensions: %{@extension => %{}},
+          skills_callback_timeout: 7
+        ]
+      )
+
+    assert plug_config.config.skills_callback_timeout == 7
+  end
+
+  test "a callback worker terminates when its request owner dies", %{skill: skill} do
+    assert {:ok, config} =
+             enabled_config(SlowHandler,
+               skill: skill,
+               test_pid: self(),
+               skills_callback_timeout: 30_000
+             )
+
+    owner = spawn(fn -> dispatch(config, "skills/list", %{}) end)
+    assert_receive {:slow_callback, worker}, 1_000
+    assert Process.alive?(worker)
+    Process.exit(owner, :kill)
+    ref = Process.monitor(worker)
+    assert_receive {:DOWN, ^ref, :process, ^worker, _reason}, 1_000
+  end
+
+  test "preserves handler domain errors for every Skills route", %{skill: skill} do
+    error = {:error, -32_002, "forbidden", %{"reason" => "policy"}}
+
+    assert {:ok, config} =
+             enabled_config(Handler,
+               skill: skill,
+               test_pid: self(),
+               directory_read: true,
+               list_result: error,
+               get_result: error,
+               directory_result: error
+             )
+
+    for {method, params} <- [
+          {"skills/list", %{}},
+          {"skills/get", %{"uri" => skill["uri"]}},
+          {"resources/directory/read", %{"uri" => "skill://acme/demo"}}
+        ] do
+      response = dispatch(config, method, params)
+
+      assert response["error"] == %{
+               "code" => -32_002,
+               "message" => "forbidden",
+               "data" => %{"reason" => "policy"}
+             }
+    end
   end
 
   test "legacy projection retains extension behavior and removes 2026 result fields", %{

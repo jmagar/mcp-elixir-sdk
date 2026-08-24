@@ -133,11 +133,16 @@ defmodule MCP.Server.Config do
   end
 
   defp detect_resource_capabilities(callbacks, list_changed?) do
-    if {:handle_list_resources, 3} in callbacks do
+    if {:handle_list_resources, 3} in callbacks or skills_callbacks?(callbacks) do
       %ResourceCapabilities{
         list_changed: enabled(list_changed?)
       }
     end
+  end
+
+  defp skills_callbacks?(callbacks) do
+    {:handle_list_skills, 3} in callbacks and {:handle_get_skill, 3} in callbacks and
+      {:handle_read_resource, 3} in callbacks
   end
 
   defp enabled(true), do: true

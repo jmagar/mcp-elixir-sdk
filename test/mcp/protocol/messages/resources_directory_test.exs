@@ -41,5 +41,17 @@ defmodule MCP.Protocol.Messages.ResourcesDirectoryTest do
 
     assert {:error, :invalid_directory_read_result} =
              DirectoryReadResult.decode(%{"resources" => [], "ttlMs" => 0})
+
+    for resource <- [
+          %{"uri" => 42, "name" => "bad"},
+          %{"uri" => "skill://demo/a", "name" => []},
+          %{"uri" => "skill://demo/a", "name" => "a", "size" => -1},
+          %{"uri" => "skill://demo/a", "name" => "a", "_meta" => []},
+          %{"uri" => "skill://demo/a", "name" => "a", "annotations" => %{"audience" => 7}},
+          %{"uri" => "skill://demo/a", "name" => "a", "icons" => [%{"src" => 5}]}
+        ] do
+      assert {:error, :invalid_directory_read_result} =
+               DirectoryReadResult.decode(%{"resources" => [resource]})
+    end
   end
 end

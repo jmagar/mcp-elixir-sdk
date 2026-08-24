@@ -45,10 +45,14 @@ defmodule MCP.Protocol.Types.Skill do
   def decode(_map, _opts), do: {:error, :invalid_skill}
 
   @spec validate(t()) :: :ok | {:error, term()}
-  def validate(%__MODULE__{} = skill) do
+  def validate(%__MODULE__{frontmatter: frontmatter, meta: meta, resources: resources} = skill)
+      when is_map(frontmatter) and (is_nil(meta) or is_map(meta)) and
+             (resources == :dynamic or is_list(resources)) do
     with {:ok, root} <- skill_root(skill.uri, skill.frontmatter),
          do: validate_resources(skill.resources, skill.uri, root)
   end
+
+  def validate(%__MODULE__{}), do: {:error, :invalid_skill}
 
   @spec decode_and_validate(term(), keyword()) :: {:ok, t()} | {:error, term()}
   def decode_and_validate(map, opts \\ []) do
@@ -96,14 +100,21 @@ defmodule MCP.Protocol.Types.Skill do
 
   defp validate_resources(:dynamic, _skill_uri, _root), do: :ok
 
+  defp validate_resources([], _skill_uri, _root), do: {:error, :empty_skill_manifest}
+
   defp validate_resources(resources, skill_uri, root) do
-    Enum.reduce_while(resources, {:ok, MapSet.new(), false}, fn resource, state ->
-      validate_resource(resource, skill_uri, root, state)
-    end)
-    |> case do
-      {:ok, _seen, true} -> :ok
-      {:ok, _seen, false} -> {:error, :missing_skill_md_resource}
-      error -> error
+    if Enum.all?(resources, &match?(%SkillResource{}, &1)) do
+      resources
+      |> Enum.reduce_while({:ok, MapSet.new(), false}, fn resource, state ->
+        validate_resource(resource, skill_uri, root, state)
+      end)
+      |> case do
+        {:ok, _seen, true} -> :ok
+        {:ok, _seen, false} -> {:error, :missing_skill_md_resource}
+        error -> error
+      end
+    else
+      {:error, :invalid_skill_resources}
     end
   end
 
@@ -221,8 +232,10 @@ defmodule MCP.Protocol.Types.Skill do
     do: {:error, :too_many_nodes}
 
   defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_map(value) do
-    children = Enum.map(value, fn {key, child} -> [{key, level + 1}, {child, level + 1}] end)
-    json_shape(List.flatten(children, rest), nodes + 1, max(depth, level), max_nodes)
+    children =
+      Enum.flat_map(value, fn {key, child} -> [{key, level + 1}, {child, level + 1}] end)
+
+    json_shape(children ++ rest, nodes + 1, max(depth, level), max_nodes)
   end
 
   defp json_shape([{value, level} | rest], nodes, depth, max_nodes) when is_list(value) do

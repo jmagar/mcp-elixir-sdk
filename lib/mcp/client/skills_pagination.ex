@@ -7,7 +7,6 @@ defmodule MCP.Client.SkillsPagination do
   @default_max_items 10_000
   @default_max_bytes 16_777_216
   @default_timeout 30_000
-  @bound_keys [:max_pages, :max_items, :max_bytes]
 
   @spec list_all(GenServer.server(), keyword()) ::
           {:ok, [MCP.Protocol.Types.Skill.t()]} | {:error, term()}
@@ -15,10 +14,10 @@ defmodule MCP.Client.SkillsPagination do
     with {:ok, bounds} <- bounds(opts),
          {:ok, timeout} <- timeout(opts) do
       deadline = System.monotonic_time(:millisecond) + timeout
-      call_opts = Keyword.drop(opts, @bound_keys)
-
-      state = %{cursor: nil, seen: MapSet.new(), chunks: [], pages: 0, items: 0, bytes: 0}
-      paginate(client, call_opts, Map.put(bounds, :timeout, timeout), deadline, state)
+      cursor = Keyword.get(opts, :cursor)
+      seen = if is_binary(cursor), do: MapSet.new([cursor]), else: MapSet.new()
+      state = %{cursor: cursor, seen: seen, chunks: [], pages: 0, items: 0, bytes: 0}
+      paginate(client, opts, Map.put(bounds, :timeout, timeout), deadline, state)
     end
   end
 
@@ -52,7 +51,7 @@ defmodule MCP.Client.SkillsPagination do
   defp consume_page(client, opts, bounds, deadline, result, state) do
     page_items = length(result.skills)
 
-    with {:ok, page_bytes} <- encoded_size(result.skills),
+    with {:ok, page_bytes} <- encoded_size(result),
          :ok <- within(:items, state.items + page_items, bounds.max_items),
          :ok <- within(:bytes, state.bytes + page_bytes, bounds.max_bytes),
          :ok <- progressing_page(result.skills, result.next_cursor),
@@ -76,8 +75,8 @@ defmodule MCP.Client.SkillsPagination do
     end
   end
 
-  defp encoded_size(skills) do
-    case Jason.encode_to_iodata(skills) do
+  defp encoded_size(result) do
+    case Jason.encode_to_iodata(result) do
       {:ok, encoded} -> {:ok, IO.iodata_length(encoded)}
       {:error, reason} -> {:error, {:invalid_skills_page, reason}}
     end

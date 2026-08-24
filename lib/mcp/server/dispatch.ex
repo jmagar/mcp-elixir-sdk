@@ -457,18 +457,21 @@ defmodule MCP.Server.Dispatch do
     result_ref = make_ref()
 
     {pid, monitor_ref} =
-      spawn_monitor(fn ->
-        outcome =
-          try do
-            {:ok, apply(module, callback, args)}
-          rescue
-            exception -> {:failure, :error, exception, __STACKTRACE__}
-          catch
-            kind, reason -> {:failure, kind, reason, __STACKTRACE__}
-          end
+      :erlang.spawn_opt(
+        fn ->
+          outcome =
+            try do
+              {:ok, apply(module, callback, args)}
+            rescue
+              exception -> {:failure, :error, exception, __STACKTRACE__}
+            catch
+              kind, reason -> {:failure, kind, reason, __STACKTRACE__}
+            end
 
-        send(owner, {result_ref, outcome})
-      end)
+          send(owner, {result_ref, outcome})
+        end,
+        [:link, :monitor]
+      )
 
     receive do
       {^result_ref, outcome} ->
@@ -479,13 +482,27 @@ defmodule MCP.Server.Dispatch do
         {:failure, :exit, reason, []}
     after
       timeout ->
+        Process.unlink(pid)
         Process.exit(pid, :kill)
 
-        receive do
-          {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> :ok
-        end
+        drain_callback(result_ref, monitor_ref, pid)
 
         :timeout
+    end
+  end
+
+  defp drain_callback(result_ref, monitor_ref, pid) do
+    receive do
+      {^result_ref, _outcome} -> drain_callback(result_ref, monitor_ref, pid)
+      {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> drain_callback_result(result_ref)
+    end
+  end
+
+  defp drain_callback_result(result_ref) do
+    receive do
+      {^result_ref, _outcome} -> :ok
+    after
+      0 -> :ok
     end
   end
 

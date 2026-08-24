@@ -191,7 +191,7 @@ defmodule MCP.Client do
 
   @doc "Lists one page of skills from the negotiated Skills extension."
   def list_skills(client, opts \\ []) do
-    with :ok <- validate_call_options(opts) do
+    with :ok <- validate_skills_call_options(opts) do
       {timeout, opts} = Keyword.pop(opts, :timeout)
       GenServer.call(client, {:list_skills, opts, timeout}, :infinity)
     end
@@ -546,12 +546,14 @@ defmodule MCP.Client do
   def handle_call({:list_skills, opts, timeout}, from, state) do
     case require_skills_extension(state) do
       :ok ->
+        limits = Keyword.take(opts, [:max_items, :max_bytes])
+
         send_rpc(
           state,
           from,
           Methods.skills_list(),
           cursor_params(opts),
-          :skills_list,
+          {:skills_list, limits},
           [],
           timeout
         )
@@ -1227,8 +1229,16 @@ defmodule MCP.Client do
     end
   end
 
-  defp finish_response(%Response{result: result}, from, :skills_list, state),
-    do: finish_decoded_response(ListResult, result, from, :invalid_skills_list_result, state)
+  defp finish_response(%Response{result: result}, from, {:skills_list, limits}, state) do
+    case validate_raw_skills_page(result, limits) do
+      :ok ->
+        finish_decoded_response(ListResult, result, from, :invalid_skills_list_result, state)
+
+      {:error, reason} ->
+        GenServer.reply(from, {:error, reason})
+        {:noreply, state}
+    end
+  end
 
   defp finish_response(%Response{result: result}, from, :skills_get, state),
     do: finish_decoded_response(GetResult, result, from, :invalid_skills_get_result, state)
@@ -1253,18 +1263,69 @@ defmodule MCP.Client do
       try do
         module.decode(result)
       rescue
-        _exception -> {:error, error_tag}
+        exception ->
+          Logger.error(
+            "MCP Client: internal decoder failure decoder=#{inspect(module)} " <>
+              Exception.format(:error, exception, __STACKTRACE__)
+          )
+
+          {:internal_failure, :error}
       catch
-        _kind, _reason -> {:error, error_tag}
+        kind, reason ->
+          Logger.error(
+            "MCP Client: internal decoder failure decoder=#{inspect(module)} " <>
+              Exception.format(kind, reason, __STACKTRACE__)
+          )
+
+          {:internal_failure, kind}
       end
 
     case decoded do
-      {:ok, value} -> GenServer.reply(from, {:ok, value})
-      {:error, reason} -> GenServer.reply(from, {:error, {error_tag, reason}})
-      _other -> GenServer.reply(from, {:error, {error_tag, :invalid_decoder_result}})
+      {:ok, value} ->
+        GenServer.reply(from, {:ok, value})
+
+      {:error, reason} ->
+        GenServer.reply(from, {:error, {error_tag, reason}})
+
+      {:internal_failure, kind} ->
+        GenServer.reply(from, {:error, {:internal_decoder_failure, error_tag, kind}})
+
+      _other ->
+        GenServer.reply(from, {:error, {error_tag, :invalid_decoder_result}})
     end
 
     {:noreply, state}
+  end
+
+  defp validate_raw_skills_page(result, limits) do
+    with :ok <- raw_item_limit(result, Keyword.get(limits, :max_items)),
+         do: raw_byte_limit(result, Keyword.get(limits, :max_bytes))
+  end
+
+  defp raw_item_limit(_result, nil), do: :ok
+
+  defp raw_item_limit(%{"skills" => skills}, limit) when is_list(skills) do
+    if length(skills) <= limit,
+      do: :ok,
+      else: {:error, {:skills_pagination_limit, :items, limit}}
+  end
+
+  defp raw_item_limit(_result, _limit), do: :ok
+
+  defp raw_byte_limit(_result, nil), do: :ok
+
+  defp raw_byte_limit(result, limit) do
+    case Jason.encode_to_iodata(result) do
+      {:ok, encoded} ->
+        if IO.iodata_length(encoded) <= limit,
+          do: :ok,
+          else: {:error, {:skills_pagination_limit, :bytes, limit}}
+
+      {:error, reason} ->
+        {:error, {:invalid_skills_list_result, reason}}
+    end
+  rescue
+    exception -> {:error, {:invalid_skills_list_result, exception}}
   end
 
   defp finish_discover(from, discover, state) do
@@ -2380,6 +2441,20 @@ defmodule MCP.Client do
   defp validate_timeout(nil), do: :ok
   defp validate_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: :ok
   defp validate_timeout(timeout), do: {:error, {:invalid_timeout, timeout}}
+
+  defp validate_skills_call_options(opts) do
+    with :ok <- validate_call_options(opts),
+         :ok <- validate_positive_bound(opts, :max_items),
+         do: validate_positive_bound(opts, :max_bytes)
+  end
+
+  defp validate_positive_bound(opts, key) do
+    case Keyword.get(opts, key) do
+      nil -> :ok
+      value when is_integer(value) and value > 0 -> :ok
+      value -> {:error, {:invalid_pagination_bound, key, value}}
+    end
+  end
 
   @skills_extension "io.modelcontextprotocol/skills"
 

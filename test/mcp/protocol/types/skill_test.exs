@@ -107,6 +107,17 @@ defmodule MCP.Protocol.Types.SkillTest do
              )
   end
 
+  test "validate is total for externally constructed malformed structs" do
+    assert {:error, :invalid_skill} = Skill.validate(%Skill{resources: nil})
+
+    assert {:error, :invalid_skill_resources} =
+             Skill.validate(%Skill{
+               uri: "skill://demo/SKILL.md",
+               frontmatter: %{"name" => "demo", "description" => "Demo"},
+               resources: [%{"not" => "typed"}]
+             })
+  end
+
   test "requires frontmatter name and URI parent to agree" do
     assert {:error, :skill_name_uri_mismatch} =
              skill()

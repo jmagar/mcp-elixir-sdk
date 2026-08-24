@@ -74,6 +74,19 @@ defmodule MCP.ClientSkillsTest do
     assert length(MockTransport.sent_messages(transport)) == 1
   end
 
+  test "rejects invalid public page bounds before sending a request" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    assert {:error, {:invalid_pagination_bound, :max_items, 0}} =
+             Client.list_skills(client, max_items: 0)
+
+    assert {:error, {:invalid_pagination_bound, :max_bytes, "large"}} =
+             Client.list_skills(client, max_bytes: "large")
+
+    assert length(MockTransport.sent_messages(transport)) == 1
+  end
+
   test "sends list/get/directory params and safely decodes typed results" do
     {client, transport} = start_client()
     connect(client, transport, %{"directoryRead" => true})
@@ -150,6 +163,88 @@ defmodule MCP.ClientSkillsTest do
     inject_response(transport, second, %{"skills" => [skill("two")], "nextCursor" => "next"})
 
     assert {:error, {:skills_pagination_cursor_cycle, "next"}} = Task.await(task)
+  end
+
+  test "list_all_skills preserves ordered results across successful pages" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    task = Task.async(fn -> Client.list_all_skills(client, max_pages: 3, timeout: 2_000) end)
+    {:ok, messages} = MockTransport.await_sent(transport, 2)
+
+    inject_response(transport, List.last(messages), %{
+      "skills" => [skill("one")],
+      "nextCursor" => "next"
+    })
+
+    {:ok, messages} = MockTransport.await_sent(transport, 3)
+    inject_response(transport, List.last(messages), %{"skills" => [skill("two")]})
+
+    assert {:ok, [one, two]} = Task.await(task)
+    assert [one.frontmatter["name"], two.frontmatter["name"]] == ["one", "two"]
+    assert length(MockTransport.sent_messages(transport)) == 3
+  end
+
+  test "list_all_skills stops at the page bound before requesting another page" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    task = Task.async(fn -> Client.list_all_skills(client, max_pages: 1, timeout: 2_000) end)
+    {:ok, messages} = MockTransport.await_sent(transport, 2)
+
+    inject_response(transport, List.last(messages), %{
+      "skills" => [skill("one")],
+      "nextCursor" => "next"
+    })
+
+    assert {:error, {:skills_pagination_limit, :pages, 1}} = Task.await(task)
+    assert length(MockTransport.sent_messages(transport)) == 2
+  end
+
+  test "list_all_skills preserves an explicit starting cursor" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    task = Task.async(fn -> Client.list_all_skills(client, cursor: "resume", timeout: 2_000) end)
+    {:ok, messages} = MockTransport.await_sent(transport, 2)
+    request = List.last(messages)
+    assert request["params"]["cursor"] == "resume"
+    inject_response(transport, request, %{"skills" => [skill("one")]})
+    assert {:ok, [_skill]} = Task.await(task)
+  end
+
+  test "list_all_skills counts the complete page envelope against max_bytes" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    task = Task.async(fn -> Client.list_all_skills(client, max_bytes: 250, timeout: 2_000) end)
+    {:ok, messages} = MockTransport.await_sent(transport, 2)
+
+    inject_response(transport, List.last(messages), %{
+      "skills" => [skill("one")],
+      "_meta" => %{"padding" => String.duplicate("x", 500)}
+    })
+
+    assert {:error, {:skills_pagination_limit, :bytes, 250}} = Task.await(task)
+  end
+
+  test "list_all_skills uses one absolute deadline across pages" do
+    {client, transport} = start_client()
+    connect(client, transport)
+
+    started = System.monotonic_time(:millisecond)
+    task = Task.async(fn -> Client.list_all_skills(client, timeout: 200) end)
+    {:ok, messages} = MockTransport.await_sent(transport, 2)
+    Process.sleep(150)
+
+    inject_response(transport, List.last(messages), %{
+      "skills" => [skill("one")],
+      "nextCursor" => "next"
+    })
+
+    assert {:ok, _messages} = MockTransport.await_sent(transport, 3)
+    assert {:error, :timeout} = Task.await(task, 500)
+    assert System.monotonic_time(:millisecond) - started < 300
   end
 
   test "list_all_skills enforces item, byte, and non-progress limits" do
