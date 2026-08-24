@@ -47,7 +47,6 @@ defmodule MCP.Apps.Bridge do
          :ok <- validate_envelope(message) do
       {:ok, message}
     else
-      false -> {:error, :message_too_large}
       {:error, _reason} = error -> error
     end
   end
@@ -63,7 +62,6 @@ defmodule MCP.Apps.Bridge do
          true <- byte_size(json) <= limits.max_message_bytes or {:error, :message_too_large} do
       {:ok, json}
     else
-      false -> {:error, :message_too_large}
       {:error, _reason} = error -> error
     end
   end
