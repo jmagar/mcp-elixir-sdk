@@ -280,7 +280,13 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         subscriptions_enabled:
           not is_nil(subscription_supervisor) and not is_nil(subscription_registry)
       ] ++
-        Keyword.take(server_opts, [:server_info, :instructions, :cache_defaults, :extensions])
+        Keyword.take(server_opts, [
+          :server_info,
+          :instructions,
+          :cache_defaults,
+          :extensions,
+          :skills_callback_timeout
+        ])
 
     dispatch_config =
       case Config.build(server_mod, config_opts) do

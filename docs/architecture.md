@@ -166,6 +166,41 @@ Capability `extensions` are validated string-keyed maps with namespaced
 identifiers and object-valued settings. Advertising an extension never creates
 an implementation for its methods.
 
+### Draft Skills extension
+
+The optional `io.modelcontextprotocol/skills` implementation follows draft
+SEP-2640 at PR head `753b9f2be43e07fdd070e535d75f190cff14beea`
+(reviewed 2026-08-24). It adds `skills/list`, `skills/get`, and, only when
+truthfully advertised, `resources/directory/read`. Skill files continue through
+ordinary `resources/read`; no parallel transport, executor, or authorization
+pipeline exists.
+
+Protocol values are string-keyed and lossless. Static entries are atomic,
+complete manifests; dynamic entries carry the literal `"dynamic"` marker.
+Static validation requires the root `SKILL.md`, canonical in-tree resource
+URIs, unique resources, and lowercase SHA-256 digests. Hosts must support the
+SEP baseline of 512 files and 16,777,216 declared bytes and may apply an
+explicit acceptance policy above that baseline; the lossless codec preserves
+larger valid manifests. These checks establish consistency only.
+
+Origin is the host-assigned identity of the originating live connection plus
+the skill URI. A URI scheme, skill name, or peer-controlled `serverInfo.name`
+is never an origin or authorization boundary. The SDK passes authenticated
+caller identity to handlers through `ToolContext`; skill instructions,
+frontmatter, `_meta`, digests, and `allowed-tools` cannot modify that identity
+or grant access.
+
+The 2026 dispatcher uses per-request metadata and emits the current result and
+cache envelopes. The 2025 session path retains negotiated extension settings
+and method behavior while removing revision-inapplicable envelope members.
+Neither path adds skill notifications or input-required semantics. Extension
+tests and documentation do not change the official core-conformance score.
+
+Approval UI/storage, execution sandboxing, host tool authorization, durable
+origin presentation, lazy verified caching, local materialization, nested-skill
+consent, and prompt-injection policy are host responsibilities. In particular,
+ordinary `resources/read` of `SKILL.md` does not activate a skill.
+
 ## Verification
 
 Unit, process, transport, and cross-transport integration tests cover protocol

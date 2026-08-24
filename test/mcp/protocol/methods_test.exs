@@ -13,6 +13,9 @@ defmodule MCP.Protocol.MethodsTest do
     assert Methods.resources_subscribe() == "resources/subscribe"
     assert Methods.resources_unsubscribe() == "resources/unsubscribe"
     assert Methods.resources_templates_list() == "resources/templates/list"
+    assert Methods.resources_directory_read() == "resources/directory/read"
+    assert Methods.skills_list() == "skills/list"
+    assert Methods.skills_get() == "skills/get"
     assert Methods.prompts_list() == "prompts/list"
     assert Methods.prompts_get() == "prompts/get"
     assert Methods.logging_set_level() == "logging/setLevel"
@@ -36,6 +39,7 @@ defmodule MCP.Protocol.MethodsTest do
     assert Methods.resources_updated() == "notifications/resources/updated"
     assert Methods.prompts_list_changed() == "notifications/prompts/list_changed"
     assert Methods.roots_list_changed() == "notifications/roots/list_changed"
+    refute function_exported?(Methods, :skills_list_changed, 0)
 
     assert Methods.subscriptions_acknowledged() ==
              "notifications/subscriptions/acknowledged"

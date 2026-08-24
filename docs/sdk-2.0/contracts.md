@@ -281,6 +281,46 @@ Server extensions are returned by `server/discover`. Neither side invents an
 intersection: hosts inspect both declarations and decide whether to invoke an
 extension.
 
+### C8.1 — Draft SEP-2640 Skills extension
+
+Skills support is an opt-in extension-track contract, not core MCP conformance.
+The implementation is pinned to modelcontextprotocol/modelcontextprotocol PR
+#2640 head `753b9f2be43e07fdd070e535d75f190cff14beea`, reviewed
+2026-08-24 while the SEP status was Draft. Reverify that head before release
+wording because an Extensions Track SEP can change independently of a core
+revision.
+
+The extension identifier is `io.modelcontextprotocol/skills`. Declaring it
+requires reachable `skills/list` and `skills/get` methods. The optional
+`directoryRead: true` setting requires reachable
+`resources/directory/read`; absence or `false` forbids the client helper from
+calling that method. Capability agreement is compatibility negotiation, never
+authentication or authorization.
+
+Every skill entry contains a URI, verbatim JSON frontmatter, and either a
+complete static `{uri,digest,size}` manifest or the literal `"dynamic"`.
+Static manifests include their own `SKILL.md`, contain no duplicate or
+out-of-root URI, use lowercase `sha256:` digests, and accept the interoperable
+baseline of 512 resources and 16,777,216 aggregate bytes. Dynamic skills offer
+no content integrity. Listing may be empty or partial; `skills/get` must still
+support served but unlisted URIs.
+
+For `2026-07-28`, requests use stateless per-request metadata and list results
+carry `resultType` and applicable list-cache fields. For `2025-11-25`, the
+initialized session retains the same extension declaration and methods, while
+the legacy projection removes only `resultType`, `ttlMs`, and `cacheScope`.
+No skill-specific notification or MRTR/input-required result exists.
+
+The SDK contract ends at validated wire values, truthful dispatch, bounded
+enumeration, and identity-bearing callbacks. It does not execute Markdown or
+scripts, follow links, grant `allowed-tools`, approve content, treat digests as
+trust, prefetch files, persist content, or authorize reads. A host must bind
+skill identity and caches to a host-assigned server origin plus URI; verify raw
+size, SHA-256, and frontmatter; restrict static reads to the held manifest;
+display origin; revoke content-bound approval on manifest changes; require new
+consent for nested skills; and sandbox any later execution. A generic resource
+read of `SKILL.md` is transport, not activation.
+
 ## C9 — JSON Schema and JSON values
 
 Wire JSON is represented without loss at schema-defined extensibility points:
