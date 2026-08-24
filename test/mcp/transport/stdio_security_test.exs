@@ -175,9 +175,17 @@ defmodule MCP.Transport.StdioSecurityTest do
 
     assert_receive {:mcp_message, %{"result" => %{"ready" => true}}}, 5_000
     assert :ok = Stdio.close(transport)
-    assert {:ok, pid_text} = File.read(pid_file)
-    child_pid = pid_text |> String.trim() |> String.to_integer()
-    refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+
+    # A loaded scheduler may deliver KILL before Python runs its TERM handler.
+    # When the handler did spawn the late descendant, it must still be reaped.
+    case File.read(pid_file) do
+      {:ok, pid_text} ->
+        child_pid = pid_text |> String.trim() |> String.to_integer()
+        refute stays_true?(fn -> os_process_alive?(child_pid) end, 3_000)
+
+      {:error, :enoent} ->
+        :ok
+    end
   end
 
   @tag @linux_only
