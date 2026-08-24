@@ -426,6 +426,24 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     Process.flag(:trap_exit, previous_trap_exit)
   end
 
+  test "a malformed-request error send failure terminates the connection" do
+    previous_trap_exit = Process.flag(:trap_exit, true)
+
+    {:ok, server} =
+      Connection.start_link(
+        transport: {FailableTransport, observer: self()},
+        handler: {StatelessHandler, []}
+      )
+
+    monitor = Process.monitor(server)
+    transport = Connection.transport(server)
+    :ok = FailableTransport.fail(transport, :closed)
+    :ok = FailableTransport.inject(transport, %{"jsonrpc" => "2.0", "id" => 7})
+
+    assert_receive {:DOWN, ^monitor, :process, ^server, {:transport_send_failed, :closed}}, 5_000
+    Process.flag(:trap_exit, previous_trap_exit)
+  end
+
   defp start_ready_connection(handler, opts \\ []) do
     capabilities = Keyword.get(opts, :client_capabilities, %{})
     {server, client_transport} = start_connection(handler, opts)
