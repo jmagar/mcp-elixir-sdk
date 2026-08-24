@@ -3,6 +3,13 @@
 These adapters target MCP `2026-07-28` and `2025-11-25` with the pinned harness
 `@modelcontextprotocol/conformance@0.2.0-alpha.11`.
 
+MCP Apps evidence is tracked separately in
+`mcp-apps-2026-01-26.json`. The core harness does not currently prove browser
+hydration, CSP, View/host lifecycle, or same-server App callback routing. Local
+SDK tests prove the wire types, validation, exact resource read, binding, and
+pure bridge contract; a real browser host remains an external verification
+boundary.
+
 - `server_adapter.exs` exposes the SDK server over Streamable HTTP and includes
   harness-only diagnostic tools.
 - `client_adapter.exs` drives the SDK client from the scenario and context

@@ -55,6 +55,7 @@ jobs:
       - run: git diff --check
       - run: jq empty conformance/scenarios.json
       - run: jq empty conformance/compatibility-2025-11-25.json
+      - run: jq empty conformance/mcp-apps-2026-01-26.json
 
   conformance:
     runs-on: ubuntu-latest

@@ -25,10 +25,15 @@ surface remains in scope because clients and servers must be able to advertise
 extension identifiers and settings even when this SDK does not implement those
 extensions.
 
-The following are deferred from 2.0:
+The original 2.0 core denominator deferred extension implementations. MCP Apps
+was added later as a separately versioned stable extension surface; it does not
+change the historical core conformance denominator. See
+[ADR-009](../adr/0009-mcp-apps-support.md).
+
+The following remain deferred from 2.0 core:
 
 - OAuth 2.1 authorization-profile implementation.
-- Tasks, MCP Apps, and other extension-specific methods.
+- Tasks and other extension-specific methods not documented by a later ADR.
 - Persistence, job execution, databases, or an Ecto model layer.
 
 ## System invariants

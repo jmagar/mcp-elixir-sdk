@@ -83,7 +83,8 @@ The ADK integration is a thin adapter: `ADK.Tool.McpToolset` wraps `MCP.Client` 
 - OAuth/authorization implementation (defer to future phase or separate package)
 - Experimental features (Tasks) until they stabilize
 - Built-in HTTP server (use Plug/Bandit as optional dep for Streamable HTTP server)
-- MCP Apps protocol extensions
+- MCP Apps protocol extensions (deferred by this historical core PRD; later
+  added as the separately versioned stable surface in ADR-009)
 - GUI or CLI tools for MCP
 
 ---

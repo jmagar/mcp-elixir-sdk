@@ -18,6 +18,8 @@ stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
   subscription workers run under consumer-supplied supervisors.
 - Tools, resources, prompts, completions, extensions, and MRTR input-required
   round trips.
+- Stable MCP Apps (`2026-01-26`) metadata/resource validation, immutable App
+  definitions, exact-client resolution, and pure View/host bridge codecs.
 - Draft SEP-2640 Skills extension contracts and opt-in runtime support for
   `skills/list`, `skills/get`, and gated `resources/directory/read`. The
   implementation is pinned to SEP PR head
@@ -87,6 +89,30 @@ it tries `2025-11-25`, initializes a session, and sends
 Each operation has one end-to-end deadline covering transport work, schema
 refresh, and any MRTR resolver invocation. Cache hints are returned to the
 caller but results are never cached by the SDK.
+
+## MCP Apps
+
+MCP Apps support is opt-in and targets stable SEP-1865. Enable the extension on
+a client with `client_capabilities: MCP.Apps.client_capabilities()`, then resolve
+the UI resource directly from a listed tool descriptor:
+
+```elixir
+{:ok, %{"tools" => [tool | _]}} = MCP.Client.list_tools(client)
+{:ok, app} = MCP.Apps.Client.resolve(client, tool)
+{:text, html} = app.content
+```
+
+Server authors can validate a linked tool/resource/content triple with
+`MCP.Apps.AppDefinition.new/4` and compose the resulting ordinary maps into
+their existing handler callbacks. The canonical MIME type is
+`text/html;profile=mcp-app`; linked resources use `ui://` URIs and
+`_meta.ui.resourceUri`.
+
+The SDK does not render or execute `html`. An embedding host owns iframe
+sandboxing, `postMessage` delivery, consent, effective CSP/Permission Policy,
+and model/app visibility enforcement. `MCP.Apps.Bridge` provides bounded codecs
+and a pure lifecycle transition validator for that host. A remote MCP server
+cannot infer iframe origin from `_meta`, arguments, or custom headers.
 
 For stdio diagnostics, set transport
 `security_policy: [stderr: :capture]` and provide the client an explicit

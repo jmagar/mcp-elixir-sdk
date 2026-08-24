@@ -357,6 +357,9 @@ defmodule MCP.Client do
   @doc "Returns the discovered server capabilities (after `connect/1`)."
   def server_capabilities(client), do: GenServer.call(client, :get_server_capabilities)
 
+  @doc "Returns the capabilities advertised by this client."
+  def client_capabilities(client), do: GenServer.call(client, :get_client_capabilities)
+
   @doc "Returns the discovered server info (after `connect/1`)."
   def server_info(client), do: GenServer.call(client, :get_server_info)
 
@@ -509,6 +512,9 @@ defmodule MCP.Client do
 
   def handle_call(:get_server_capabilities, _from, state),
     do: {:reply, state.server_capabilities, state}
+
+  def handle_call(:get_client_capabilities, _from, state),
+    do: {:reply, state.client_capabilities, state}
 
   def handle_call(:get_server_info, _from, state), do: {:reply, state.server_info, state}
 

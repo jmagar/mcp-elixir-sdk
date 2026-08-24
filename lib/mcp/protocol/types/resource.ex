@@ -3,9 +3,33 @@ defmodule MCP.Protocol.Types.Resource do
   An MCP resource — data or context available to the LLM.
   """
 
+  alias MCP.Protocol.OpenObject
   alias MCP.Protocol.Types.{Annotations, Icon}
 
-  defstruct [:uri, :name, :title, :description, :mime_type, :size, :annotations, :icons, :meta]
+  @known_keys [
+    "uri",
+    "name",
+    "title",
+    "description",
+    "mimeType",
+    "size",
+    "annotations",
+    "icons",
+    "_meta"
+  ]
+
+  defstruct [
+    :uri,
+    :name,
+    :title,
+    :description,
+    :mime_type,
+    :size,
+    :annotations,
+    :icons,
+    :meta,
+    extra: %{}
+  ]
 
   @type t :: %__MODULE__{
           uri: String.t(),
@@ -16,7 +40,8 @@ defmodule MCP.Protocol.Types.Resource do
           size: non_neg_integer() | nil,
           annotations: Annotations.t() | nil,
           icons: [Icon.t()] | nil,
-          meta: map() | nil
+          meta: map() | nil,
+          extra: map()
         }
 
   @spec from_map(map()) :: t()
@@ -30,7 +55,8 @@ defmodule MCP.Protocol.Types.Resource do
       size: Map.get(map, "size"),
       annotations: map |> Map.get("annotations") |> parse_annotations(),
       icons: map |> Map.get("icons") |> parse_icons(),
-      meta: Map.get(map, "_meta")
+      meta: Map.get(map, "_meta"),
+      extra: OpenObject.extra(map, @known_keys)
     }
   end
 
@@ -42,14 +68,23 @@ defmodule MCP.Protocol.Types.Resource do
 
   defimpl Jason.Encoder, for: __MODULE__ do
     def encode(struct, opts) do
-      struct
-      |> Map.from_struct()
-      |> Enum.reduce(%{}, fn
-        {_key, nil}, acc -> acc
-        {:mime_type, val}, acc -> Map.put(acc, :mimeType, val)
-        {:meta, val}, acc -> Map.put(acc, :_meta, val)
-        {key, val}, acc -> Map.put(acc, key, val)
-      end)
+      known =
+        struct
+        |> Map.from_struct()
+        |> Enum.reduce(%{}, fn
+          {:extra, _val}, acc -> acc
+          {_key, nil}, acc -> acc
+          {:mime_type, val}, acc -> Map.put(acc, :mimeType, val)
+          {:meta, val}, acc -> Map.put(acc, :_meta, val)
+          {key, val}, acc -> Map.put(acc, key, val)
+        end)
+
+      OpenObject.merge!(
+        known,
+        struct.extra,
+        ~w(uri name title description mimeType size annotations icons _meta),
+        "resource"
+      )
       |> Jason.Encode.map(opts)
     end
   end
