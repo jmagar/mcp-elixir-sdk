@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stable MCP Apps SEP-1865 support: extension capability helpers, lossless UI
+  metadata/resources, bounded CSP/permission/content validation, immutable App
+  definitions, exact-client resolution, and pure View/host bridge codecs.
+
 - Core `2025-11-25` compatibility alongside `2026-07-28`: bounded client
   negotiation fallback, initialize/initialized, legacy Streamable HTTP
   sessions, GET SSE server requests, session DELETE, resource subscriptions,

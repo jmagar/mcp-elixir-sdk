@@ -84,6 +84,9 @@ defmodule MCPElixirSDK.MixProject do
         ],
         "docs/adr/0008-dual-version-secure-transports.md": [
           title: "ADR-008 Dual-Version Secure Transports"
+        ],
+        "docs/adr/0009-mcp-apps-support.md": [
+          title: "ADR-009 Stable MCP Apps Support"
         ]
       ],
       groups_for_extras: [
@@ -104,11 +107,13 @@ defmodule MCPElixirSDK.MixProject do
           "docs/adr/0005-consumer-owned-subscription-supervision.md",
           "docs/adr/0006-no-client-result-cache-in-2.0.md",
           "docs/adr/0007-dual-protocol-era-support.md",
-          "docs/adr/0008-dual-version-secure-transports.md"
+          "docs/adr/0008-dual-version-secure-transports.md",
+          "docs/adr/0009-mcp-apps-support.md"
         ],
         Reference: ["CHANGELOG.md", "LICENSE", "usage-rules.md"]
       ],
       groups_for_modules: [
+        "MCP Apps": ~r/MCP\.Apps/,
         Client: [MCP.Client],
         Server: [
           MCP.Server.Config,

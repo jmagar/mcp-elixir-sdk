@@ -1,0 +1,24 @@
+{
+  "extension": "io.modelcontextprotocol/ui",
+  "version": "2026-01-26",
+  "source": "https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx",
+  "coreConformanceDenominatorChanged": false,
+  "evidence": {
+    "protocolFixtures": "test/mcp/apps_test.exs",
+    "transports": "generic metadata and resource transport suites; no Apps transport branch",
+    "coreEras": ["2026-07-28", "2025-11-25"],
+    "browserHost": "external verification boundary; not claimed by local tests"
+  },
+  "scenarios": [
+    "capability-negotiation",
+    "canonical-tool-linkage",
+    "deprecated-linkage-conflict",
+    "resource-uri-mime-content",
+    "csp-permission-declarations",
+    "immutable-app-definition",
+    "exact-client-one-read-resolution",
+    "bridge-codec-lifecycle",
+    "open-object-roundtrip",
+    "bounded-resource-and-message-inputs"
+  ]
+}

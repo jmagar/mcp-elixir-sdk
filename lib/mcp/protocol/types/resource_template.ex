@@ -3,9 +3,31 @@ defmodule MCP.Protocol.Types.ResourceTemplate do
   An MCP resource template — a URI template (RFC 6570) for dynamic resources.
   """
 
+  alias MCP.Protocol.OpenObject
   alias MCP.Protocol.Types.{Annotations, Icon}
 
-  defstruct [:uri_template, :name, :title, :description, :mime_type, :annotations, :icons, :meta]
+  @known_keys [
+    "uriTemplate",
+    "name",
+    "title",
+    "description",
+    "mimeType",
+    "annotations",
+    "icons",
+    "_meta"
+  ]
+
+  defstruct [
+    :uri_template,
+    :name,
+    :title,
+    :description,
+    :mime_type,
+    :annotations,
+    :icons,
+    :meta,
+    extra: %{}
+  ]
 
   @type t :: %__MODULE__{
           uri_template: String.t(),
@@ -15,7 +37,8 @@ defmodule MCP.Protocol.Types.ResourceTemplate do
           mime_type: String.t() | nil,
           annotations: Annotations.t() | nil,
           icons: [Icon.t()] | nil,
-          meta: map() | nil
+          meta: map() | nil,
+          extra: map()
         }
 
   @spec from_map(map()) :: t()
@@ -28,7 +51,8 @@ defmodule MCP.Protocol.Types.ResourceTemplate do
       mime_type: Map.get(map, "mimeType"),
       annotations: map |> Map.get("annotations") |> parse_annotations(),
       icons: map |> Map.get("icons") |> parse_icons(),
-      meta: Map.get(map, "_meta")
+      meta: Map.get(map, "_meta"),
+      extra: OpenObject.extra(map, @known_keys)
     }
   end
 
@@ -40,15 +64,24 @@ defmodule MCP.Protocol.Types.ResourceTemplate do
 
   defimpl Jason.Encoder, for: __MODULE__ do
     def encode(struct, opts) do
-      struct
-      |> Map.from_struct()
-      |> Enum.reduce(%{}, fn
-        {_key, nil}, acc -> acc
-        {:uri_template, val}, acc -> Map.put(acc, :uriTemplate, val)
-        {:mime_type, val}, acc -> Map.put(acc, :mimeType, val)
-        {:meta, val}, acc -> Map.put(acc, :_meta, val)
-        {key, val}, acc -> Map.put(acc, key, val)
-      end)
+      known =
+        struct
+        |> Map.from_struct()
+        |> Enum.reduce(%{}, fn
+          {:extra, _val}, acc -> acc
+          {_key, nil}, acc -> acc
+          {:uri_template, val}, acc -> Map.put(acc, :uriTemplate, val)
+          {:mime_type, val}, acc -> Map.put(acc, :mimeType, val)
+          {:meta, val}, acc -> Map.put(acc, :_meta, val)
+          {key, val}, acc -> Map.put(acc, key, val)
+        end)
+
+      OpenObject.merge!(
+        known,
+        struct.extra,
+        ~w(uriTemplate name title description mimeType annotations icons _meta),
+        "resource template"
+      )
       |> Jason.Encode.map(opts)
     end
   end
