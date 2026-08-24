@@ -49,6 +49,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       and at session initialization plus every session-bound request for 2025.
       The initialized identity is fingerprinted and subsequent requests must
       resolve to the same principal before the session is dispatched.
+      For non-identity authorization freshness, return an
+      `:authorization_context` value containing only stable authorization
+      attributes (for example roles/scopes). It is fingerprinted on every
+      legacy session request; unrelated request-scoped options such as trace
+      IDs remain free to change.
       The static form's `:identity` is used as a constant. (The non-identity
       base is passed once to `Handler.init/1` at mount.)
 
@@ -650,13 +655,13 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   defp legacy_session(_config, nil, _identity, _authorization_context), do: :error
 
-  defp legacy_session(config, session_id, identity, authorization_context) do
+  defp legacy_session(config, session_id, identity, handler_opts) do
     case LegacySessionManager.lookup(
            config.legacy_session_manager,
            config.legacy_endpoint_id,
            session_id,
            identity,
-           authorization_context
+           authorization_context(handler_opts, identity)
          ) do
       {:ok, session} -> {:ok, session}
       {:error, :identity_mismatch} -> {:identity_error, :identity_mismatch}
@@ -706,7 +711,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       absolute_timeout: config.legacy_session_absolute_timeout,
       endpoint_owner: config.legacy_endpoint_owner,
       protocol_version: protocol_version,
-      authorization_context: handler_opts
+      authorization_context: authorization_context(handler_opts, identity)
     ]
 
     LegacySessionManager.create(
@@ -721,6 +726,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   catch
     :exit, reason -> {:manager_error, reason}
   end
+
+  defp authorization_context(handler_opts, identity),
+    do: Keyword.get(handler_opts, :authorization_context, identity)
 
   defp start_and_initialize_legacy(config, handler_opts, identity, message) do
     protocol_version = get_in(message, ["params", "protocolVersion"])

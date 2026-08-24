@@ -56,6 +56,9 @@ index signature; every type extending `Result` inherits that open boundary.
 | `ReadResourceResult` | `MCP.Protocol.Messages.Resources.ReadResult.extra` | Lossless |
 | `ListPromptsResult` | `MCP.Protocol.Messages.Prompts.ListResult.extra` | Lossless |
 | `GetPromptResult` | `MCP.Protocol.Messages.Prompts.GetResult.extra` | Lossless |
+| `ElicitResult` | `MCP.Protocol.Messages.Elicitation.Result.extra` | Lossless |
+| `ListRootsResult` | `MCP.Protocol.Messages.Roots.ListResult.extra` | Lossless |
+| `CreateMessageResult` | `MCP.Protocol.Messages.Sampling.CreateMessageResult.extra` | Lossless |
 | `CompleteResult` | `MCP.Protocol.Messages.Completion.Result.extra` | Lossless |
 | `SubscriptionsListenResult` | `MCP.Protocol.Messages.Subscriptions.ListenResult.extra` | Lossless |
 | Empty/untyped `Result` values | Raw maps in dispatch/client envelopes | Lossless; intentionally untyped |

@@ -2,7 +2,19 @@ defmodule MCP.Protocol.OpenTypeAuditTest do
   use ExUnit.Case, async: true
 
   alias MCP.Protocol.Error
-  alias MCP.Protocol.Messages.{Completion, Discover, Prompts, Resources, Skills, Tools}
+
+  alias MCP.Protocol.Messages.{
+    Completion,
+    Discover,
+    Elicitation,
+    Prompts,
+    Resources,
+    Roots,
+    Sampling,
+    Skills,
+    Tools
+  }
+
   alias MCP.Protocol.Messages.Subscriptions.ListenResult
 
   @vendor_value %{"nested" => [false, nil, 0, ""]}
@@ -17,6 +29,15 @@ defmodule MCP.Protocol.OpenTypeAuditTest do
        "resourceTemplates"},
       {Prompts.ListResult, %{"prompts" => [], "vendor" => @vendor_value}, "prompts"},
       {Prompts.GetResult, %{"messages" => [], "vendor" => @vendor_value}, "messages"},
+      {Elicitation.Result, %{"action" => "decline", "vendor" => @vendor_value}, "action"},
+      {Roots.ListResult, %{"roots" => [], "vendor" => @vendor_value}, "roots"},
+      {Sampling.CreateMessageResult,
+       %{
+         "role" => "assistant",
+         "content" => %{"type" => "text", "text" => "done"},
+         "model" => "test-model",
+         "vendor" => @vendor_value
+       }, "model"},
       {Completion.Result,
        %{
          "completion" => %{"values" => [], "hasMore" => false, "total" => 0},

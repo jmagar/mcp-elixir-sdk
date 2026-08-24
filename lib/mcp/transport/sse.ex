@@ -150,13 +150,14 @@ defmodule MCP.Transport.SSE do
   """
   @spec feed(binary(), binary()) :: {[event()], binary()}
   def feed(buffer, data) when is_binary(buffer) and is_binary(data) do
-    if byte_size(buffer) + byte_size(data) > @legacy_max_event_bytes do
-      raise ArgumentError,
-            "legacy SSE event exceeds #{@legacy_max_event_bytes} bytes; use new_parser(max_event_bytes: limit)"
-    end
+    case extract_bounded_events(buffer <> data, [], @legacy_max_event_bytes) do
+      {:ok, events, remainder} ->
+        {events, remainder}
 
-    combined = buffer <> data
-    extract_events(combined, [])
+      {:error, :event_too_large} ->
+        raise ArgumentError,
+              "legacy SSE event exceeds #{@legacy_max_event_bytes} bytes; use new_parser(max_event_bytes: limit)"
+    end
   end
 
   @spec feed(parser(), binary()) ::
@@ -253,22 +254,6 @@ defmodule MCP.Transport.SSE do
 
   defp finalize_data(event), do: event
 
-  defp extract_events(buffer, events) do
-    case split_event(buffer) do
-      {:ok, event_text, rest} ->
-        case decode_event(event_text) do
-          {:ok, event} ->
-            extract_events(rest, [event | events])
-
-          {:error, _} ->
-            extract_events(rest, events)
-        end
-
-      :incomplete ->
-        {Enum.reverse(events), buffer}
-    end
-  end
-
   defp extract_bounded_events(buffer, events, limit) do
     case match_event_delimiter(buffer) do
       {position, _size} when position > limit ->
@@ -293,10 +278,6 @@ defmodule MCP.Transport.SSE do
         end
     end
   end
-
-  defp split_event(buffer), do: split_event(buffer, match_event_delimiter(buffer))
-
-  defp split_event(_buffer, :nomatch), do: :incomplete
 
   # `:binary.match/2` returns {Position, Length}: the position is the byte size
   # of the event text, and the length is the delimiter's own size.

@@ -65,12 +65,17 @@ defmodule MCP.Protocol.Messages.Elicitation do
     Result of `elicitation/create`.
     """
 
-    defstruct [:action, :content, :meta]
+    alias MCP.Protocol.OpenObject
+
+    @known_keys ["action", "content", "_meta"]
+
+    defstruct [:action, :content, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             action: String.t(),
             content: map() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
           }
 
     @spec from_map(map()) :: t()
@@ -78,16 +83,25 @@ defmodule MCP.Protocol.Messages.Elicitation do
       %__MODULE__{
         action: Map.fetch!(map, "action"),
         content: Map.get(map, "content"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    @spec to_map(t()) :: map()
+    def to_map(%__MODULE__{} = result) do
+      %{"action" => result.action}
+      |> maybe_put("content", result.content)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "elicitation/create result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{action: struct.action}
-        map = if struct.content, do: Map.put(map, :content, struct.content), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end

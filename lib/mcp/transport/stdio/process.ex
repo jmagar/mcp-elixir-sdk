@@ -340,12 +340,11 @@ defmodule MCP.Transport.Stdio.Process do
     # Signal identities already proven to belong to this transport before any
     # additional /proc discovery. A second scan is useful for children spawned
     # during shutdown, but it must not delay TERM for a child we already know.
-    signal_result = signal_alive(identities, :sigterm, deadline)
+    _ = signal_alive(identities, :sigterm, deadline)
     discovered = marked_processes(marker, deadline)
     newly_discovered = discovered -- identities
 
-    signal_result =
-      merge_signal_result(signal_result, signal_alive(newly_discovered, :sigterm, deadline))
+    _ = signal_alive(newly_discovered, :sigterm, deadline)
 
     identities = Enum.uniq(identities ++ discovered)
 
@@ -358,13 +357,16 @@ defmodule MCP.Transport.Stdio.Process do
     kill_deadline = cleanup_deadline(@kill_confirmation_timeout)
     remaining = Enum.uniq(identities ++ marked_processes(marker, kill_deadline))
 
-    signal_result =
-      merge_signal_result(signal_result, signal_alive(remaining, :sigkill, kill_deadline))
+    _ = signal_alive(remaining, :sigkill, kill_deadline)
 
     if wait_until_stopped(remaining, kill_deadline) and
          not deadline_expired?(kill_deadline) and
          marked_processes(marker, kill_deadline) == [] do
-      signal_result
+      # Signal delivery is inherently racy: TERM may time out or report a
+      # disappearing PID before the forced phase finishes. Once every proven
+      # identity and marker are absent, cleanup succeeded regardless of that
+      # stale intermediate diagnostic.
+      :ok
     else
       {:error, :process_group_cleanup_failed}
     end

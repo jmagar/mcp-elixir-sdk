@@ -84,16 +84,20 @@ defmodule MCP.Protocol.Messages.Sampling do
     Result of `sampling/createMessage`.
     """
 
+    alias MCP.Protocol.OpenObject
     alias MCP.Protocol.Types.Content
 
-    defstruct [:role, :content, :model, :stop_reason, :meta]
+    @known_keys ["role", "content", "model", "stopReason", "_meta"]
+
+    defstruct [:role, :content, :model, :stop_reason, :meta, extra: %{}]
 
     @type t :: %__MODULE__{
             role: String.t(),
             content: Content.content_block(),
             model: String.t(),
             stop_reason: String.t() | nil,
-            meta: map() | nil
+            meta: map() | nil,
+            extra: %{optional(String.t()) => MCP.Protocol.json_value()}
           }
 
     @spec from_map(map()) :: t()
@@ -103,16 +107,25 @@ defmodule MCP.Protocol.Messages.Sampling do
         content: map |> Map.fetch!("content") |> Content.from_map(),
         model: Map.fetch!(map, "model"),
         stop_reason: Map.get(map, "stopReason"),
-        meta: Map.get(map, "_meta")
+        meta: Map.get(map, "_meta"),
+        extra: OpenObject.extra(map, @known_keys)
       }
     end
 
+    @spec to_map(t()) :: map()
+    def to_map(%__MODULE__{} = result) do
+      %{"role" => result.role, "content" => result.content, "model" => result.model}
+      |> maybe_put("stopReason", result.stop_reason)
+      |> maybe_put("_meta", result.meta)
+      |> OpenObject.merge!(result.extra, @known_keys, "sampling/createMessage result")
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defimpl Jason.Encoder, for: __MODULE__ do
       def encode(struct, opts) do
-        map = %{role: struct.role, content: struct.content, model: struct.model}
-        map = if struct.stop_reason, do: Map.put(map, :stopReason, struct.stop_reason), else: map
-        map = if struct.meta, do: Map.put(map, :_meta, struct.meta), else: map
-        Jason.Encode.map(map, opts)
+        Jason.Encode.map(@for.to_map(struct), opts)
       end
     end
   end

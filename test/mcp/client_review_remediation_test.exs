@@ -203,6 +203,29 @@ defmodule MCP.ClientReviewRemediationTest do
                     _}
   end
 
+  test "asynchronous legacy SSE expiry is retained while a request is pending" do
+    {client, transport} = start_legacy_client()
+    connect_legacy(client, transport)
+
+    request = Task.async(fn -> Client.list_tools(client) end)
+    assert_receive {:client_review_sent, ^transport, list_request, _}, 5_000
+    send(client, {:mcp_legacy_sse_failed, :session_expired})
+
+    ClientReviewTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => list_request["id"],
+      "result" => %{"tools" => []}
+    })
+
+    assert {:ok, %{"tools" => []}} = Task.await(request)
+    assert {:error, :not_ready} = Client.list_tools(client)
+
+    reconnect = Task.async(fn -> Client.connect(client) end)
+    assert_receive {:client_review_sent, ^transport, reinitialize, _}, 5_000
+    ClientReviewTransport.inject(transport, initialize_result(reinitialize["id"]))
+    assert {:ok, _result} = Task.await(reconnect)
+  end
+
   test "HTTP 400 JSON-RPC -32022 response drives legacy downgrade" do
     %{url: url} = start_http_plug(downgrade?: true)
 

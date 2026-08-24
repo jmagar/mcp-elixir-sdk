@@ -73,7 +73,11 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
         server_mod: StatelessHandler,
         enable_json_response: true,
         handler_opts: fn conn ->
-          [identity: conn.assigns[:principal], role: conn.assigns[:role]]
+          [
+            identity: conn.assigns[:principal],
+            role: conn.assigns[:role],
+            authorization_context: %{role: conn.assigns[:role]}
+          ]
         end
       )
 
@@ -90,6 +94,30 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
       )
 
     assert denied.status == 403
+  end
+
+  test "request-scoped handler options do not invalidate a legacy session" do
+    config =
+      MCPPlug.init(
+        server_mod: StatelessHandler,
+        enable_json_response: true,
+        handler_opts: fn conn ->
+          [identity: conn.assigns[:principal], trace_id: System.unique_integer()]
+        end
+      )
+
+    initialize = legacy_post(config, initialize_request(), nil, :alice)
+    [session_id] = Plug.Conn.get_resp_header(initialize, "mcp-session-id")
+
+    response =
+      legacy_post(
+        config,
+        %{"jsonrpc" => "2.0", "id" => 2, "method" => "tools/list", "params" => %{}},
+        session_id,
+        :alice
+      )
+
+    assert response.status == 200
   end
 
   test "failed initialize does not mint or retain a session" do

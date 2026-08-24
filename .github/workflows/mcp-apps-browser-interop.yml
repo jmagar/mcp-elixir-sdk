@@ -2,12 +2,6 @@ name: MCP Apps browser interoperability
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/mcp-apps-browser-interop.yml"
-      - "conformance/apps_browser_*"
-      - "conformance/browser/**"
-      - "lib/mcp/apps.ex"
-      - "lib/mcp/apps/**"
   workflow_dispatch:
 
 permissions:
@@ -64,12 +58,25 @@ jobs:
             conformance/browser/node_modules/.bin/mcp-inspector --web >"${inspector_log}" 2>&1 &
           inspector_pid=$!
           cleanup_process() {
-            local name=$1 pid=$2 status=0
-            if kill -0 "${pid}" 2>/dev/null; then
-              kill "${pid}" || return 1
+            local name=$1 pid=$2 status=0 was_alive=false
+            if ! kill -0 "${pid}" 2>/dev/null; then
+              wait "${pid}" || status=$?
+              echo "${name} exited before cleanup with status ${status}" >&2
+              return 1
             fi
+
+            was_alive=true
+            kill "${pid}" || return 1
+            for _ in $(seq 1 50); do
+              if ! kill -0 "${pid}" 2>/dev/null; then break; fi
+              sleep 0.1
+            done
+            if kill -0 "${pid}" 2>/dev/null; then
+              kill -KILL "${pid}" || return 1
+            fi
+
             wait "${pid}" || status=$?
-            if [[ ${status} -ne 0 && ${status} -ne 143 ]]; then
+            if [[ "${was_alive}" == true && ${status} -ne 0 && ${status} -ne 137 && ${status} -ne 143 ]]; then
               echo "${name} exited unexpectedly with status ${status}" >&2
               return 1
             fi

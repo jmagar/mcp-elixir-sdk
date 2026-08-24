@@ -1140,11 +1140,36 @@ defmodule MCP.Server.Connection do
   defp error_response_id(_message), do: nil
 
   defp start_handler_task(state, kind, fun) do
-    if map_size(state.handler_tasks) >= state.max_concurrent_handlers do
-      reject_handler_at_capacity(state, kind)
-    else
-      do_start_handler_task(state, kind, fun)
+    cond do
+      duplicate_handler_request?(state, kind) ->
+        reject_duplicate_handler_request(state, kind)
+
+      map_size(state.handler_tasks) >= state.max_concurrent_handlers ->
+        reject_handler_at_capacity(state, kind)
+
+      true ->
+        do_start_handler_task(state, kind, fun)
     end
+  end
+
+  defp duplicate_handler_request?(state, kind) do
+    case handler_request_id(kind) do
+      nil ->
+        false
+
+      request_id ->
+        Enum.any?(state.handler_tasks, fn {_ref, task} ->
+          handler_request_id(task.kind) == request_id
+        end)
+    end
+  end
+
+  defp reject_duplicate_handler_request(state, kind) do
+    send_protocol_error(
+      state,
+      handler_request_id(kind),
+      Error.invalid_request(:duplicate_request_id)
+    )
   end
 
   defp do_start_handler_task(state, kind, fun) do

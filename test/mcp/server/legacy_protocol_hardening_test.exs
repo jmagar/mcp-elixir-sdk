@@ -168,6 +168,22 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     assert_receive {:mcp_message, %{"id" => 2, "result" => _}}, 1_000
   end
 
+  test "a duplicate in-flight ordinary request id is rejected without a second callback" do
+    {_server, client_transport} =
+      start_ready_connection(BlockingLegacyHandler, handler_opts: [test_pid: self()])
+
+    duplicate = request(2, "tools/call", %{"name" => "block", "arguments" => %{}})
+    send_message(client_transport, duplicate)
+    assert_receive {:legacy_handler_blocked, handler_pid}, 1_000
+
+    send_message(client_transport, duplicate)
+    assert_receive {:mcp_message, %{"id" => 2, "error" => %{"code" => -32_600}}}, 1_000
+    refute_receive {:legacy_handler_blocked, _second_handler_pid}, 100
+
+    send(handler_pid, :release_legacy_handler)
+    assert_receive {:mcp_message, %{"id" => 2, "result" => _}}, 1_000
+  end
+
   test "handler capacity and timeout are bounded and release task state" do
     {server, client_transport} =
       start_ready_connection(BlockingLegacyHandler,

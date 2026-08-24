@@ -109,6 +109,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     :exit, reason -> {:error, {:reset_session_failed, reason}}
   end
 
+  @doc false
+  def legacy_session_valid?(pid), do: GenServer.call(pid, :legacy_session_valid?)
+
   @impl MCP.Transport
   def open_subscription(pid, message, opts \\ []) when is_map(message) and is_list(opts) do
     GenServer.call(pid, {:open_subscription, message, opts}, 60_000)
@@ -174,6 +177,9 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       end
     end
   end
+
+  def handle_call(:legacy_session_valid?, _from, state),
+    do: {:reply, not is_nil(state.session_id), state}
 
   def handle_call({:open_subscription, message, opts}, _from, state) do
     id = Map.get(message, "id")
@@ -301,10 +307,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     state = %{state | legacy_sse_task: nil, legacy_sse_ref: nil}
     state = if reason == :session_expired, do: clear_legacy_session(state), else: state
 
-    # A concurrent POST reports session expiry through its correlated reply,
-    # which owns the client's bounded reinitialize-and-retry path. Avoid racing
-    # that recovery with an uncorrelated stale listener notification.
-    if reason != :session_expired or map_size(state.post_tasks) == 0 do
+    if reason != :session_expired do
       send(state.owner, {:mcp_legacy_sse_failed, reason})
     end
 

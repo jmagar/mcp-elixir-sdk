@@ -100,6 +100,7 @@ defmodule MCP.Client do
     :on_input_required,
     :request_handlers,
     :legacy_ready,
+    :legacy_session_expired,
     :connect_waiters,
     :connect_result,
     :tool_schema_index,
@@ -447,6 +448,7 @@ defmodule MCP.Client do
       on_input_required: Keyword.get(opts, :on_input_required),
       request_handlers: request_handlers,
       legacy_ready: false,
+      legacy_session_expired: false,
       connect_waiters: nil,
       tool_schema_index: %{},
       tool_schema_order: [],
@@ -482,7 +484,9 @@ defmodule MCP.Client do
 
   def handle_call({:connect, timeout}, from, state) do
     cond do
-      state.connect_result && (not legacy_protocol?(state) or state.legacy_ready) ->
+      not is_nil(state.connect_result) and
+        (not legacy_protocol?(state) or state.legacy_ready) and
+          transport_session_valid?(state) ->
         {:reply, {:ok, state.connect_result}, state}
 
       is_list(state.connect_waiters) ->
@@ -805,17 +809,10 @@ defmodule MCP.Client do
   def handle_info({:mcp_legacy_sse_failed, :session_expired}, state) do
     Logger.warning("MCP legacy SSE listener unavailable: :session_expired")
 
-    if map_size(state.pending_requests) > 0 do
-      {:noreply, state}
+    if map_size(state.pending_requests) == 0 do
+      {:noreply, invalidate_legacy_session(state)}
     else
-      {:noreply,
-       %{
-         state
-         | legacy_ready: false,
-           connect_result: nil,
-           server_capabilities: nil,
-           server_info: nil
-       }}
+      {:noreply, %{state | legacy_session_expired: true}}
     end
   end
 
@@ -860,21 +857,24 @@ defmodule MCP.Client do
   end
 
   def handle_info({:request_timeout, id}, state) do
-    case Map.pop(state.pending_requests, id) do
-      {%{from: from} = operation, pending} ->
-        state = stop_operation_tasks(state, operation)
-        state = %{state | pending_requests: pending}
+    result =
+      case Map.pop(state.pending_requests, id) do
+        {%{from: from} = operation, pending} ->
+          state = stop_operation_tasks(state, operation)
+          state = %{state | pending_requests: pending}
 
-        if connect_operation?(operation.kind) do
-          continue_connect_after_timeout(from, state)
-        else
-          GenServer.reply(from, {:error, :timeout})
+          if connect_operation?(operation.kind) do
+            continue_connect_after_timeout(from, state)
+          else
+            GenServer.reply(from, {:error, :timeout})
+            {:noreply, state}
+          end
+
+        {nil, _} ->
           {:noreply, state}
-        end
+      end
 
-      {nil, _} ->
-        {:noreply, state}
-    end
+    maybe_finalize_legacy_expiry(result)
   end
 
   def handle_info({:connect_waiter_timeout, waiter_ref}, state) do
@@ -996,21 +996,24 @@ defmodule MCP.Client do
   # --- Response handling ---
 
   defp handle_response(%Response{id: id} = response, state) do
-    case Map.fetch(state.subscriptions, id) do
-      {:ok, subscription} ->
-        finish_subscription_response(response, subscription, state)
+    result =
+      case Map.fetch(state.subscriptions, id) do
+        {:ok, subscription} ->
+          finish_subscription_response(response, subscription, state)
 
-      :error ->
-        case Map.pop(state.pending_requests, id) do
-          {%{timeout_ref: ref} = operation, pending} ->
-            cancel_timeout(ref)
-            state = detach_transport_task(%{state | pending_requests: pending}, operation)
-            finish_response_with_operation(response, operation, state)
+        :error ->
+          case Map.pop(state.pending_requests, id) do
+            {%{timeout_ref: ref} = operation, pending} ->
+              cancel_timeout(ref)
+              state = detach_transport_task(%{state | pending_requests: pending}, operation)
+              finish_response_with_operation(response, operation, state)
 
-          {nil, _} ->
-            handle_unknown_response(response, id, state)
-        end
-    end
+            {nil, _} ->
+              handle_unknown_response(response, id, state)
+          end
+      end
+
+    maybe_finalize_legacy_expiry(result)
   end
 
   defp handle_unknown_response(response, id, state) do
@@ -1386,6 +1389,7 @@ defmodule MCP.Client do
         server_info: initialize.server_info,
         protocol_version: initialize.protocol_version,
         legacy_ready: true,
+        legacy_session_expired: false,
         connect_result: result
     }
 
@@ -1475,7 +1479,8 @@ defmodule MCP.Client do
       | server_capabilities: initialize.capabilities,
         server_info: initialize.server_info,
         protocol_version: initialize.protocol_version,
-        legacy_ready: true
+        legacy_ready: true,
+        legacy_session_expired: false
     }
 
     if remaining > 0 do
@@ -1503,7 +1508,7 @@ defmodule MCP.Client do
 
   defp recover_expired_session(operation, state) do
     remaining = operation.deadline - System.monotonic_time(:millisecond)
-    state = %{state | legacy_ready: false}
+    state = %{state | legacy_ready: false, legacy_session_expired: false}
 
     case reset_transport_session(state) do
       :ok when remaining > 0 ->
@@ -2366,27 +2371,30 @@ defmodule MCP.Client do
   end
 
   defp fail_pending_transport(state, id, reason) do
-    case Map.pop(state.pending_requests, id) do
-      {%{from: from, timeout_ref: timeout_ref} = operation, pending} ->
-        cancel_timeout(timeout_ref)
-        state = %{state | pending_requests: pending}
+    result =
+      case Map.pop(state.pending_requests, id) do
+        {%{from: from, timeout_ref: timeout_ref} = operation, pending} ->
+          cancel_timeout(timeout_ref)
+          state = %{state | pending_requests: pending}
 
-        cond do
-          reason == :session_expired and legacy_protocol?(state) and
-            not operation.recovery_attempted and operation.kind not in [:initialize] ->
-            recover_expired_session(operation, state)
+          cond do
+            reason == :session_expired and legacy_protocol?(state) and
+              not operation.recovery_attempted and operation.kind not in [:initialize] ->
+              recover_expired_session(operation, state)
 
-          connect_operation?(operation.kind) ->
-            fail_connect(from, reason, state)
+            connect_operation?(operation.kind) ->
+              fail_connect(from, reason, state)
 
-          true ->
-            GenServer.reply(from, {:error, reason})
-            {:noreply, state}
-        end
+            true ->
+              GenServer.reply(from, {:error, reason})
+              {:noreply, state}
+          end
 
-      {nil, _pending} ->
-        {:noreply, state}
-    end
+        {nil, _pending} ->
+          {:noreply, state}
+      end
+
+    maybe_finalize_legacy_expiry(result)
   end
 
   defp finish_callback_task(ref, responses, state) do
@@ -2828,6 +2836,16 @@ defmodule MCP.Client do
 
   defp legacy_protocol?(state), do: not is_nil(state.legacy_adapter)
 
+  defp transport_session_valid?(%{legacy_adapter: nil}), do: true
+
+  defp transport_session_valid?(state) do
+    if function_exported?(state.transport_module, :legacy_session_valid?, 1) do
+      state.transport_module.legacy_session_valid?(state.transport_pid)
+    else
+      true
+    end
+  end
+
   defp legacy_adapter(version) do
     case Revision.fetch(version) do
       {:ok, adapter} when adapter != :stateless -> adapter
@@ -2923,6 +2941,25 @@ defmodule MCP.Client do
         server_request_tasks: %{},
         connect_waiters: nil,
         subscription_open_tasks: %{}
+    }
+  end
+
+  defp maybe_finalize_legacy_expiry(
+         {:noreply, %{legacy_session_expired: true, pending_requests: pending} = state}
+       )
+       when map_size(pending) == 0,
+       do: {:noreply, invalidate_legacy_session(state)}
+
+  defp maybe_finalize_legacy_expiry(result), do: result
+
+  defp invalidate_legacy_session(state) do
+    %{
+      state
+      | legacy_ready: false,
+        legacy_session_expired: false,
+        connect_result: nil,
+        server_capabilities: nil,
+        server_info: nil
     }
   end
 
