@@ -49,7 +49,7 @@ defmodule MCPElixirSDK.MixProject do
       },
       files:
         ~w(lib docs examples usage-rules.md .formatter.exs mix.exs README.md LICENSE CHANGELOG.md) ++
-          ~w(conformance/*.ex conformance/*.exs conformance/*.json conformance/*.md conformance/*.mjs conformance/browser/package.json conformance/browser/package-lock.json)
+          ~w(conformance/server_handler.ex conformance/client_adapter.exs conformance/server_adapter.exs conformance/*.json conformance/*.md)
     ]
   end
 

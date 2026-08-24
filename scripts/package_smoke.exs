@@ -57,6 +57,17 @@ defmodule MCP.PackageSmoke do
     if generated_dependency_trees != [] do
       raise("package contains generated dependency trees: #{inspect(generated_dependency_trees)}")
     end
+
+    for relative <- [
+          "conformance/apps_browser_adapter.exs",
+          "conformance/apps_browser_handler.ex",
+          "conformance/apps_browser_interop.mjs",
+          "conformance/browser/package-lock.json"
+        ] do
+      if File.exists?(Path.join(package_root, relative)) do
+        raise("package contains browser-only interoperability fixture #{relative}")
+      end
+    end
   end
 
   defp run!(command, args, directory, extra_env \\ []) do
