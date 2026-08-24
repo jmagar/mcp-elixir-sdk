@@ -39,8 +39,11 @@ defmodule MCP.Server.Dispatch do
 
   alias MCP.Protocol.Error
   alias MCP.Protocol.Messages.{Discover, MRTR, Notification, Request, Tools}
+  alias MCP.Protocol.Messages.Resources.{DirectoryReadParams, DirectoryReadResult}
+  alias MCP.Protocol.Messages.Skills.{GetParams, GetResult, ListParams, ListResult}
   alias MCP.Protocol.Meta
   alias MCP.Protocol.Revision
+  alias MCP.Protocol.Types.{Resource, Skill}
   alias MCP.Server.ToolContext
 
   require Logger
@@ -48,6 +51,8 @@ defmodule MCP.Server.Dispatch do
   # Conservative caching policy default (SEP-2549): no-store (ttlMs 0), public
   # scope. `resultType` "complete" is the Result base requirement (schema.ts:658).
   @default_cache_defaults {0, "public"}
+  @default_skills_callback_timeout 30_000
+  @skills_extension "io.modelcontextprotocol/skills"
 
   @stateless_protocol_version Revision.preferred()
 
@@ -206,7 +211,7 @@ defmodule MCP.Server.Dispatch do
 
     case continuation_context(ctx, params) do
       {:ok, ctx} ->
-        call(
+        skills_aware_call(
           config,
           ctx,
           :handle_read_resource,
@@ -229,6 +234,69 @@ defmodule MCP.Server.Dispatch do
 
       {:error, reason} ->
         reply(id, Error.invalid_params(Atom.to_string(reason)), config)
+    end
+  end
+
+  defp route("skills/list" = method, id, params, ctx, config) do
+    if skills_enabled?(config) do
+      case ListParams.decode(params || %{}) do
+        {:ok, list_params} ->
+          skills_call(
+            config,
+            ctx,
+            :handle_list_skills,
+            [list_params.cursor],
+            &shape_skills_list(&1, config),
+            id
+          )
+
+        {:error, reason} ->
+          reply(id, Error.invalid_params(Atom.to_string(reason)), config)
+      end
+    else
+      reply(id, Error.method_not_found(method), config)
+    end
+  end
+
+  defp route("skills/get" = method, id, params, ctx, config) do
+    if skills_enabled?(config) do
+      case GetParams.decode(params || %{}) do
+        {:ok, %{uri: uri}} when uri != "" ->
+          skills_call(
+            config,
+            ctx,
+            :handle_get_skill,
+            [uri],
+            &shape_skill_get/1,
+            id
+          )
+
+        _invalid ->
+          reply(id, Error.invalid_params("invalid_skills_get_params"), config)
+      end
+    else
+      reply(id, Error.method_not_found(method), config)
+    end
+  end
+
+  defp route("resources/directory/read" = method, id, params, ctx, config) do
+    if directory_read_enabled?(config) do
+      case DirectoryReadParams.decode(params || %{}) do
+        {:ok, %{uri: uri, cursor: cursor}} when uri != "" ->
+          skills_call(
+            config,
+            ctx,
+            :handle_read_resource_directory,
+            [uri, cursor],
+            &shape_directory_read/1,
+            id
+          )
+
+        _invalid ->
+          reply(id, Error.invalid_params("invalid_directory_read_params"), config)
+      end
+    else
+      reply(id, Error.method_not_found(method), config)
     end
   end
 
@@ -336,6 +404,12 @@ defmodule MCP.Server.Dispatch do
   # be uncharted dual-era support, contra PO ruling 2). A handler that does not
   # implement the required context arity is a contract error, surfaced as
   # method-not-found rather than silently invoked without a context.
+  defp skills_aware_call(config, ctx, name, leading_args, shape, id) do
+    if skills_enabled?(config),
+      do: skills_call(config, ctx, name, leading_args, shape, id),
+      else: call(config, ctx, name, leading_args, shape, id)
+  end
+
   defp call(config, ctx, name, leading_args, shape, id) do
     mod = config.handler_module
     state = config.handler_state
@@ -351,6 +425,192 @@ defmodule MCP.Server.Dispatch do
       end
     else
       reply(id, Error.method_not_found(Atom.to_string(name)), config)
+    end
+  end
+
+  defp skills_call(config, ctx, name, leading_args, shape, id) do
+    mod = config.handler_module
+    args = leading_args ++ [ctx, config.handler_state]
+
+    if function_exported?(mod, name, length(args)) do
+      timeout = Map.get(config, :skills_callback_timeout, @default_skills_callback_timeout)
+
+      case bounded_callback(mod, name, args, timeout) do
+        {:ok, callback_return} ->
+          finish(callback_return, shape, id, config)
+
+        {:failure, kind, reason, stacktrace} ->
+          handler_failure(name, id, config, kind, reason, stacktrace)
+
+        :timeout ->
+          Logger.error(
+            "MCP server handler callback timed out callback=#{name} timeout_ms=#{timeout}"
+          )
+
+          reply(id, Error.internal_error("handler callback timed out"), config)
+      end
+    else
+      reply(id, Error.method_not_found(Atom.to_string(name)), config)
+    end
+  rescue
+    exception -> handler_failure(name, id, config, :error, exception, __STACKTRACE__)
+  catch
+    kind, reason -> handler_failure(name, id, config, kind, reason, __STACKTRACE__)
+  end
+
+  defp bounded_callback(module, callback, args, timeout) do
+    owner = self()
+    result_ref = make_ref()
+
+    {pid, monitor_ref} =
+      :erlang.spawn_opt(
+        fn ->
+          outcome =
+            try do
+              {:ok, apply(module, callback, args)}
+            rescue
+              exception -> {:failure, :error, exception, __STACKTRACE__}
+            catch
+              kind, reason -> {:failure, kind, reason, __STACKTRACE__}
+            end
+
+          send(owner, {result_ref, outcome})
+        end,
+        [:link, :monitor]
+      )
+
+    receive do
+      {^result_ref, outcome} ->
+        Process.demonitor(monitor_ref, [:flush])
+        outcome
+
+      {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
+        {:failure, :exit, reason, []}
+    after
+      timeout ->
+        Process.unlink(pid)
+        Process.exit(pid, :kill)
+
+        drain_callback(result_ref, monitor_ref, pid)
+
+        :timeout
+    end
+  end
+
+  defp drain_callback(result_ref, monitor_ref, pid) do
+    receive do
+      {^result_ref, _outcome} -> drain_callback(result_ref, monitor_ref, pid)
+      {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> drain_callback_result(result_ref)
+    end
+  end
+
+  defp drain_callback_result(result_ref) do
+    receive do
+      {^result_ref, _outcome} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp normalize_skills_list(skills, next_cursor, config) when is_list(skills) do
+    map = list_result("skills", Enum.map(skills, &skill_to_map/1), next_cursor)
+
+    case ListResult.decode(map) do
+      {:ok, result} ->
+        result |> ListResult.to_map() |> cacheable(config)
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid skills/list callback result: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_skills_list(_skills, _next_cursor, _config),
+    do: raise(ArgumentError, "invalid skills/list callback result")
+
+  defp shape_skills_list({:ok, skills, next_cursor}, config),
+    do: normalize_skills_list(skills, next_cursor, config)
+
+  defp shape_skills_list({:error, code, message}, _config),
+    do: {:error, %Error{code: code, message: message}}
+
+  defp shape_skills_list({:error, code, message, data}, _config),
+    do: {:error, %Error{code: code, message: message, data: data}}
+
+  defp normalize_skill_get(skill) do
+    case GetResult.decode(%{"skill" => skill_to_map(skill)}) do
+      {:ok, result} ->
+        GetResult.to_map(result)
+
+      {:error, reason} ->
+        raise ArgumentError, "invalid skills/get callback result: #{inspect(reason)}"
+    end
+  end
+
+  defp shape_skill_get({:ok, skill}), do: normalize_skill_get(skill)
+
+  defp shape_skill_get({:error, code, message}),
+    do: {:error, %Error{code: code, message: message}}
+
+  defp shape_skill_get({:error, code, message, data}),
+    do: {:error, %Error{code: code, message: message, data: data}}
+
+  defp normalize_directory_result(resources, next_cursor) when is_list(resources) do
+    map = list_result("resources", Enum.map(resources, &resource_to_map/1), next_cursor)
+
+    case DirectoryReadResult.decode(map) do
+      {:ok, result} ->
+        DirectoryReadResult.to_map(result)
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid resources/directory/read callback result: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_directory_result(_resources, _next_cursor),
+    do: raise(ArgumentError, "invalid resources/directory/read callback result")
+
+  defp shape_directory_read({:ok, resources, next_cursor}),
+    do: normalize_directory_result(resources, next_cursor)
+
+  defp shape_directory_read({:error, code, message}),
+    do: {:error, %Error{code: code, message: message}}
+
+  defp shape_directory_read({:error, code, message, data}),
+    do: {:error, %Error{code: code, message: message, data: data}}
+
+  defp skill_to_map(%Skill{} = skill) do
+    case Skill.validate(skill) do
+      :ok -> Skill.to_map(skill)
+      {:error, reason} -> raise ArgumentError, "invalid skill callback value: #{inspect(reason)}"
+    end
+  end
+
+  defp skill_to_map(skill) when is_map(skill), do: skill
+  defp skill_to_map(_skill), do: raise(ArgumentError, "invalid skill callback value")
+
+  defp resource_to_map(%Resource{} = resource) do
+    resource |> Jason.encode!() |> Jason.decode!()
+  end
+
+  defp resource_to_map(resource) when is_map(resource), do: resource
+  defp resource_to_map(_resource), do: raise(ArgumentError, "invalid directory resource value")
+
+  defp skills_enabled?(config), do: not is_nil(skills_settings(config))
+
+  defp directory_read_enabled?(config) do
+    case skills_settings(config) do
+      %{"directoryRead" => true} -> true
+      _settings -> false
+    end
+  end
+
+  defp skills_settings(config) do
+    config
+    |> Map.get(:capabilities)
+    |> case do
+      %{extensions: extensions} when is_map(extensions) -> Map.get(extensions, @skills_extension)
+      _capabilities -> nil
     end
   end
 

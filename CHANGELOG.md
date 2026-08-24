@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The official November server denominator is 81/81; its compatibility ledger
   records exact client scenarios, while regression tests explicitly reject the
   unsupported `2025-06-18` revision.
+- Draft SEP-2640 Skills extension support, pinned to PR head
+  `753b9f2be43e07fdd070e535d75f190cff14beea` as reviewed on 2026-08-24:
+  lossless static/dynamic skill entries, `skills/list`, `skills/get`, optional
+  `resources/directory/read`, bounded manifests and pagination, and dual-era
+  projection. This extension-track evidence is separate from core conformance.
 
 ### Changed
 
@@ -81,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   events before decode, and enforces connect/receive/request deadlines. Stdio
   bounds frames and diagnostics, fails closed on non-protocol stdout, and owns
   process-group plus descendant cleanup.
+- Skills are transported as untrusted data. The SDK does not execute skill
+  instructions, honor `allowed-tools`, infer authorization from capability or
+  URI scheme, treat digests as trust, prefetch content, persist approvals, or
+  materialize remote files. Hosts own origin display and isolation, explicit
+  consent, manifest-bound reads, verification, nested-skill consent, cache
+  integrity, and execution sandboxing.
 
 ## [1.1.0] - 2026-07-12
 

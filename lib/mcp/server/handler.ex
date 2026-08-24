@@ -44,6 +44,22 @@ defmodule MCP.Server.Handler do
               | {:error, code :: integer(), message :: String.t()}
               | {:error, code :: integer(), message :: String.t(), data :: term()}
 
+  @callback handle_list_skills(cursor(), context(), handler_config()) ::
+              {:ok, skills :: [MCP.Protocol.Types.Skill.t() | map()], next_cursor :: cursor()}
+              | {:error, code :: integer(), message :: String.t()}
+              | {:error, code :: integer(), message :: String.t(), data :: term()}
+
+  @callback handle_get_skill(String.t(), context(), handler_config()) ::
+              {:ok, skill :: MCP.Protocol.Types.Skill.t() | map()}
+              | {:error, code :: integer(), message :: String.t()}
+              | {:error, code :: integer(), message :: String.t(), data :: term()}
+
+  @callback handle_read_resource_directory(String.t(), cursor(), context(), handler_config()) ::
+              {:ok, resources :: [MCP.Protocol.Types.Resource.t() | map()],
+               next_cursor :: cursor()}
+              | {:error, code :: integer(), message :: String.t()}
+              | {:error, code :: integer(), message :: String.t(), data :: term()}
+
   @callback handle_list_resource_templates(cursor(), context(), handler_config()) ::
               {:ok, templates :: [map()], next_cursor :: cursor()}
 
@@ -87,6 +103,9 @@ defmodule MCP.Server.Handler do
     handle_call_tool: 4,
     handle_list_resources: 3,
     handle_read_resource: 3,
+    handle_list_skills: 3,
+    handle_get_skill: 3,
+    handle_read_resource_directory: 4,
     handle_list_resource_templates: 3,
     handle_list_prompts: 3,
     handle_get_prompt: 4,
