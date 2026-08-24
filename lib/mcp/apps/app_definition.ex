@@ -8,9 +8,14 @@ defmodule MCP.Apps.AppDefinition do
 
   alias MCP.Apps.Validator
 
-  defstruct [:tool, :resource, :contents]
+  defstruct [:tool, :resource, :contents, :visibility]
 
-  @type t :: %__MODULE__{tool: map(), resource: map(), contents: map()}
+  @type t :: %__MODULE__{
+          tool: map(),
+          resource: map(),
+          contents: map(),
+          visibility: [String.t()]
+        }
 
   @spec new(map(), map(), map(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(tool, resource, contents, opts \\ [])
@@ -31,7 +36,8 @@ defmodule MCP.Apps.AppDefinition do
     resource_name = value(resource, "name", :name)
 
     with :ok <- required_fields(tool_name, input_schema, resource_name),
-         {:ok, %{resource_uri: ^uri}} <- Validator.tool_meta(tool_meta, opts),
+         {:ok, %{resource_uri: ^uri, visibility: visibility}} <-
+           Validator.tool_meta(tool_meta, opts),
          true <- content_uri == uri or {:error, :resource_uri_mismatch},
          true <- content_mime == mime or {:error, :resource_mime_mismatch},
          {:ok, _listed_ui} <- Validator.resource_metadata(resource_meta, opts),
@@ -41,7 +47,8 @@ defmodule MCP.Apps.AppDefinition do
        %__MODULE__{
          tool: canonical_tool(tool, uri),
          resource: resource,
-         contents: contents
+         contents: contents,
+         visibility: visibility
        }}
     else
       false -> {:error, :invalid_app_definition}
@@ -54,7 +61,7 @@ defmodule MCP.Apps.AppDefinition do
 
   @spec catalog([t()]) :: {:ok, map()} | {:error, term()}
   def catalog(definitions) when is_list(definitions) do
-    initial = %{tools: %{}, resources: %{}, contents: %{}, tool_order: []}
+    initial = %{tools: %{}, resources: %{}, contents: %{}, visibilities: %{}, tool_order: []}
 
     Enum.reduce_while(definitions, {:ok, initial}, fn
       %__MODULE__{} = definition, {:ok, catalog} ->
@@ -70,6 +77,7 @@ defmodule MCP.Apps.AppDefinition do
               tools: Map.put(catalog.tools, name, definition.tool),
               resources: Map.put(catalog.resources, uri, definition.resource),
               contents: Map.put(catalog.contents, uri, definition.contents),
+              visibilities: Map.put(catalog.visibilities, name, definition.visibility),
               tool_order: [name | catalog.tool_order]
             }}}
         end
@@ -80,26 +88,18 @@ defmodule MCP.Apps.AppDefinition do
   end
 
   @doc "Returns the helper-owned model inventory, filtering before pagination."
-  def model_tools(%{tools: tools, tool_order: order}) do
+  def model_tools(%{tools: tools, tool_order: order, visibilities: visibilities}) do
     order
     |> Enum.reverse()
+    |> Enum.filter(&("model" in Map.fetch!(visibilities, &1)))
     |> Enum.map(&Map.fetch!(tools, &1))
-    |> Enum.filter(fn tool ->
-      meta = Map.get(tool, "_meta") || Map.get(tool, :_meta) || %{}
-
-      case Validator.tool_meta(meta) do
-        {:ok, %{visibility: visibility}} -> "model" in visibility
-        {:error, _reason} -> false
-      end
-    end)
   end
 
   @doc "Returns an app-visible tool from the helper-owned catalog."
-  def app_tool(%{tools: tools}, name) when is_binary(name) do
+  def app_tool(%{tools: tools, visibilities: visibilities}, name) when is_binary(name) do
     case Map.fetch(tools, name) do
       {:ok, tool} ->
-        meta = value(tool, "_meta", :_meta, %{})
-        app_visible(Validator.tool_meta(meta), tool)
+        app_visible(Map.fetch!(visibilities, name), tool)
 
       :error ->
         {:error, :unknown_app_tool}
@@ -121,11 +121,9 @@ defmodule MCP.Apps.AppDefinition do
     end
   end
 
-  defp app_visible({:ok, %{visibility: visibility}}, tool) do
+  defp app_visible(visibility, tool) when is_list(visibility) do
     if "app" in visibility, do: {:ok, tool}, else: {:error, :tool_not_app_visible}
   end
-
-  defp app_visible({:error, _reason} = error, _tool), do: error
 
   defp required_fields(tool_name, input_schema, resource_name) do
     cond do

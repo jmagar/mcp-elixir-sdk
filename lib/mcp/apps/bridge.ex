@@ -107,6 +107,9 @@ defmodule MCP.Apps.Bridge do
     request? = Map.has_key?(message, "id")
 
     cond do
+      Map.has_key?(message, "result") or Map.has_key?(message, "error") ->
+        {:error, :ambiguous_bridge_envelope}
+
       request? and not valid_id?(message["id"]) ->
         {:error, :invalid_bridge_id}
 
@@ -137,10 +140,20 @@ defmodule MCP.Apps.Bridge do
     request_methods = @view_requests ++ @host_requests
 
     cond do
-      request? and method not in request_methods -> {:error, :unexpected_request_id}
-      not request? and method in request_methods -> {:error, :missing_request_id}
-      not is_map(Map.get(message, "params", %{})) -> {:error, :invalid_bridge_params}
-      true -> :ok
+      Map.has_key?(message, "result") or Map.has_key?(message, "error") ->
+        {:error, :ambiguous_bridge_envelope}
+
+      request? and method not in request_methods ->
+        {:error, :unexpected_request_id}
+
+      not request? and method in request_methods ->
+        {:error, :missing_request_id}
+
+      not is_map(Map.get(message, "params", %{})) ->
+        {:error, :invalid_bridge_params}
+
+      true ->
+        :ok
     end
   end
 
