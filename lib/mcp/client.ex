@@ -49,7 +49,7 @@ defmodule MCP.Client do
 
   require Logger
 
-  alias MCP.Client.{SubscriptionHandle, SubscriptionWorker}
+  alias MCP.Client.{SkillsPagination, SubscriptionHandle, SubscriptionWorker}
   alias MCP.Protocol
 
   alias MCP.Protocol.Capabilities.{
@@ -61,6 +61,8 @@ defmodule MCP.Client do
 
   alias MCP.Protocol.Error
   alias MCP.Protocol.Messages.{Discover, Initialize, MRTR, Notification, Request, Response}
+  alias MCP.Protocol.Messages.Resources.DirectoryReadResult
+  alias MCP.Protocol.Messages.Skills.{GetResult, ListResult}
   alias MCP.Protocol.Messages.Subscriptions.{AcknowledgedParams, ListenParams, ListenResult}
   alias MCP.Protocol.Methods
   alias MCP.Protocol.Revision
@@ -186,6 +188,42 @@ defmodule MCP.Client do
       GenServer.call(client, {:read_resource, uri, Keyword.get(opts, :meta), timeout}, :infinity)
     end
   end
+
+  @doc "Lists one page of skills from the negotiated Skills extension."
+  def list_skills(client, opts \\ []) do
+    with :ok <- validate_call_options(opts) do
+      {timeout, opts} = Keyword.pop(opts, :timeout)
+      GenServer.call(client, {:list_skills, opts, timeout}, :infinity)
+    end
+  end
+
+  @doc "Gets a skill by URI, including skills omitted from a partial listing."
+  def get_skill(client, uri, opts \\ [])
+
+  def get_skill(client, uri, opts) when is_binary(uri) do
+    with :ok <- validate_call_options(opts) do
+      GenServer.call(
+        client,
+        {:get_skill, uri, Keyword.get(opts, :meta), Keyword.get(opts, :timeout)},
+        :infinity
+      )
+    end
+  end
+
+  def get_skill(_client, uri, _opts), do: {:error, {:invalid_skill_uri, uri}}
+
+  @doc "Reads one page of a skill resource directory when `directoryRead` is negotiated."
+  def read_resource_directory(client, uri, opts \\ [])
+
+  def read_resource_directory(client, uri, opts) when is_binary(uri) do
+    with :ok <- validate_call_options(opts) do
+      {timeout, opts} = Keyword.pop(opts, :timeout)
+      GenServer.call(client, {:read_resource_directory, uri, opts, timeout}, :infinity)
+    end
+  end
+
+  def read_resource_directory(_client, uri, _opts),
+    do: {:error, {:invalid_resource_directory_uri, uri}}
 
   @doc "Lists resource templates. Options: `:cursor`, `:timeout`."
   def list_resource_templates(client, opts \\ []) do
@@ -337,6 +375,9 @@ defmodule MCP.Client do
 
   @doc "Lists all prompts, paginating automatically."
   def list_all_prompts(client, opts \\ []), do: list_all(client, :list_prompts, :prompts, opts)
+
+  @doc "Lists skills with absolute deadline, page, item, byte, and cursor-cycle bounds."
+  def list_all_skills(client, opts \\ []), do: SkillsPagination.list_all(client, opts)
 
   # --- GenServer callbacks ---
 
@@ -501,6 +542,61 @@ defmodule MCP.Client do
 
   def handle_call({:list_resources, opts, timeout}, from, state),
     do: send_rpc(state, from, Methods.resources_list(), cursor_params(opts), :call, [], timeout)
+
+  def handle_call({:list_skills, opts, timeout}, from, state) do
+    case require_skills_extension(state) do
+      :ok ->
+        send_rpc(
+          state,
+          from,
+          Methods.skills_list(),
+          cursor_params(opts),
+          :skills_list,
+          [],
+          timeout
+        )
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:get_skill, uri, meta, timeout}, from, state) do
+    case require_skills_extension(state) do
+      :ok ->
+        send_rpc(
+          state,
+          from,
+          Methods.skills_get(),
+          put_meta(%{"uri" => uri}, meta),
+          :skills_get,
+          [],
+          timeout
+        )
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:read_resource_directory, uri, opts, timeout}, from, state) do
+    with :ok <- require_skills_extension(state),
+         :ok <- require_directory_read(state) do
+      params = cursor_params(opts) |> Map.put("uri", uri)
+
+      send_rpc(
+        state,
+        from,
+        Methods.resources_directory_read(),
+        params,
+        :resource_directory_read,
+        [],
+        timeout
+      )
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
 
   def handle_call({:read_resource, uri, meta, timeout}, from, state),
     do:
@@ -1131,8 +1227,43 @@ defmodule MCP.Client do
     end
   end
 
+  defp finish_response(%Response{result: result}, from, :skills_list, state),
+    do: finish_decoded_response(ListResult, result, from, :invalid_skills_list_result, state)
+
+  defp finish_response(%Response{result: result}, from, :skills_get, state),
+    do: finish_decoded_response(GetResult, result, from, :invalid_skills_get_result, state)
+
+  defp finish_response(%Response{result: result}, from, :resource_directory_read, state),
+    do:
+      finish_decoded_response(
+        DirectoryReadResult,
+        result,
+        from,
+        :invalid_directory_read_result,
+        state
+      )
+
   defp finish_response(%Response{result: result}, from, _kind, state) do
     GenServer.reply(from, {:ok, result})
+    {:noreply, state}
+  end
+
+  defp finish_decoded_response(module, result, from, error_tag, state) do
+    decoded =
+      try do
+        module.decode(result)
+      rescue
+        _exception -> {:error, error_tag}
+      catch
+        _kind, _reason -> {:error, error_tag}
+      end
+
+    case decoded do
+      {:ok, value} -> GenServer.reply(from, {:ok, value})
+      {:error, reason} -> GenServer.reply(from, {:error, {error_tag, reason}})
+      _other -> GenServer.reply(from, {:error, {error_tag, :invalid_decoder_result}})
+    end
+
     {:noreply, state}
   end
 
@@ -2249,6 +2380,28 @@ defmodule MCP.Client do
   defp validate_timeout(nil), do: :ok
   defp validate_timeout(timeout) when is_integer(timeout) and timeout >= 0, do: :ok
   defp validate_timeout(timeout), do: {:error, {:invalid_timeout, timeout}}
+
+  @skills_extension "io.modelcontextprotocol/skills"
+
+  defp require_skills_extension(state) do
+    case skills_extension_settings(state) do
+      settings when is_map(settings) -> :ok
+      _missing -> {:error, {:extension_not_negotiated, @skills_extension}}
+    end
+  end
+
+  defp require_directory_read(state) do
+    case skills_extension_settings(state) do
+      %{"directoryRead" => true} -> :ok
+      _unsupported -> {:error, {:extension_capability_not_negotiated, "directoryRead"}}
+    end
+  end
+
+  defp skills_extension_settings(%{server_capabilities: %{extensions: extensions}})
+       when is_map(extensions),
+       do: Map.get(extensions, @skills_extension)
+
+  defp skills_extension_settings(_state), do: nil
 
   defp name_args(name, arguments) do
     params = %{"name" => name}
