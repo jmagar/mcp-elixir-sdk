@@ -304,9 +304,10 @@ Bootstrap a fresh checkout using the checked-in Erlang and Elixir versions:
 bin/setup
 ```
 
-This requires [mise](https://mise.jdx.dev/) with its shims enabled in your
-shell. The setup is idempotent and installs the pinned toolchain, Hex, Rebar,
-and project dependencies.
+This requires [mise](https://mise.jdx.dev/), `git`, and `jq`. The setup is
+idempotent: it validates the external gate dependencies and installs the pinned
+toolchain, Hex, Rebar, and project dependencies. Activate mise in your shell to
+run the commands below without a `mise exec --` prefix.
 
 ```text
 mix precommit

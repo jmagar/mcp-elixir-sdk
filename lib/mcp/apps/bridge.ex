@@ -206,8 +206,9 @@ defmodule MCP.Apps.Bridge do
   end
 
   defp validate_params("ui/notifications/size-changed", params, _opts) do
-    if required_nonnegative_number?(params, "width") and
-         required_nonnegative_number?(params, "height"),
+    if Enum.any?(["width", "height"], &Map.has_key?(params, &1)) and
+         optional_nonnegative_number?(params, "width") and
+         optional_nonnegative_number?(params, "height"),
        do: :ok,
        else: {:error, :invalid_bridge_params}
   end
@@ -258,8 +259,8 @@ defmodule MCP.Apps.Bridge do
   defp optional_binary?(params, key),
     do: not Map.has_key?(params, key) or is_binary(params[key])
 
-  defp required_nonnegative_number?(params, key),
-    do: Map.has_key?(params, key) and is_number(params[key]) and params[key] >= 0
+  defp optional_nonnegative_number?(params, key),
+    do: not Map.has_key?(params, key) or (is_number(params[key]) and params[key] >= 0)
 
   defp valid_error?(%{"code" => code, "message" => message}),
     do: is_integer(code) and is_binary(message)

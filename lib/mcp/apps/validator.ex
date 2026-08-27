@@ -102,7 +102,8 @@ defmodule MCP.Apps.Validator do
   defp resource_meta(nil, _limits), do: {:ok, %{}}
 
   defp resource_meta(meta, limits) when is_map(meta) do
-    ui = Map.get(meta, "ui") || Map.get(meta, :ui) || %{}
+    ui = fetch_any(meta, "ui", :ui)
+    ui = if is_nil(ui), do: %{}, else: ui
 
     with :ok <- json_budget(meta, limits),
          {:ok, ui} <- require_map(ui, :invalid_resource_ui_metadata),

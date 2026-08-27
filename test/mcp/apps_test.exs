@@ -97,6 +97,11 @@ defmodule MCP.AppsTest do
     assert {:error, :invalid_resource_metadata} =
              Validator.resource(@uri, @mime, "html", nil, %{"ui" => %{"domain" => false}})
 
+    for invalid_ui <- [false, "invalid", []] do
+      assert {:error, :invalid_resource_ui_metadata} =
+               Validator.resource_metadata(%{"ui" => invalid_ui})
+    end
+
     assert {:error, :resource_too_large} =
              Validator.resource(@uri, @mime, "12345", nil, nil, limits: [max_resource_bytes: 4])
 
@@ -232,10 +237,12 @@ defmodule MCP.AppsTest do
     assert {:ok, _message} =
              Bridge.decode(notification.(size_changed, %{"width" => 0, "height" => 1.5}))
 
+    assert {:ok, _message} = Bridge.decode(notification.(size_changed, %{"width" => 100}))
+    assert {:ok, _message} = Bridge.decode(notification.(size_changed, %{"height" => 100}))
+
     for params <- [
           %{},
-          %{"width" => 100},
-          %{"height" => 100},
+          %{"future" => 100},
           %{"width" => -1, "height" => 100},
           %{"width" => 100, "height" => "100"}
         ] do

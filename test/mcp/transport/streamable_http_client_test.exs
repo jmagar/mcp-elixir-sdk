@@ -261,6 +261,40 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     assert Process.alive?(client)
   end
 
+  test "skips a queued initialize with invalid deferred headers and advances the next" do
+    {client, initialize} =
+      start_concurrent_legacy_client(self(), :invalid_deferred_headers_client,
+        security_policy: [max_concurrent_requests: 3]
+      )
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    invalid_message =
+      put_in(initialize.(2), ["params", "arguments"], %{"limit" => "not-an-integer"})
+
+    descriptor = %{header: "Limit", path: ["limit"], type: "integer"}
+
+    invalid =
+      Task.async(fn ->
+        Client.send_message(client, invalid_message, routing_headers: [descriptor])
+      end)
+
+    third = Task.async(fn -> Client.send_message(client, initialize.(3)) end)
+    assert_legacy_initialize_counts(client, 1, 2)
+
+    send(first_request, :release_initialize)
+    assert :ok = Task.await(first)
+
+    assert {:error, {:invalid_routing_argument, "mcp-param-limit", _reason}} =
+             Task.await(invalid)
+
+    assert_receive {:bound_legacy_initialize, "legacy-session", 3}, 1_000
+    assert :ok = Task.await(third)
+    assert_legacy_initialize_counts(client, 0, 0)
+    assert Process.alive?(client)
+  end
+
   test "counts a queued legacy initialize toward the ordinary request limit" do
     {client, initialize} =
       start_concurrent_legacy_client(self(), :ordinary_request_limit_client,
