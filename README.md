@@ -298,6 +298,16 @@ HTTP server subscriptions additionally require a duplicate `Registry` and a
 
 ## Development and verification
 
+Bootstrap a fresh checkout using the checked-in Erlang and Elixir versions:
+
+```text
+bin/setup
+```
+
+This requires [mise](https://mise.jdx.dev/) with its shims enabled in your
+shell. The setup is idempotent and installs the pinned toolchain, Hex, Rebar,
+and project dependencies.
+
 ```text
 mix precommit
 

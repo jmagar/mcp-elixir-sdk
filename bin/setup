@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${repo_root}"
+
+if ! command -v mise >/dev/null 2>&1; then
+  echo "error: mise is required to install the toolchain pinned in .tool-versions" >&2
+  echo "install it from https://mise.jdx.dev and ensure its shims are on PATH" >&2
+  exit 1
+fi
+
+echo "==> Installing the pinned Erlang and Elixir toolchain"
+mise install
+
+echo "==> Installing Hex and Rebar for the pinned toolchain"
+mise exec -- mix local.hex --force
+mise exec -- mix local.rebar --force
+
+echo "==> Fetching project dependencies"
+mise exec -- mix deps.get
+
+echo "==> Verifying the repository toolchain"
+mise exec -- mix --version
+
+cat <<'EOF'
+
+Setup complete. With mise activated in your shell, the canonical gate is:
+
+  mix precommit
+
+If your shell does not use mise shims, use:
+
+  mise exec -- mix precommit
+EOF

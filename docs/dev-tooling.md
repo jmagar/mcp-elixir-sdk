@@ -4,6 +4,19 @@ The checked-in `.tool-versions` selects Erlang/OTP 27.2.3 and Elixir
 1.18.4-otp-27. The package supports Elixir `~> 1.17`; CI exercises the oldest
 supported line, the pinned development line, and the current Elixir/OTP line.
 
+`.tool-versions` is a version declaration, not an installer. A fresh checkout
+must be bootstrapped once before any Mix gate is expected to work:
+
+```bash
+bin/setup
+```
+
+The setup script idempotently installs the pinned runtimes with `mise`, installs
+Hex and Rebar for that runtime, and fetches the project dependencies. Keep mise
+activated in your shell so its shims resolve `mix` and `elixir`; otherwise prefix
+commands with `mise exec --`. This avoids silently using an incompatible host
+Elixir or treating a missing runtime as a repository test failure.
+
 ## Local gates
 
 Run these from the repository root:
