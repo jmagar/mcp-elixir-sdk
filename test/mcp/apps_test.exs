@@ -44,11 +44,9 @@ defmodule MCP.AppsTest do
     assert {:ok, ["model", "app"]} =
              Validator.tool_visibility(%{"ui/resourceUri" => @uri})
 
-    for uri <- [123, "https://example.com/view", String.duplicate("x", 16)] do
-      assert {:error, _reason} =
-               Validator.tool_visibility(%{"ui/resourceUri" => uri},
-                 limits: [max_uri_bytes: 8]
-               )
+    for uri <- [false, 123, "https://example.com/view", String.duplicate("x", 16)],
+        meta <- [%{"ui/resourceUri" => uri}, %{"ui" => %{"resourceUri" => uri}}] do
+      assert {:error, _reason} = Validator.tool_visibility(meta, limits: [max_uri_bytes: 8])
     end
 
     assert {:error, :conflicting_resource_uri} =
@@ -391,6 +389,14 @@ defmodule MCP.AppsTest do
       tools: %{"refresh" => sibling},
       visibilities: %{"refresh" => ["app"]}
     }
+
+    invalid_uri_tool = put_in(sibling, ["_meta", "ui", "resourceUri"], "https://example.com")
+    invalid_uri_catalog = put_in(catalog, [:tools, "refresh"], invalid_uri_tool)
+
+    assert {:error, :invalid_ui_uri} =
+             MCP.Apps.Client.call_sibling_tool(app, invalid_uri_catalog, "refresh", %{})
+
+    assert length(MockTransport.sent_messages(transport)) == 3
 
     sibling_call =
       Task.async(fn -> MCP.Apps.Client.call_sibling_tool(app, catalog, "refresh", %{}) end)

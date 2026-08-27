@@ -11,11 +11,12 @@ defmodule MCP.Apps.Validator do
 
   def tool_meta(meta, opts) when is_map(meta) do
     limits = limits(opts)
-    ui = Map.get(meta, "ui") || Map.get(meta, :ui)
-    flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
+    ui = fetch_any(meta, "ui", :ui)
+    flat = fetch_any(meta, "ui/resourceUri", :"ui/resourceUri")
+    ui_or_flat = if is_nil(ui) and not is_nil(flat), do: %{}, else: ui
 
-    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata),
-         nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
+    with {:ok, ui} <- require_map(ui_or_flat, :missing_ui_metadata),
+         nested <- fetch_any(ui, "resourceUri", :resourceUri),
          :ok <- compatible_uri(nested, flat),
          {:ok, uri} <- ui_uri(nested || flat, limits),
          {:ok, visibility} <- validate_tool_ui(meta, ui, limits) do
@@ -30,13 +31,15 @@ defmodule MCP.Apps.Validator do
 
   def tool_visibility(meta, opts) when is_map(meta) do
     limits = limits(opts)
-    ui = Map.get(meta, "ui") || Map.get(meta, :ui)
-    flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
+    ui = fetch_any(meta, "ui", :ui)
+    flat = fetch_any(meta, "ui/resourceUri", :"ui/resourceUri")
+    ui_or_flat = if is_nil(ui) and not is_nil(flat), do: %{}, else: ui
 
-    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata),
-         nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
+    with {:ok, ui} <- require_map(ui_or_flat, :missing_ui_metadata),
+         nested <- fetch_any(ui, "resourceUri", :resourceUri),
          :ok <- compatible_uri(nested, flat),
-         :ok <- optional_ui_uri(nested || flat, limits) do
+         uri <- if(is_nil(nested), do: flat, else: nested),
+         :ok <- optional_ui_uri(uri, limits) do
       validate_tool_ui(meta, ui, limits)
     end
   end
