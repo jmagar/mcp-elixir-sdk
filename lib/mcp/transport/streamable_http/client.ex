@@ -64,6 +64,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     :legacy_sse_retry_backoff,
     :legacy_sse_retry_max_backoff,
     post_tasks: %{},
+    pending_legacy_initializes: :queue.new(),
     subscriptions: %{}
   ]
 
@@ -168,13 +169,25 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   @impl GenServer
   def handle_call({:send_message, message, opts}, from, state) do
-    if map_size(state.post_tasks) >= state.security_policy.max_concurrent_requests do
-      {:reply, {:error, :request_limit_reached}, state}
-    else
-      case build_headers(state, message, opts) do
-        {:ok, headers} -> start_post_task(state, from, message, headers)
-        {:error, reason} -> {:reply, {:error, reason}, state}
-      end
+    cond do
+      legacy_initialize?(state, message) and is_nil(state.session_id) and
+          legacy_initialize_in_flight?(state) ->
+        if outstanding_post_count(state) >= state.security_policy.max_concurrent_requests do
+          {:reply, {:error, :request_limit_reached}, state}
+        else
+          caller_ref = Process.monitor(elem(from, 0))
+          pending = :queue.in({from, caller_ref, message, opts}, state.pending_legacy_initializes)
+          {:noreply, %{state | pending_legacy_initializes: pending}}
+        end
+
+      outstanding_post_count(state) >= state.security_policy.max_concurrent_requests ->
+        {:reply, {:error, :request_limit_reached}, state}
+
+      true ->
+        case build_headers(state, message, opts) do
+          {:ok, headers} -> start_post_task(state, from, message, headers)
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -327,7 +340,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
             do: clear_legacy_session(state),
             else: state
 
-        {:noreply, %{state | post_tasks: post_tasks}}
+        state = %{state | post_tasks: post_tasks}
+        {:noreply, maybe_start_pending_legacy_initialize(state, operation)}
     end
   end
 
@@ -351,10 +365,15 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       Map.has_key?(state.post_tasks, ref) ->
         fail_post_task(state, ref, reason)
 
+      pending = remove_pending_legacy_initialize(state.pending_legacy_initializes, ref, task) ->
+        {:noreply, %{state | pending_legacy_initializes: pending}}
+
       operation = post_task_by_caller_ref(state.post_tasks, ref, task) ->
         _ = Task.Supervisor.terminate_child(state.task_supervisor, operation.task_pid)
         Process.demonitor(operation.task_ref, [:flush])
-        {:noreply, %{state | post_tasks: Map.delete(state.post_tasks, operation.task_ref)}}
+
+        state = %{state | post_tasks: Map.delete(state.post_tasks, operation.task_ref)}
+        {:noreply, maybe_start_pending_legacy_initialize(state, operation)}
 
       subscription = subscription_by_monitor(state.subscriptions, ref, task) ->
         {id, _subscription} = subscription
@@ -402,7 +421,8 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       from: from,
       caller_ref: caller_ref,
       task_ref: task.ref,
-      task_pid: task.pid
+      task_pid: task.pid,
+      legacy_initialize?: legacy_initialize?(state, message)
     }
 
     {:noreply, %{state | post_tasks: Map.put(state.post_tasks, task.ref, operation)}}
@@ -416,7 +436,59 @@ defmodule MCP.Transport.StreamableHTTP.Client do
     {operation, post_tasks} = Map.pop(state.post_tasks, ref)
     Process.demonitor(operation.caller_ref, [:flush])
     GenServer.reply(operation.from, {:error, {:post_task_exit, reason}})
-    {:noreply, %{state | post_tasks: post_tasks}}
+    state = %{state | post_tasks: post_tasks}
+    {:noreply, maybe_start_pending_legacy_initialize(state, operation)}
+  end
+
+  defp legacy_initialize?(state, %{"method" => "initialize"} = message) do
+    message
+    |> request_protocol_version(state.protocol_version)
+    |> Revision.legacy?()
+  end
+
+  defp legacy_initialize?(_state, _message), do: false
+
+  defp legacy_initialize_in_flight?(state) do
+    Enum.any?(state.post_tasks, fn {_ref, operation} -> operation.legacy_initialize? end)
+  end
+
+  defp outstanding_post_count(state) do
+    map_size(state.post_tasks) + :queue.len(state.pending_legacy_initializes)
+  end
+
+  defp maybe_start_pending_legacy_initialize(state, %{legacy_initialize?: true}) do
+    case :queue.out(state.pending_legacy_initializes) do
+      {{:value, {from, caller_ref, message, opts}}, pending} ->
+        Process.demonitor(caller_ref, [:flush])
+        state = %{state | pending_legacy_initializes: pending}
+
+        case build_headers(state, message, opts) do
+          {:ok, headers} ->
+            {:noreply, state} = start_post_task(state, from, message, headers)
+            state
+
+          {:error, reason} ->
+            GenServer.reply(from, {:error, reason})
+            maybe_start_pending_legacy_initialize(state, %{legacy_initialize?: true})
+        end
+
+      {:empty, _pending} ->
+        state
+    end
+  end
+
+  defp maybe_start_pending_legacy_initialize(state, _operation), do: state
+
+  defp remove_pending_legacy_initialize(pending, ref, caller) do
+    entries = :queue.to_list(pending)
+
+    if Enum.any?(entries, fn {from, caller_ref, _message, _opts} ->
+         caller_ref == ref and elem(from, 0) == caller
+       end) do
+      entries
+      |> Enum.reject(fn {_from, caller_ref, _message, _opts} -> caller_ref == ref end)
+      |> :queue.from_list()
+    end
   end
 
   defp post(transport, state, message, headers) do

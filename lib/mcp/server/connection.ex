@@ -992,7 +992,8 @@ defmodule MCP.Server.Connection do
     )
   end
 
-  defp cancel_subscription(%Notification{params: params} = notification, state) do
+  defp cancel_subscription(%Notification{params: params} = notification, state)
+       when is_nil(params) or is_map(params) do
     case Map.get(params || %{}, "requestId") do
       id when is_binary(id) or is_integer(id) ->
         case graceful_close_subscription(state, id) do
@@ -1004,6 +1005,15 @@ defmodule MCP.Server.Connection do
       _invalid ->
         dispatch(notification, nil, state)
     end
+  end
+
+  defp cancel_subscription(%Notification{}, state) do
+    Logger.debug(
+      "MCP.Server.Connection: ignoring malformed notifications/cancelled params " <>
+        "type=non_object"
+    )
+
+    {:noreply, state}
   end
 
   defp deliver_subscription_message(id, worker, state) do

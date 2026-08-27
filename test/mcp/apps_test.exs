@@ -38,6 +38,37 @@ defmodule MCP.AppsTest do
 
     assert {:error, :resource_policy_on_tool} =
              Validator.tool_meta(%{"ui" => %{"resourceUri" => @uri, "csp" => %{}}})
+
+    assert {:ok, ["app"]} = Validator.tool_visibility(%{"ui" => %{"visibility" => ["app"]}})
+
+    assert {:ok, ["model", "app"]} =
+             Validator.tool_visibility(%{"ui/resourceUri" => @uri})
+
+    for uri <- [false, 123, "https://example.com/view", String.duplicate("x", 16)],
+        meta <- [%{"ui/resourceUri" => uri}, %{"ui" => %{"resourceUri" => uri}}] do
+      assert {:error, _reason} = Validator.tool_visibility(meta, limits: [max_uri_bytes: 8])
+    end
+
+    assert {:error, :conflicting_resource_uri} =
+             Validator.tool_visibility(%{
+               "ui" => %{"resourceUri" => @uri},
+               "ui/resourceUri" => "ui://other/view"
+             })
+
+    for policy <- ["csp", "permissions"] do
+      assert {:error, :resource_policy_on_tool} =
+               Validator.tool_visibility(%{
+                 "ui" => %{"visibility" => ["app"], policy => %{}}
+               })
+    end
+
+    assert {:error, :metadata_too_large} =
+             Validator.tool_visibility(
+               %{"ui" => %{"visibility" => ["app"]}},
+               limits: [max_nodes: 3]
+             )
+
+    assert {:error, :missing_ui_metadata} = Validator.tool_visibility(%{})
   end
 
   test "validates bounded UI resource content and resource policy" do
@@ -65,6 +96,11 @@ defmodule MCP.AppsTest do
 
     assert {:error, :invalid_resource_metadata} =
              Validator.resource(@uri, @mime, "html", nil, %{"ui" => %{"domain" => false}})
+
+    for invalid_ui <- [false, "invalid", []] do
+      assert {:error, :invalid_resource_ui_metadata} =
+               Validator.resource_metadata(%{"ui" => invalid_ui})
+    end
 
     assert {:error, :resource_too_large} =
              Validator.resource(@uri, @mime, "12345", nil, nil, limits: [max_resource_bytes: 4])
@@ -191,6 +227,65 @@ defmodule MCP.AppsTest do
              )
   end
 
+  test "bridge codec validates size and reserved sandbox notification parameters" do
+    notification = fn method, params ->
+      %{"jsonrpc" => "2.0", "method" => method, "params" => params}
+    end
+
+    size_changed = "ui/notifications/size-changed"
+
+    assert {:ok, _message} =
+             Bridge.decode(notification.(size_changed, %{"width" => 0, "height" => 1.5}))
+
+    assert {:ok, _message} = Bridge.decode(notification.(size_changed, %{"width" => 100}))
+    assert {:ok, _message} = Bridge.decode(notification.(size_changed, %{"height" => 100}))
+
+    for params <- [
+          %{},
+          %{"future" => 100},
+          %{"width" => -1, "height" => 100},
+          %{"width" => 100, "height" => "100"}
+        ] do
+      assert {:error, :invalid_bridge_params} = Bridge.decode(notification.(size_changed, params))
+    end
+
+    proxy_ready = "ui/notifications/sandbox-proxy-ready"
+    assert {:ok, _message} = Bridge.decode(notification.(proxy_ready, %{}))
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(notification.(proxy_ready, %{"ready" => true}))
+
+    resource_ready = "ui/notifications/sandbox-resource-ready"
+
+    valid_params = %{
+      "html" => "<!doctype html>",
+      "sandbox" => "allow-scripts",
+      "csp" => %{
+        "connectDomains" => ["https://api.example.com"],
+        "resourceDomains" => ["https://*.example.com"]
+      },
+      "permissions" => %{"camera" => %{}}
+    }
+
+    assert {:ok, _message} = Bridge.decode(notification.(resource_ready, valid_params))
+
+    for params <- [
+          %{},
+          %{"html" => 123},
+          %{"html" => "html", "sandbox" => []},
+          %{"html" => "html", "csp" => %{"connectDomains" => ["http://unsafe.example"]}},
+          %{"html" => "html", "permissions" => %{"camera" => true}}
+        ] do
+      assert {:error, :invalid_bridge_params} =
+               Bridge.decode(notification.(resource_ready, params))
+    end
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(notification.(resource_ready, %{"html" => "12345"}),
+               limits: [max_resource_bytes: 4]
+             )
+  end
+
   test "helper-owned catalogs enforce sibling app visibility" do
     app_only = definition(["app"], "refresh", "ui://weather/refresh.html")
     model_only = definition(["model"], "admin", "ui://weather/admin.html")
@@ -230,7 +325,11 @@ defmodule MCP.AppsTest do
       )
 
     transport = MCP.Client.transport(client)
-    tool = definition(["model", "app"]).tool
+
+    tool =
+      definition(["model", "app"]).tool
+      |> put_in(["_meta"], %{"ui/resourceUri" => @uri})
+
     assert {:error, :apps_not_negotiated} = MCP.Apps.Client.resolve(client, tool)
     assert MockTransport.sent_messages(transport) == []
 
@@ -286,6 +385,55 @@ defmodule MCP.AppsTest do
     })
 
     assert {:ok, %{"content" => [%{"text" => "sunny"}]}} = Task.await(call)
+
+    sibling = %{
+      "name" => "refresh",
+      "inputSchema" => %{"type" => "object"},
+      "_meta" => %{"ui" => %{"visibility" => ["app"]}}
+    }
+
+    catalog = %{
+      tools: %{"refresh" => sibling},
+      visibilities: %{"refresh" => ["app"]}
+    }
+
+    invalid_uri_tool = put_in(sibling, ["_meta", "ui", "resourceUri"], "https://example.com")
+    invalid_uri_catalog = put_in(catalog, [:tools, "refresh"], invalid_uri_tool)
+
+    assert {:error, :invalid_ui_uri} =
+             MCP.Apps.Client.call_sibling_tool(app, invalid_uri_catalog, "refresh", %{})
+
+    assert length(MockTransport.sent_messages(transport)) == 3
+
+    sibling_call =
+      Task.async(fn -> MCP.Apps.Client.call_sibling_tool(app, catalog, "refresh", %{}) end)
+
+    request = await_request(transport, 4)
+    assert request["method"] == "tools/call"
+    assert request["params"]["name"] == "refresh"
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => request["id"],
+      "result" => %{"content" => [%{"type" => "text", "text" => "refreshed"}]}
+    })
+
+    assert {:ok, %{"content" => [%{"text" => "refreshed"}]}} = Task.await(sibling_call)
+
+    for policy <- ["csp", "permissions"] do
+      invalid_tool = put_in(sibling, ["_meta", "ui", policy], %{})
+      invalid_catalog = put_in(catalog, [:tools, "refresh"], invalid_tool)
+
+      assert {:error, :resource_policy_on_tool} =
+               MCP.Apps.Client.call_sibling_tool(app, invalid_catalog, "refresh", %{})
+    end
+
+    assert {:error, :metadata_too_large} =
+             MCP.Apps.Client.call_sibling_tool(app, catalog, "refresh", %{},
+               limits: [max_nodes: 3]
+             )
+
+    assert length(MockTransport.sent_messages(transport)) == 4
   end
 
   defp definition(visibility, name \\ "weather", uri \\ @uri) do

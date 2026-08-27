@@ -1,6 +1,8 @@
 defmodule MCP.SubscriptionsStdioIntegrationTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias MCP.Client
   alias MCP.Client.SubscriptionHandle
   alias MCP.Protocol.Messages.Subscriptions.ListenResult
@@ -177,6 +179,35 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
 
     assert {:ok, event} = SubscriptionHandle.next(second, 1_000)
     assert event["params"]["_meta"][@subscription_id_key] == 2
+  end
+
+  test "malformed cancellation params do not terminate the stateless connection", context do
+    {:ok, handle} =
+      Client.listen_subscriptions(
+        context.client,
+        %SubscriptionFilter{tools_list_changed: true}
+      )
+
+    assert {:ok, _acknowledgment} = SubscriptionHandle.next(handle, 1_000)
+
+    log =
+      capture_log([level: :debug], fn ->
+        for params <- [[], "invalid", 42] do
+          assert :ok =
+                   BridgeTransport.send_message(context.client_transport, %{
+                     "jsonrpc" => "2.0",
+                     "method" => "notifications/cancelled",
+                     "params" => params
+                   })
+        end
+
+        assert :ok = BridgeTransport.sync(context.client_transport)
+        Logger.flush()
+      end)
+
+    assert log =~ "ignoring malformed notifications/cancelled params type=non_object"
+    assert Process.alive?(context.server)
+    assert %Connection{} = :sys.get_state(context.server)
   end
 
   test "server graceful closure delivers the final listen result", context do

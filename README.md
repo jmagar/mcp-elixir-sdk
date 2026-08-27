@@ -298,6 +298,17 @@ HTTP server subscriptions additionally require a duplicate `Registry` and a
 
 ## Development and verification
 
+Bootstrap a fresh checkout using the checked-in Erlang and Elixir versions:
+
+```text
+bin/setup
+```
+
+This requires [mise](https://mise.jdx.dev/), `git`, and `jq`. The setup is
+idempotent: it validates the external gate dependencies and installs the pinned
+toolchain, Hex, Rebar, and project dependencies. Activate mise in your shell to
+run the commands below without a `mise exec --` prefix.
+
 ```text
 mix precommit
 

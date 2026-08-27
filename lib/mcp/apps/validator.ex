@@ -11,21 +11,40 @@ defmodule MCP.Apps.Validator do
 
   def tool_meta(meta, opts) when is_map(meta) do
     limits = limits(opts)
-    ui = Map.get(meta, "ui") || Map.get(meta, :ui)
-    flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
+    ui = fetch_any(meta, "ui", :ui)
+    flat = fetch_any(meta, "ui/resourceUri", :"ui/resourceUri")
+    ui_or_flat = if is_nil(ui) and not is_nil(flat), do: %{}, else: ui
 
-    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata),
-         nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
+    with {:ok, ui} <- require_map(ui_or_flat, :missing_ui_metadata),
+         nested <- fetch_any(ui, "resourceUri", :resourceUri),
          :ok <- compatible_uri(nested, flat),
          {:ok, uri} <- ui_uri(nested || flat, limits),
-         {:ok, visibility} <- visibility(Map.get(ui, "visibility") || Map.get(ui, :visibility)),
-         :ok <- reject_tool_policy(ui),
-         :ok <- json_budget(meta, limits) do
+         {:ok, visibility} <- validate_tool_ui(meta, ui, limits) do
       {:ok, %{resource_uri: uri, visibility: visibility, raw: meta}}
     end
   end
 
   def tool_meta(_meta, _opts), do: {:error, :invalid_tool_metadata}
+
+  @doc false
+  def tool_visibility(meta, opts \\ [])
+
+  def tool_visibility(meta, opts) when is_map(meta) do
+    limits = limits(opts)
+    ui = fetch_any(meta, "ui", :ui)
+    flat = fetch_any(meta, "ui/resourceUri", :"ui/resourceUri")
+    ui_or_flat = if is_nil(ui) and not is_nil(flat), do: %{}, else: ui
+
+    with {:ok, ui} <- require_map(ui_or_flat, :missing_ui_metadata),
+         nested <- fetch_any(ui, "resourceUri", :resourceUri),
+         :ok <- compatible_uri(nested, flat),
+         uri <- if(is_nil(nested), do: flat, else: nested),
+         :ok <- optional_ui_uri(uri, limits) do
+      validate_tool_ui(meta, ui, limits)
+    end
+  end
+
+  def tool_visibility(_meta, _opts), do: {:error, :invalid_tool_metadata}
 
   def resource(uri, mime_type, text, blob, meta, opts \\ []) do
     limits = limits(opts)
@@ -83,7 +102,8 @@ defmodule MCP.Apps.Validator do
   defp resource_meta(nil, _limits), do: {:ok, %{}}
 
   defp resource_meta(meta, limits) when is_map(meta) do
-    ui = Map.get(meta, "ui") || Map.get(meta, :ui) || %{}
+    ui = fetch_any(meta, "ui", :ui)
+    ui = if is_nil(ui), do: %{}, else: ui
 
     with :ok <- json_budget(meta, limits),
          {:ok, ui} <- require_map(ui, :invalid_resource_ui_metadata),
@@ -189,6 +209,23 @@ defmodule MCP.Apps.Validator do
   defp compatible_uri(_nested, nil), do: :ok
   defp compatible_uri(uri, uri), do: :ok
   defp compatible_uri(_nested, _flat), do: {:error, :conflicting_resource_uri}
+
+  defp optional_ui_uri(nil, _limits), do: :ok
+
+  defp optional_ui_uri(uri, limits) do
+    case ui_uri(uri, limits) do
+      {:ok, _uri} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp validate_tool_ui(meta, ui, limits) do
+    with {:ok, visibility} <- visibility(fetch_any(ui, "visibility", :visibility)),
+         :ok <- reject_tool_policy(ui),
+         :ok <- json_budget(meta, limits) do
+      {:ok, visibility}
+    end
+  end
 
   defp reject_tool_policy(ui) do
     if Map.has_key?(ui, "csp") or Map.has_key?(ui, :csp) or

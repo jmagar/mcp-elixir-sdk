@@ -185,6 +185,8 @@ defmodule MCPElixirSDK.MixProject do
       {"mix", ["dialyzer"]},
       {"mix", ["docs", "--warnings-as-errors"]},
       {"elixir", ["scripts/package_smoke.exs"]},
+      {"bash", ["-n", "bin/setup"]},
+      {"test", ["-x", "bin/setup"]},
       {"mix", ["hex.audit"]},
       {"mix", ["deps.unlock", "--check-unused"]},
       {"git", ["diff", "--check"]},
