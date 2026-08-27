@@ -33,7 +33,10 @@ defmodule MCP.Apps.Validator do
     ui = Map.get(meta, "ui") || Map.get(meta, :ui)
     flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
 
-    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata) do
+    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata),
+         nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
+         :ok <- compatible_uri(nested, flat),
+         :ok <- optional_ui_uri(nested || flat, limits) do
       validate_tool_ui(meta, ui, limits)
     end
   end
@@ -202,6 +205,15 @@ defmodule MCP.Apps.Validator do
   defp compatible_uri(_nested, nil), do: :ok
   defp compatible_uri(uri, uri), do: :ok
   defp compatible_uri(_nested, _flat), do: {:error, :conflicting_resource_uri}
+
+  defp optional_ui_uri(nil, _limits), do: :ok
+
+  defp optional_ui_uri(uri, limits) do
+    case ui_uri(uri, limits) do
+      {:ok, _uri} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
 
   defp validate_tool_ui(meta, ui, limits) do
     with {:ok, visibility} <- visibility(fetch_any(ui, "visibility", :visibility)),

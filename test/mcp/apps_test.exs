@@ -44,6 +44,19 @@ defmodule MCP.AppsTest do
     assert {:ok, ["model", "app"]} =
              Validator.tool_visibility(%{"ui/resourceUri" => @uri})
 
+    for uri <- [123, "https://example.com/view", String.duplicate("x", 16)] do
+      assert {:error, _reason} =
+               Validator.tool_visibility(%{"ui/resourceUri" => uri},
+                 limits: [max_uri_bytes: 8]
+               )
+    end
+
+    assert {:error, :conflicting_resource_uri} =
+             Validator.tool_visibility(%{
+               "ui" => %{"resourceUri" => @uri},
+               "ui/resourceUri" => "ui://other/view"
+             })
+
     for policy <- ["csp", "permissions"] do
       assert {:error, :resource_policy_on_tool} =
                Validator.tool_visibility(%{
