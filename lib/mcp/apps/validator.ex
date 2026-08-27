@@ -31,8 +31,9 @@ defmodule MCP.Apps.Validator do
   def tool_visibility(meta, opts) when is_map(meta) do
     limits = limits(opts)
     ui = Map.get(meta, "ui") || Map.get(meta, :ui)
+    flat = Map.get(meta, "ui/resourceUri") || Map.get(meta, :"ui/resourceUri")
 
-    with {:ok, ui} <- require_map(ui, :missing_ui_metadata) do
+    with {:ok, ui} <- require_map(ui || if(flat, do: %{}), :missing_ui_metadata) do
       validate_tool_ui(meta, ui, limits)
     end
   end

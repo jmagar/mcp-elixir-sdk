@@ -41,6 +41,9 @@ defmodule MCP.AppsTest do
 
     assert {:ok, ["app"]} = Validator.tool_visibility(%{"ui" => %{"visibility" => ["app"]}})
 
+    assert {:ok, ["model", "app"]} =
+             Validator.tool_visibility(%{"ui/resourceUri" => @uri})
+
     for policy <- ["csp", "permissions"] do
       assert {:error, :resource_policy_on_tool} =
                Validator.tool_visibility(%{
@@ -304,7 +307,11 @@ defmodule MCP.AppsTest do
       )
 
     transport = MCP.Client.transport(client)
-    tool = definition(["model", "app"]).tool
+
+    tool =
+      definition(["model", "app"]).tool
+      |> put_in(["_meta"], %{"ui/resourceUri" => @uri})
+
     assert {:error, :apps_not_negotiated} = MCP.Apps.Client.resolve(client, tool)
     assert MockTransport.sent_messages(transport) == []
 
