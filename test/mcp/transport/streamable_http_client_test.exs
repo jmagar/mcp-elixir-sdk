@@ -237,6 +237,30 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     assert Process.alive?(client)
   end
 
+  test "advances a queued legacy initialize when the active POST task exits" do
+    {client, initialize} =
+      start_concurrent_legacy_client(self(), :exited_initializer_client)
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
+    refute_receive {:unbound_legacy_initialize, _request, 2}, 100
+
+    state = :sys.get_state(client)
+    [{_ref, operation}] = Map.to_list(state.post_tasks)
+    Process.exit(operation.task_pid, :kill)
+    send(first_request, :release_initialize)
+
+    assert {:error, {:post_task_exit, :killed}} = Task.await(first)
+    assert_receive {:unbound_legacy_initialize, second_request, 2}, 1_000
+
+    send(second_request, :release_initialize)
+    assert :ok = Task.await(second)
+    assert Process.alive?(client)
+  end
+
   test "counts a queued legacy initialize toward the ordinary request limit" do
     {client, initialize} =
       start_concurrent_legacy_client(self(), :ordinary_request_limit_client,

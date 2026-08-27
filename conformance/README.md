@@ -7,9 +7,10 @@ MCP Apps evidence is tracked separately in
 `mcp-apps-2026-01-26.json`. The core harness does not currently prove browser
 hydration, CSP, View/host lifecycle, or same-server App callback routing. Local
 SDK tests prove the wire types, validation, exact resource read, binding, and
-pure bridge contract. The separately triggered `MCP Apps browser
-interoperability` workflow uses a fresh official Inspector host whose control
-API is token-authenticated; the fixture MCP server is unauthenticated. It uploads
+pure bridge contract. The separate `MCP Apps browser interoperability` workflow
+runs on pull requests and can also be dispatched manually. It uses a fresh
+official Inspector host whose control API is token-authenticated; the fixture
+MCP server is unauthenticated. It uploads
 the policy probe, host version, screenshots, console/network
 events, and server-side `resources/read`/same-server callback evidence. It is
 deliberately not a dependency of package CI.
@@ -22,6 +23,6 @@ deliberately not a dependency of package CI.
 - `compatibility-2025-11-25.json` records the November server denominator and
   the exact client scenarios, exclusions, warnings, and remaining blocker.
 - `apps_browser_adapter.exs` and `apps_browser_interop.mjs` are fixtures for the
-  optional real-host workflow, not Hex package runtime code.
+  separate real-host workflow, not Hex package runtime code.
 Use the exact commands in `docs/dev-tooling.md`. Harness-only diagnostic tools
 are test fixtures, not public SDK behavior.
