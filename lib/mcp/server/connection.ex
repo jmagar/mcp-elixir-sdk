@@ -1007,7 +1007,14 @@ defmodule MCP.Server.Connection do
     end
   end
 
-  defp cancel_subscription(%Notification{}, state), do: {:noreply, state}
+  defp cancel_subscription(%Notification{}, state) do
+    Logger.debug(
+      "MCP.Server.Connection: ignoring malformed notifications/cancelled params " <>
+        "type=non_object"
+    )
+
+    {:noreply, state}
+  end
 
   defp deliver_subscription_message(id, worker, state) do
     case Map.get(state.subscriptions, id) do

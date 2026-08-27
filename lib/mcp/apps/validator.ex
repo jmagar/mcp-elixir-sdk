@@ -18,9 +18,7 @@ defmodule MCP.Apps.Validator do
          nested <- Map.get(ui, "resourceUri") || Map.get(ui, :resourceUri),
          :ok <- compatible_uri(nested, flat),
          {:ok, uri} <- ui_uri(nested || flat, limits),
-         {:ok, visibility} <- visibility(Map.get(ui, "visibility") || Map.get(ui, :visibility)),
-         :ok <- reject_tool_policy(ui),
-         :ok <- json_budget(meta, limits) do
+         {:ok, visibility} <- validate_tool_ui(meta, ui, limits) do
       {:ok, %{resource_uri: uri, visibility: visibility, raw: meta}}
     end
   end
@@ -34,11 +32,8 @@ defmodule MCP.Apps.Validator do
     limits = limits(opts)
     ui = Map.get(meta, "ui") || Map.get(meta, :ui)
 
-    with {:ok, ui} <- require_map(ui, :missing_ui_metadata),
-         {:ok, visibility} <- visibility(Map.get(ui, "visibility") || Map.get(ui, :visibility)),
-         :ok <- reject_tool_policy(ui),
-         :ok <- json_budget(meta, limits) do
-      {:ok, visibility}
+    with {:ok, ui} <- require_map(ui, :missing_ui_metadata) do
+      validate_tool_ui(meta, ui, limits)
     end
   end
 
@@ -206,6 +201,14 @@ defmodule MCP.Apps.Validator do
   defp compatible_uri(_nested, nil), do: :ok
   defp compatible_uri(uri, uri), do: :ok
   defp compatible_uri(_nested, _flat), do: {:error, :conflicting_resource_uri}
+
+  defp validate_tool_ui(meta, ui, limits) do
+    with {:ok, visibility} <- visibility(fetch_any(ui, "visibility", :visibility)),
+         :ok <- reject_tool_policy(ui),
+         :ok <- json_budget(meta, limits) do
+      {:ok, visibility}
+    end
+  end
 
   defp reject_tool_policy(ui) do
     if Map.has_key?(ui, "csp") or Map.has_key?(ui, :csp) or

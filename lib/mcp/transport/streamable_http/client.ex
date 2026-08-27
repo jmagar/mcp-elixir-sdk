@@ -180,7 +180,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
           {:noreply, %{state | pending_legacy_initializes: pending}}
         end
 
-      map_size(state.post_tasks) >= state.security_policy.max_concurrent_requests ->
+      outstanding_post_count(state) >= state.security_policy.max_concurrent_requests ->
         {:reply, {:error, :request_limit_reached}, state}
 
       true ->

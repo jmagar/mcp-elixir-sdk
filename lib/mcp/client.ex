@@ -2025,19 +2025,27 @@ defmodule MCP.Client do
 
   defp acknowledge_subscription(id, method, params, subscription, state) when is_map(params) do
     acknowledged = AcknowledgedParams.from_map(params)
+    acknowledgment_id = subscription_id(acknowledged.meta)
 
-    if subscription_id(acknowledged.meta) == id and
-         subscription_filter_subset?(acknowledged.notifications, subscription.requested_filter) do
-      case SubscriptionWorker.enqueue(subscription.worker, notification_map(method, params)) do
-        :ok ->
-          updated = %{subscription | acknowledged?: true}
-          {:noreply, %{state | subscriptions: Map.put(state.subscriptions, id, updated)}}
+    cond do
+      acknowledgment_id != id ->
+        fail_subscription(state, id, :acknowledgment_id_mismatch)
 
-        {:error, reason} ->
-          fail_subscription(state, id, reason)
-      end
-    else
-      reject_subscription_acknowledgment(id, acknowledged, state)
+      not subscription_filter_subset?(
+        acknowledged.notifications,
+        subscription.requested_filter
+      ) ->
+        fail_subscription(state, id, :honored_filter_not_subset)
+
+      true ->
+        case SubscriptionWorker.enqueue(subscription.worker, notification_map(method, params)) do
+          :ok ->
+            updated = %{subscription | acknowledged?: true}
+            {:noreply, %{state | subscriptions: Map.put(state.subscriptions, id, updated)}}
+
+          {:error, reason} ->
+            fail_subscription(state, id, reason)
+        end
     end
   rescue
     error in [ArgumentError, KeyError, FunctionClauseError] ->
@@ -2046,14 +2054,6 @@ defmodule MCP.Client do
 
   defp acknowledge_subscription(id, _method, _params, _subscription, state),
     do: fail_subscription(state, id, :invalid_acknowledgment)
-
-  defp reject_subscription_acknowledgment(id, acknowledged, state) do
-    if subscription_id(acknowledged.meta) == id do
-      fail_subscription(state, id, :honored_filter_not_subset)
-    else
-      fail_subscription(state, id, :acknowledgment_id_mismatch)
-    end
-  end
 
   defp subscription_filter_subset?(
          %SubscriptionFilter{} = honored,

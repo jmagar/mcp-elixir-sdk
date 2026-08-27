@@ -41,6 +41,19 @@ defmodule MCP.AppsTest do
 
     assert {:ok, ["app"]} = Validator.tool_visibility(%{"ui" => %{"visibility" => ["app"]}})
 
+    for policy <- ["csp", "permissions"] do
+      assert {:error, :resource_policy_on_tool} =
+               Validator.tool_visibility(%{
+                 "ui" => %{"visibility" => ["app"], policy => %{}}
+               })
+    end
+
+    assert {:error, :metadata_too_large} =
+             Validator.tool_visibility(
+               %{"ui" => %{"visibility" => ["app"]}},
+               limits: [max_nodes: 3]
+             )
+
     assert {:error, :missing_ui_metadata} = Validator.tool_visibility(%{})
   end
 
@@ -373,6 +386,21 @@ defmodule MCP.AppsTest do
     })
 
     assert {:ok, %{"content" => [%{"text" => "refreshed"}]}} = Task.await(sibling_call)
+
+    for policy <- ["csp", "permissions"] do
+      invalid_tool = put_in(sibling, ["_meta", "ui", policy], %{})
+      invalid_catalog = put_in(catalog, [:tools, "refresh"], invalid_tool)
+
+      assert {:error, :resource_policy_on_tool} =
+               MCP.Apps.Client.call_sibling_tool(app, invalid_catalog, "refresh", %{})
+    end
+
+    assert {:error, :metadata_too_large} =
+             MCP.Apps.Client.call_sibling_tool(app, catalog, "refresh", %{},
+               limits: [max_nodes: 3]
+             )
+
+    assert length(MockTransport.sent_messages(transport)) == 4
   end
 
   defp definition(visibility, name \\ "weather", uri \\ @uri) do

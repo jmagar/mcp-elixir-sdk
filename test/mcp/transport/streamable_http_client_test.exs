@@ -184,6 +184,7 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     assert_receive {:unbound_legacy_initialize, request, 1}, 1_000
 
     second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
     refute_receive {:unbound_legacy_initialize, _request, _id}, 100
 
     send(request, :release_initialize)
@@ -203,6 +204,7 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
 
     second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
     refute_receive {:unbound_legacy_initialize, _request, 2}, 100
 
     Process.exit(first, :kill)
@@ -213,6 +215,54 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     send(second_request, :release_initialize)
     assert :ok = Task.await(second)
     assert Process.alive?(client)
+  end
+
+  test "advances a queued legacy initialize when the active HTTP request fails" do
+    {client, initialize} =
+      start_concurrent_legacy_client(self(), :failed_initializer_client)
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
+    refute_receive {:unbound_legacy_initialize, _request, 2}, 100
+
+    send(first_request, {:fail_initialize, 503})
+    assert {:error, {:http_error, 503, _body}} = Task.await(first)
+    assert_receive {:unbound_legacy_initialize, second_request, 2}, 1_000
+
+    send(second_request, :release_initialize)
+    assert :ok = Task.await(second)
+    assert Process.alive?(client)
+  end
+
+  test "counts a queued legacy initialize toward the ordinary request limit" do
+    {client, initialize} =
+      start_concurrent_legacy_client(self(), :ordinary_request_limit_client,
+        security_policy: [max_concurrent_requests: 2]
+      )
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
+    refute_receive {:unbound_legacy_initialize, _request, 2}, 100
+
+    ordinary = %{
+      "jsonrpc" => "2.0",
+      "id" => 3,
+      "method" => "tools/list",
+      "params" => %{}
+    }
+
+    assert {:error, :request_limit_reached} = Client.send_message(client, ordinary)
+
+    send(first_request, :release_initialize)
+    assert :ok = Task.await(first)
+    assert_receive {:bound_legacy_initialize, "legacy-session", 2}, 1_000
+    assert :ok = Task.await(second)
   end
 
   test "bounds active and queued legacy initializes and frees abandoned queue slots" do
@@ -226,14 +276,17 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
 
     abandoned = spawn(fn -> Client.send_message(client, initialize.(2)) end)
     abandoned_ref = Process.monitor(abandoned)
+    assert_legacy_initialize_counts(client, 1, 1)
     refute_receive {:unbound_legacy_initialize, _request, 2}, 100
 
     assert {:error, :request_limit_reached} = Client.send_message(client, initialize.(3))
 
     Process.exit(abandoned, :kill)
     assert_receive {:DOWN, ^abandoned_ref, :process, ^abandoned, :killed}, 1_000
+    assert_legacy_initialize_counts(client, 1, 0)
 
     replacement = Task.async(fn -> Client.send_message(client, initialize.(4)) end)
+    assert_legacy_initialize_counts(client, 1, 1)
     refute_receive {:unbound_legacy_initialize, _request, 4}, 100
 
     send(first_request, :release_initialize)
@@ -391,6 +444,27 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     end)
   end
 
+  defp assert_legacy_initialize_counts(client, active, queued, attempts \\ 100)
+
+  defp assert_legacy_initialize_counts(client, active, queued, attempts) when attempts > 0 do
+    state = :sys.get_state(client)
+    counts = {map_size(state.post_tasks), :queue.len(state.pending_legacy_initializes)}
+
+    if counts == {active, queued} do
+      assert counts == {active, queued}
+    else
+      Process.sleep(10)
+      assert_legacy_initialize_counts(client, active, queued, attempts - 1)
+    end
+  end
+
+  defp assert_legacy_initialize_counts(client, active, queued, 0) do
+    state = :sys.get_state(client)
+
+    assert {map_size(state.post_tasks), :queue.len(state.pending_legacy_initializes)} ==
+             {active, queued}
+  end
+
   defp start_concurrent_legacy_client(test_pid, id, client_opts \\ []) do
     bandit =
       start_supervised!(
@@ -454,9 +528,11 @@ defmodule MCP.Transport.StreamableHTTPClientTest.ConcurrentLegacyInitializePlug 
       nil ->
         send(test_pid, {:unbound_legacy_initialize, self(), message["id"]})
 
-        receive do
-          :release_initialize -> :ok
-        end
+        status =
+          receive do
+            :release_initialize -> 200
+            {:fail_initialize, status} -> status
+          end
 
         response = %{
           "jsonrpc" => "2.0",
@@ -471,7 +547,7 @@ defmodule MCP.Transport.StreamableHTTPClientTest.ConcurrentLegacyInitializePlug 
         conn
         |> Plug.Conn.put_resp_header("mcp-session-id", "legacy-session")
         |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+        |> Plug.Conn.send_resp(status, Jason.encode!(response))
 
       {"mcp-session-id", session_id} ->
         send(test_pid, {:bound_legacy_initialize, session_id, message["id"]})
