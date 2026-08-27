@@ -270,6 +270,65 @@ defmodule MCP.ClientLifecycleTest do
     assert Client.status(client) == :ready
   end
 
+  test "an acknowledgment cannot honor a notification family that was not requested" do
+    {client, transport, handle} = start_mock_subscription()
+    id = handle.id
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "method" => "notifications/subscriptions/acknowledged",
+      "params" => %{
+        "_meta" => %{"io.modelcontextprotocol/subscriptionId" => id},
+        "notifications" => %{"promptsListChanged" => true}
+      }
+    })
+
+    assert {:error, :honored_filter_not_subset} = SubscriptionHandle.next(handle, 1_000)
+    assert Client.status(client) == :ready
+  end
+
+  test "an acknowledgment cannot honor a resource URI that was not requested" do
+    {client, transport, handle} =
+      start_mock_subscription(%SubscriptionFilter{resource_subscriptions: ["file:///allowed"]})
+
+    id = handle.id
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "method" => "notifications/subscriptions/acknowledged",
+      "params" => %{
+        "_meta" => %{"io.modelcontextprotocol/subscriptionId" => id},
+        "notifications" => %{"resourceSubscriptions" => ["file:///other"]}
+      }
+    })
+
+    assert {:error, :honored_filter_not_subset} = SubscriptionHandle.next(handle, 1_000)
+    assert Client.status(client) == :ready
+  end
+
+  test "large acknowledged resource filters are checked without quadratic membership scans" do
+    requested = for id <- 1..10_000, do: "file:///resource/#{id}"
+
+    {client, transport, handle} =
+      start_mock_subscription(%SubscriptionFilter{resource_subscriptions: requested})
+
+    id = handle.id
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "method" => "notifications/subscriptions/acknowledged",
+      "params" => %{
+        "_meta" => %{"io.modelcontextprotocol/subscriptionId" => id},
+        "notifications" => %{"resourceSubscriptions" => Enum.reverse(requested)}
+      }
+    })
+
+    assert {:ok, %{"method" => "notifications/subscriptions/acknowledged"}} =
+             SubscriptionHandle.next(handle, 1_000)
+
+    assert Client.status(client) == :ready
+  end
+
   test "an acknowledgment delivered before transport open returns is preserved" do
     subscription_supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
 
@@ -385,7 +444,7 @@ defmodule MCP.ClientLifecycleTest do
     }
   end
 
-  defp start_mock_subscription do
+  defp start_mock_subscription(filter \\ %SubscriptionFilter{tools_list_changed: true}) do
     supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
 
     client =
@@ -398,7 +457,7 @@ defmodule MCP.ClientLifecycleTest do
     {:ok, handle} =
       Client.listen_subscriptions(
         client,
-        %SubscriptionFilter{tools_list_changed: true}
+        filter
       )
 
     {client, transport, handle}

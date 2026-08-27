@@ -27,6 +27,23 @@ defmodule MCP.Apps.Validator do
 
   def tool_meta(_meta, _opts), do: {:error, :invalid_tool_metadata}
 
+  @doc false
+  def tool_visibility(meta, opts \\ [])
+
+  def tool_visibility(meta, opts) when is_map(meta) do
+    limits = limits(opts)
+    ui = Map.get(meta, "ui") || Map.get(meta, :ui)
+
+    with {:ok, ui} <- require_map(ui, :missing_ui_metadata),
+         {:ok, visibility} <- visibility(Map.get(ui, "visibility") || Map.get(ui, :visibility)),
+         :ok <- reject_tool_policy(ui),
+         :ok <- json_budget(meta, limits) do
+      {:ok, visibility}
+    end
+  end
+
+  def tool_visibility(_meta, _opts), do: {:error, :invalid_tool_metadata}
+
   def resource(uri, mime_type, text, blob, meta, opts \\ []) do
     limits = limits(opts)
 

@@ -992,7 +992,8 @@ defmodule MCP.Server.Connection do
     )
   end
 
-  defp cancel_subscription(%Notification{params: params} = notification, state) do
+  defp cancel_subscription(%Notification{params: params} = notification, state)
+       when is_nil(params) or is_map(params) do
     case Map.get(params || %{}, "requestId") do
       id when is_binary(id) or is_integer(id) ->
         case graceful_close_subscription(state, id) do
@@ -1005,6 +1006,8 @@ defmodule MCP.Server.Connection do
         dispatch(notification, nil, state)
     end
   end
+
+  defp cancel_subscription(%Notification{}, state), do: {:noreply, state}
 
   defp deliver_subscription_message(id, worker, state) do
     case Map.get(state.subscriptions, id) do

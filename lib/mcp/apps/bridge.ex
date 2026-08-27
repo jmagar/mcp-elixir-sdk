@@ -13,7 +13,7 @@ defmodule MCP.Apps.Bridge do
   @host_requests ~w(ui/resource-teardown)
   @sandbox_notifications ~w(ui/notifications/sandbox-proxy-ready ui/notifications/sandbox-resource-ready)
   @proxy_requests ~w(tools/call resources/read ping)
-  @flexible_notifications ~w(ui/notifications/initialized ui/notifications/host-context-changed ui/notifications/sandbox-proxy-ready ui/notifications/sandbox-resource-ready notifications/message)
+  @flexible_notifications ~w(ui/notifications/initialized ui/notifications/host-context-changed notifications/message)
   @methods @view_requests ++
              @view_notifications ++
              @host_notifications ++
@@ -46,7 +46,7 @@ defmodule MCP.Apps.Bridge do
     with :ok <- Validator.validate_json(message, opts),
          {:ok, json} <- Jason.encode(message),
          true <- byte_size(json) <= limits.max_message_bytes or {:error, :message_too_large},
-         :ok <- validate_envelope(message) do
+         :ok <- validate_envelope(message, opts) do
       {:ok, message}
     else
       {:error, _reason} = error -> error
@@ -102,7 +102,7 @@ defmodule MCP.Apps.Bridge do
 
   def transition(_state, _message), do: {:error, :invalid_lifecycle_transition}
 
-  defp validate_envelope(%{"jsonrpc" => "2.0", "method" => method} = message)
+  defp validate_envelope(%{"jsonrpc" => "2.0", "method" => method} = message, opts)
        when method in @methods do
     request? = Map.has_key?(message, "id")
 
@@ -117,11 +117,11 @@ defmodule MCP.Apps.Bridge do
         validate_initialize(message, request?)
 
       true ->
-        validate_method_envelope(message, method, request?)
+        validate_method_envelope(message, method, request?, opts)
     end
   end
 
-  defp validate_envelope(%{"jsonrpc" => "2.0", "id" => id} = message) do
+  defp validate_envelope(%{"jsonrpc" => "2.0", "id" => id} = message, _opts) do
     success? = Map.has_key?(message, "result")
     error? = Map.has_key?(message, "error")
 
@@ -134,9 +134,9 @@ defmodule MCP.Apps.Bridge do
     end
   end
 
-  defp validate_envelope(_message), do: {:error, :invalid_bridge_message}
+  defp validate_envelope(_message, _opts), do: {:error, :invalid_bridge_message}
 
-  defp validate_method_envelope(message, method, request?) do
+  defp validate_method_envelope(message, method, request?, opts) do
     request_methods = @view_requests ++ @host_requests ++ @proxy_requests
 
     cond do
@@ -153,7 +153,7 @@ defmodule MCP.Apps.Bridge do
         {:error, :invalid_bridge_params}
 
       true ->
-        validate_params(method, Map.get(message, "params", %{}))
+        validate_params(method, Map.get(message, "params", %{}), opts)
     end
   end
 
@@ -166,7 +166,7 @@ defmodule MCP.Apps.Bridge do
 
   defp validate_initialize(_message, _request?), do: {:error, :invalid_initialize_request}
 
-  defp validate_params("ui/open-link", %{"url" => url}) when is_binary(url) do
+  defp validate_params("ui/open-link", %{"url" => url}, _opts) when is_binary(url) do
     parsed = URI.parse(url)
 
     if is_binary(parsed.scheme) and parsed.scheme != "" and
@@ -175,15 +175,15 @@ defmodule MCP.Apps.Bridge do
        else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params("ui/message", %{"role" => "user", "content" => content})
+  defp validate_params("ui/message", %{"role" => "user", "content" => content}, _opts)
        when is_map(content),
        do: :ok
 
-  defp validate_params("ui/request-display-mode", %{"mode" => mode})
+  defp validate_params("ui/request-display-mode", %{"mode" => mode}, _opts)
        when mode in ["inline", "fullscreen", "pip"],
        do: :ok
 
-  defp validate_params("ui/update-model-context", params) do
+  defp validate_params("ui/update-model-context", params, _opts) do
     content = Map.get(params, "content")
     structured = Map.get(params, "structuredContent")
 
@@ -192,48 +192,74 @@ defmodule MCP.Apps.Bridge do
       else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params(method, %{"arguments" => arguments})
+  defp validate_params(method, %{"arguments" => arguments}, _opts)
        when method in ["ui/notifications/tool-input", "ui/notifications/tool-input-partial"] and
               is_map(arguments),
        do: :ok
 
-  defp validate_params("ui/notifications/tool-result", %{"content" => content})
+  defp validate_params("ui/notifications/tool-result", %{"content" => content}, _opts)
        when is_list(content),
        do: :ok
 
-  defp validate_params("ui/notifications/tool-cancelled", params) do
+  defp validate_params("ui/notifications/tool-cancelled", params, _opts) do
     if optional_binary?(params, "reason"), do: :ok, else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params("ui/notifications/size-changed", params) do
-    if map_size(params) > 0 and optional_nonnegative_number?(params, "width") and
-         optional_nonnegative_number?(params, "height"),
+  defp validate_params("ui/notifications/size-changed", params, _opts) do
+    if required_nonnegative_number?(params, "width") and
+         required_nonnegative_number?(params, "height"),
        do: :ok,
        else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params("ui/resource-teardown", params) do
+  defp validate_params("ui/notifications/sandbox-proxy-ready", params, _opts)
+       when map_size(params) == 0,
+       do: :ok
+
+  defp validate_params(
+         "ui/notifications/sandbox-resource-ready",
+         %{"html" => html} = params,
+         opts
+       )
+       when is_binary(html) do
+    limits = Limits.new(Keyword.get(opts, :limits, []))
+
+    with true <- byte_size(html) <= limits.max_resource_bytes,
+         true <- optional_binary?(params, "sandbox"),
+         {:ok, _metadata} <-
+           Validator.resource_metadata(
+             %{"ui" => Map.take(params, ["csp", "permissions"])},
+             opts
+           ) do
+      :ok
+    else
+      _invalid -> {:error, :invalid_bridge_params}
+    end
+  end
+
+  defp validate_params("ui/resource-teardown", params, _opts) do
     if optional_binary?(params, "reason"), do: :ok, else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params("tools/call", %{"name" => name} = params) when is_binary(name) do
+  defp validate_params("tools/call", %{"name" => name} = params, _opts) when is_binary(name) do
     arguments = Map.get(params, "arguments", %{})
     if is_map(arguments), do: :ok, else: {:error, :invalid_bridge_params}
   end
 
-  defp validate_params("resources/read", %{"uri" => uri}) when is_binary(uri), do: :ok
-  defp validate_params("ping", params) when map_size(params) == 0, do: :ok
+  defp validate_params("resources/read", %{"uri" => uri}, _opts) when is_binary(uri), do: :ok
+  defp validate_params("ping", params, _opts) when map_size(params) == 0, do: :ok
 
-  defp validate_params(method, params) when method in @flexible_notifications and is_map(params),
-    do: :ok
+  defp validate_params(method, params, _opts)
+       when method in @flexible_notifications and is_map(params),
+       do: :ok
 
-  defp validate_params(_method, _params), do: {:error, :invalid_bridge_params}
+  defp validate_params(_method, _params, _opts), do: {:error, :invalid_bridge_params}
 
   defp optional_binary?(params, key),
     do: not Map.has_key?(params, key) or is_binary(params[key])
 
-  defp optional_nonnegative_number?(params, key),
-    do: not Map.has_key?(params, key) or (is_number(params[key]) and params[key] >= 0)
+  defp required_nonnegative_number?(params, key),
+    do: Map.has_key?(params, key) and is_number(params[key]) and params[key] >= 0
 
   defp valid_error?(%{"code" => code, "message" => message}),
     do: is_integer(code) and is_binary(message)

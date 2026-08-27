@@ -49,7 +49,7 @@ defmodule MCP.Apps.Client do
     meta = Map.get(tool, "_meta") || Map.get(tool, :_meta) || %{}
 
     with true <- Process.alive?(client) or {:error, :stale_client_binding},
-         {:ok, %{visibility: visibility}} <- Validator.tool_meta(meta, opts),
+         {:ok, visibility} <- Validator.tool_visibility(meta, opts),
          true <- "app" in visibility or {:error, :tool_not_app_visible},
          true <- is_binary(name) or {:error, :invalid_tool_name} do
       MCP.Client.call_tool(client, name, arguments, opts)

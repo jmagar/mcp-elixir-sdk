@@ -179,6 +179,21 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     assert event["params"]["_meta"][@subscription_id_key] == 2
   end
 
+  test "malformed cancellation params do not terminate the stateless connection", context do
+    for params <- [[], "invalid", 42] do
+      assert :ok =
+               BridgeTransport.send_message(context.client_transport, %{
+                 "jsonrpc" => "2.0",
+                 "method" => "notifications/cancelled",
+                 "params" => params
+               })
+    end
+
+    assert :ok = BridgeTransport.sync(context.client_transport)
+    assert Process.alive?(context.server)
+    assert %Connection{} = :sys.get_state(context.server)
+  end
+
   test "server graceful closure delivers the final listen result", context do
     {:ok, handle} =
       Client.listen_subscriptions(

@@ -38,6 +38,10 @@ defmodule MCP.AppsTest do
 
     assert {:error, :resource_policy_on_tool} =
              Validator.tool_meta(%{"ui" => %{"resourceUri" => @uri, "csp" => %{}}})
+
+    assert {:ok, ["app"]} = Validator.tool_visibility(%{"ui" => %{"visibility" => ["app"]}})
+
+    assert {:error, :missing_ui_metadata} = Validator.tool_visibility(%{})
   end
 
   test "validates bounded UI resource content and resource policy" do
@@ -191,6 +195,63 @@ defmodule MCP.AppsTest do
              )
   end
 
+  test "bridge codec validates size and reserved sandbox notification parameters" do
+    notification = fn method, params ->
+      %{"jsonrpc" => "2.0", "method" => method, "params" => params}
+    end
+
+    size_changed = "ui/notifications/size-changed"
+
+    assert {:ok, _message} =
+             Bridge.decode(notification.(size_changed, %{"width" => 0, "height" => 1.5}))
+
+    for params <- [
+          %{},
+          %{"width" => 100},
+          %{"height" => 100},
+          %{"width" => -1, "height" => 100},
+          %{"width" => 100, "height" => "100"}
+        ] do
+      assert {:error, :invalid_bridge_params} = Bridge.decode(notification.(size_changed, params))
+    end
+
+    proxy_ready = "ui/notifications/sandbox-proxy-ready"
+    assert {:ok, _message} = Bridge.decode(notification.(proxy_ready, %{}))
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(notification.(proxy_ready, %{"ready" => true}))
+
+    resource_ready = "ui/notifications/sandbox-resource-ready"
+
+    valid_params = %{
+      "html" => "<!doctype html>",
+      "sandbox" => "allow-scripts",
+      "csp" => %{
+        "connectDomains" => ["https://api.example.com"],
+        "resourceDomains" => ["https://*.example.com"]
+      },
+      "permissions" => %{"camera" => %{}}
+    }
+
+    assert {:ok, _message} = Bridge.decode(notification.(resource_ready, valid_params))
+
+    for params <- [
+          %{},
+          %{"html" => 123},
+          %{"html" => "html", "sandbox" => []},
+          %{"html" => "html", "csp" => %{"connectDomains" => ["http://unsafe.example"]}},
+          %{"html" => "html", "permissions" => %{"camera" => true}}
+        ] do
+      assert {:error, :invalid_bridge_params} =
+               Bridge.decode(notification.(resource_ready, params))
+    end
+
+    assert {:error, :invalid_bridge_params} =
+             Bridge.decode(notification.(resource_ready, %{"html" => "12345"}),
+               limits: [max_resource_bytes: 4]
+             )
+  end
+
   test "helper-owned catalogs enforce sibling app visibility" do
     app_only = definition(["app"], "refresh", "ui://weather/refresh.html")
     model_only = definition(["model"], "admin", "ui://weather/admin.html")
@@ -286,6 +347,32 @@ defmodule MCP.AppsTest do
     })
 
     assert {:ok, %{"content" => [%{"text" => "sunny"}]}} = Task.await(call)
+
+    sibling = %{
+      "name" => "refresh",
+      "inputSchema" => %{"type" => "object"},
+      "_meta" => %{"ui" => %{"visibility" => ["app"]}}
+    }
+
+    catalog = %{
+      tools: %{"refresh" => sibling},
+      visibilities: %{"refresh" => ["app"]}
+    }
+
+    sibling_call =
+      Task.async(fn -> MCP.Apps.Client.call_sibling_tool(app, catalog, "refresh", %{}) end)
+
+    request = await_request(transport, 4)
+    assert request["method"] == "tools/call"
+    assert request["params"]["name"] == "refresh"
+
+    MockTransport.inject(transport, %{
+      "jsonrpc" => "2.0",
+      "id" => request["id"],
+      "result" => %{"content" => [%{"type" => "text", "text" => "refreshed"}]}
+    })
+
+    assert {:ok, %{"content" => [%{"text" => "refreshed"}]}} = Task.await(sibling_call)
   end
 
   defp definition(visibility, name \\ "weather", uri \\ @uri) do

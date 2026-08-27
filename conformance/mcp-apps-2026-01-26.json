@@ -19,7 +19,7 @@
     "bridge-envelope-and-lifecycle-validation",
     "open-object-roundtrip",
     "bounded-resource-map-and-message-inputs",
-    "optional-real-browser-host-job"
+    "optional-real-browser-host-workflow-definition"
   ],
   "unverifiedScenarios": [
     "stdio-app-flow",

@@ -147,6 +147,102 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
     assert header(next_headers, "mcp-protocol-version") == "2025-11-25"
   end
 
+  test "serializes concurrent legacy initialize requests until the session is bound" do
+    bandit =
+      start_supervised!(
+        {Bandit,
+         plug: {__MODULE__.ConcurrentLegacyInitializePlug, test_pid: self()},
+         ip: {127, 0, 0, 1},
+         port: 0},
+        id: :concurrent_legacy_initialize_bandit
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
+
+    client =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Client, owner: self(), url: "http://127.0.0.1:#{port}/mcp"},
+          id: :concurrent_legacy_initialize_client
+        )
+      )
+
+    initialize = fn id ->
+      %{
+        "jsonrpc" => "2.0",
+        "id" => id,
+        "method" => "initialize",
+        "params" => %{
+          "protocolVersion" => "2025-11-25",
+          "capabilities" => %{},
+          "clientInfo" => %{"name" => "client", "version" => "1.0.0"}
+        }
+      }
+    end
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, request, 1}, 1_000
+
+    second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    refute_receive {:unbound_legacy_initialize, _request, _id}, 100
+
+    send(request, :release_initialize)
+    assert :ok = Task.await(first)
+    assert_receive {:mcp_message, %{"id" => 1}}, 1_000
+
+    assert_receive {:bound_legacy_initialize, "legacy-session", 2}, 1_000
+    assert :ok = Task.await(second)
+    refute_receive {:unbound_legacy_initialize, _request, _id}
+  end
+
+  test "advances a queued legacy initialize when the active caller dies" do
+    {client, initialize} = start_concurrent_legacy_client(self(), :dead_initializer_client)
+
+    first = spawn(fn -> Client.send_message(client, initialize.(1)) end)
+    first_ref = Process.monitor(first)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    second = Task.async(fn -> Client.send_message(client, initialize.(2)) end)
+    refute_receive {:unbound_legacy_initialize, _request, 2}, 100
+
+    Process.exit(first, :kill)
+    assert_receive {:DOWN, ^first_ref, :process, ^first, :killed}, 1_000
+    assert_receive {:unbound_legacy_initialize, second_request, 2}, 1_000
+
+    send(first_request, :release_initialize)
+    send(second_request, :release_initialize)
+    assert :ok = Task.await(second)
+    assert Process.alive?(client)
+  end
+
+  test "bounds active and queued legacy initializes and frees abandoned queue slots" do
+    {client, initialize} =
+      start_concurrent_legacy_client(self(), :bounded_initializer_client,
+        security_policy: [max_concurrent_requests: 2]
+      )
+
+    first = Task.async(fn -> Client.send_message(client, initialize.(1)) end)
+    assert_receive {:unbound_legacy_initialize, first_request, 1}, 1_000
+
+    abandoned = spawn(fn -> Client.send_message(client, initialize.(2)) end)
+    abandoned_ref = Process.monitor(abandoned)
+    refute_receive {:unbound_legacy_initialize, _request, 2}, 100
+
+    assert {:error, :request_limit_reached} = Client.send_message(client, initialize.(3))
+
+    Process.exit(abandoned, :kill)
+    assert_receive {:DOWN, ^abandoned_ref, :process, ^abandoned, :killed}, 1_000
+
+    replacement = Task.async(fn -> Client.send_message(client, initialize.(4)) end)
+    refute_receive {:unbound_legacy_initialize, _request, 4}, 100
+
+    send(first_request, :release_initialize)
+    assert :ok = Task.await(first)
+    assert_receive {:bound_legacy_initialize, "legacy-session", 4}, 1_000
+    assert :ok = Task.await(replacement)
+    assert Process.alive?(client)
+  end
+
   test "does not add method or name routing headers to JSON-RPC responses", %{client: client} do
     message = %{"jsonrpc" => "2.0", "id" => 1, "result" => %{}}
 
@@ -293,5 +389,93 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
       {^name, value} -> value
       _header -> nil
     end)
+  end
+
+  defp start_concurrent_legacy_client(test_pid, id, client_opts \\ []) do
+    bandit =
+      start_supervised!(
+        {Bandit,
+         plug: {__MODULE__.ConcurrentLegacyInitializePlug, test_pid: test_pid},
+         ip: {127, 0, 0, 1},
+         port: 0},
+        id: {id, :bandit}
+      )
+
+    {:ok, {_address, port}} = ThousandIsland.listener_info(bandit)
+
+    opts =
+      Keyword.merge(
+        [owner: self(), url: "http://127.0.0.1:#{port}/mcp"],
+        client_opts
+      )
+
+    client = start_supervised!(Supervisor.child_spec({Client, opts}, id: id))
+
+    initialize = fn request_id ->
+      %{
+        "jsonrpc" => "2.0",
+        "id" => request_id,
+        "method" => "initialize",
+        "params" => %{
+          "protocolVersion" => "2025-11-25",
+          "capabilities" => %{},
+          "clientInfo" => %{"name" => "client", "version" => "1.0.0"}
+        }
+      }
+    end
+
+    {client, initialize}
+  end
+end
+
+defmodule MCP.Transport.StreamableHTTPClientTest.ConcurrentLegacyInitializePlug do
+  @moduledoc false
+  @behaviour Plug
+
+  @impl true
+  def init(opts), do: opts
+
+  @impl true
+  def call(%Plug.Conn{method: "GET"} = conn, _opts) do
+    conn
+    |> Plug.Conn.put_resp_content_type("text/event-stream")
+    |> Plug.Conn.send_resp(200, ": connected\n\n")
+  end
+
+  def call(%Plug.Conn{method: "DELETE"} = conn, _opts),
+    do: Plug.Conn.send_resp(conn, 200, "")
+
+  def call(conn, opts) do
+    {:ok, body, conn} = Plug.Conn.read_body(conn)
+    message = Jason.decode!(body)
+    test_pid = Keyword.fetch!(opts, :test_pid)
+
+    case List.keyfind(conn.req_headers, "mcp-session-id", 0) do
+      nil ->
+        send(test_pid, {:unbound_legacy_initialize, self(), message["id"]})
+
+        receive do
+          :release_initialize -> :ok
+        end
+
+        response = %{
+          "jsonrpc" => "2.0",
+          "id" => message["id"],
+          "result" => %{
+            "protocolVersion" => "2025-11-25",
+            "capabilities" => %{},
+            "serverInfo" => %{"name" => "legacy", "version" => "1.0.0"}
+          }
+        }
+
+        conn
+        |> Plug.Conn.put_resp_header("mcp-session-id", "legacy-session")
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(response))
+
+      {"mcp-session-id", session_id} ->
+        send(test_pid, {:bound_legacy_initialize, session_id, message["id"]})
+        Plug.Conn.send_resp(conn, 202, "")
+    end
   end
 end
