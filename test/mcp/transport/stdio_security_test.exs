@@ -20,6 +20,7 @@ defmodule MCP.Transport.StdioSecurityTest do
     policy = SecurityPolicy.gateway()
 
     assert policy.max_frame_bytes == 1_000_000
+    assert policy.max_outbound_frame_bytes == 1_000_000
     assert policy.max_pending_stdout_bytes == 4_000_000
     assert policy.max_frames_per_turn == 100
     assert policy.stderr == :disable
@@ -46,6 +47,9 @@ defmodule MCP.Transport.StdioSecurityTest do
   end
 
   test "policy rejects invalid values" do
+    assert {:error, {:invalid_security_policy, {:max_outbound_frame_bytes, 0}}} =
+             SecurityPolicy.new(max_outbound_frame_bytes: 0)
+
     assert {:error, {:invalid_security_policy, {:max_frame_bytes, 0}}} =
              SecurityPolicy.new(max_frame_bytes: 0)
 
@@ -57,6 +61,19 @@ defmodule MCP.Transport.StdioSecurityTest do
 
     assert {:error, {:invalid_security_policy, {:unknown_options, [:surprise]}}} =
              SecurityPolicy.new(surprise: true)
+  end
+
+  test "outbound frames are rejected before they reach the subprocess" do
+    transport = start_transport("echo", max_outbound_frame_bytes: 32)
+
+    assert {:error, {:message_too_large, 32}} =
+             Stdio.send_message(transport, %{
+               "jsonrpc" => "2.0",
+               "method" => String.duplicate("x", 64)
+             })
+
+    refute_receive {:mcp_message, _message}, 100
+    assert :ok = Stdio.close(transport)
   end
 
   @tag @linux_only

@@ -48,6 +48,22 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
     %{client: client, registry: registry, url: url}
   end
 
+  test "plug validates public subscription byte and endpoint limits", context do
+    common = [
+      server_mod: SubscriptionHandler,
+      subscription_supervisor: self(),
+      subscription_registry: context.registry
+    ]
+
+    assert_raise ArgumentError, ~r/subscription_queue_byte_limit/, fn ->
+      StreamableHTTP.Plug.init(common ++ [subscription_queue_byte_limit: 0])
+    end
+
+    assert_raise ArgumentError, ~r/subscription_endpoint_limit/, fn ->
+      StreamableHTTP.Plug.init(common ++ [subscription_endpoint_limit: 0])
+    end
+  end
+
   test "streams acknowledgment and filtered notifications over a real SSE response", context do
     {:ok, handle} =
       Client.listen_subscriptions(
@@ -101,11 +117,11 @@ defmodule MCP.SubscriptionsHTTPIntegrationTest do
         %SubscriptionFilter{tools_list_changed: true}
       )
 
-    assert {:ok, _acknowledgment} = SubscriptionHandle.next(handle, 1_000)
+    assert {:ok, _acknowledgment} = SubscriptionHandle.next(handle, 5_000)
     [{worker, _value}] = Registry.lookup(context.registry, {:mcp_subscriptions, :http_test})
 
     assert :ok = SubscriptionWorker.complete(worker)
-    assert {:ok, %ListenResult{} = result} = SubscriptionHandle.next(handle, 1_000)
+    assert {:ok, %ListenResult{} = result} = SubscriptionHandle.next(handle, 5_000)
     assert result.meta[@subscription_id_key] == 1
     assert SubscriptionHandle.next(handle, 0) == {:error, :closed}
   end

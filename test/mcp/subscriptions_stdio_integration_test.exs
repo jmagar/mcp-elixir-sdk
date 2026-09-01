@@ -240,7 +240,8 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
   end
 
   @tag capture_log: true
-  test "server queue overflow terminates the stdio subscription with an error", context do
+  test "server queue admission rejects overflow and keeps the stdio subscription usable",
+       context do
     server_supervisor = :sys.get_state(context.server).subscription_supervisor
     client_supervisor = :sys.get_state(context.client).subscription_supervisor
     {client_transport, server_transport} = BridgeTransport.create_pair()
@@ -277,8 +278,6 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     [{worker, _value}] =
       Registry.lookup(context.registry, {:mcp_subscriptions, :stdio_overflow_test})
 
-    worker_ref = Process.monitor(worker)
-
     :ok = :sys.suspend(overflow_server)
 
     on_exit(fn ->
@@ -289,26 +288,27 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
       end
     end)
 
-    for sequence <- 1..2 do
-      assert :ok =
-               SubscriptionPublisher.publish(
-                 context.registry,
-                 :stdio_overflow_test,
-                 Methods.tools_list_changed(),
-                 %{"sequence" => sequence}
-               )
-    end
+    assert :ok =
+             SubscriptionPublisher.publish(
+               context.registry,
+               :stdio_overflow_test,
+               Methods.tools_list_changed(),
+               %{"sequence" => 1}
+             )
 
-    assert_receive {:DOWN, ^worker_ref, :process, ^worker, :queue_overflow}, 1_000
+    assert {:error, :queue_overflow} =
+             SubscriptionPublisher.publish(
+               context.registry,
+               :stdio_overflow_test,
+               Methods.tools_list_changed(),
+               %{"sequence" => 2}
+             )
+
+    assert Process.alive?(worker)
     :ok = :sys.resume(overflow_server)
 
-    assert {:error, %MCP.Protocol.Error{} = error} = SubscriptionHandle.next(handle, 1_000)
-    assert error.code == -32_603
-
-    assert error.data["reason"] in [
-             "subscription_queue_overflow",
-             "subscription_closed_abruptly"
-           ]
+    assert {:ok, notification} = SubscriptionHandle.next(handle, 1_000)
+    assert notification["params"]["sequence"] == 1
   end
 
   test "client rejects subscriptions without consumer-owned supervision", context do
@@ -369,6 +369,21 @@ defmodule MCP.SubscriptionsStdioIntegrationTest do
     assert_connection_start_error(
       common ++ [subscription_queue_limit: 0],
       {:invalid_subscription_queue_limit, 0}
+    )
+
+    assert_connection_start_error(
+      common ++ [subscription_queue_byte_limit: 0],
+      {:invalid_subscription_queue_byte_limit, 0}
+    )
+
+    assert_connection_start_error(
+      common ++ [subscription_endpoint_limit: 0],
+      {:invalid_subscription_endpoint_limit, 0}
+    )
+
+    assert_connection_start_error(
+      common ++ [max_pending_client_requests: 0],
+      :invalid_handler_limits
     )
 
     assert_connection_start_error(

@@ -68,6 +68,12 @@ defmodule MCP.AppsTest do
                limits: [max_nodes: 3]
              )
 
+    assert {:error, :metadata_too_large} =
+             Validator.tool_visibility(
+               %{"ui" => %{"visibility" => ["app"], "label" => String.duplicate("é", 20)}},
+               limits: [max_message_bytes: 32]
+             )
+
     assert {:error, :missing_ui_metadata} = Validator.tool_visibility(%{})
   end
 
@@ -186,6 +192,44 @@ defmodule MCP.AppsTest do
                "method" => "ui/open-link",
                "params" => %{"url" => "not a URL"}
              })
+
+    assert {:ok, _open_link} =
+             Bridge.decode(%{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "method" => "ui/open-link",
+               "params" => %{"url" => "https://example.com/path"}
+             })
+
+    for unsafe_url <- [
+          "javascript:alert(1)",
+          "data:text/html,<script>alert(1)</script>",
+          "file:///etc/passwd",
+          "//example.com/path",
+          "/relative",
+          "https://user:pass@example.com",
+          "custom://example.com/path",
+          "https://example.com/\npath"
+        ] do
+      assert {:error, :invalid_bridge_params} =
+               Bridge.decode(%{
+                 "jsonrpc" => "2.0",
+                 "id" => 3,
+                 "method" => "ui/open-link",
+                 "params" => %{"url" => unsafe_url}
+               })
+    end
+
+    assert {:ok, _open_link} =
+             Bridge.decode(
+               %{
+                 "jsonrpc" => "2.0",
+                 "id" => 3,
+                 "method" => "ui/open-link",
+                 "params" => %{"url" => "http://example.com/path"}
+               },
+               open_link_schemes: ["https", "http"]
+             )
 
     assert {:error, :invalid_bridge_params} =
              Bridge.decode(%{

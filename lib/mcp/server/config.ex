@@ -18,7 +18,11 @@ defmodule MCP.Server.Config do
         capabilities: ServerCapabilities.t(),
         instructions: String.t() | nil,
         protocol_version: String.t(),
-        cache_defaults: {non_neg_integer(), String.t()}
+        cache_defaults: {non_neg_integer(), String.t()},
+        skills_callback_timeout: pos_integer(),
+        handler_callback_timeout: pos_integer(),
+        handler_callback_supervisor: GenServer.server(),
+        handler_callback_limiter: %{key: pos_integer(), limit: pos_integer()}
       }
 
   `handler.init/1` is called once with the **static** handler options
@@ -38,10 +42,13 @@ defmodule MCP.Server.Config do
 
   alias MCP.Protocol.ExtensionCapabilities
   alias MCP.Protocol.Types.Implementation
+  alias MCP.Server.CallbackExecutor
   alias MCP.Server.Dispatch
 
   @skills_extension "io.modelcontextprotocol/skills"
   @default_skills_callback_timeout 30_000
+  @default_handler_callback_timeout 30_000
+  @default_max_concurrent_handler_callbacks 32
 
   @typedoc """
   Stable failure returned when a handler's `init/1` callback cannot produce
@@ -59,6 +66,20 @@ defmodule MCP.Server.Config do
            | {:thrown, term()}
            | {:exited, term()}
            | {:invalid_return, term()}}
+
+  @type t :: %{
+          handler_module: module(),
+          handler_state: term(),
+          server_info: Implementation.t(),
+          capabilities: ServerCapabilities.t(),
+          instructions: String.t() | nil,
+          protocol_version: String.t(),
+          cache_defaults: {non_neg_integer(), String.t()},
+          skills_callback_timeout: pos_integer(),
+          handler_callback_timeout: pos_integer(),
+          handler_callback_supervisor: GenServer.server(),
+          handler_callback_limiter: %{key: pos_integer(), limit: pos_integer()}
+        }
 
   @doc """
   Builds the dispatch config from a handler module and options.
@@ -91,12 +112,13 @@ defmodule MCP.Server.Config do
   > own. The shipped default (`{0, "public"}`) is safe because nothing is
   > stored.
   """
-  @spec build(module(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec build(module(), keyword()) :: {:ok, t()} | {:error, term()}
   def build(handler_module, opts) do
     handler_opts = Keyword.get(opts, :handler_opts, [])
 
     with {:ok, extensions} <-
            ExtensionCapabilities.validate(Keyword.get(opts, :extensions)),
+         :ok <- validate_callback_families(handler_module, extensions),
          :ok <- validate_skills_extension(handler_module, extensions),
          {:ok, cache_defaults} <-
            validate_cache_defaults(Keyword.get(opts, :cache_defaults, {0, "public"})),
@@ -104,6 +126,19 @@ defmodule MCP.Server.Config do
            validate_skills_callback_timeout(
              Keyword.get(opts, :skills_callback_timeout, @default_skills_callback_timeout)
            ),
+         {:ok, handler_callback_timeout} <-
+           validate_handler_callback_timeout(
+             Keyword.get(opts, :handler_callback_timeout, @default_handler_callback_timeout)
+           ),
+         {:ok, max_concurrent_handler_callbacks} <-
+           validate_max_concurrent_handler_callbacks(
+             Keyword.get(
+               opts,
+               :max_concurrent_handler_callbacks,
+               @default_max_concurrent_handler_callbacks
+             )
+           ),
+         :ok <- validate_callback_supervisor(Keyword.get(opts, :handler_callback_supervisor)),
          {:ok, handler_state} <- init_handler(handler_module, handler_opts) do
       capabilities =
         handler_module
@@ -119,19 +154,56 @@ defmodule MCP.Server.Config do
          instructions: Keyword.get(opts, :instructions),
          protocol_version: Dispatch.protocol_version(),
          cache_defaults: cache_defaults,
-         skills_callback_timeout: skills_callback_timeout
+         skills_callback_timeout: skills_callback_timeout,
+         handler_callback_timeout: handler_callback_timeout,
+         handler_callback_supervisor:
+           Keyword.get(opts, :handler_callback_supervisor, MCP.Server.CallbackTaskSupervisor),
+         handler_callback_limiter: CallbackExecutor.new_limiter(max_concurrent_handler_callbacks)
        }}
     else
-      {:error, {:invalid_extension_identifier, _key} = reason} -> {:error, reason}
-      {:error, {:invalid_extension_settings, _key} = reason} -> {:error, reason}
-      {:error, :extensions_must_be_an_object = reason} -> {:error, reason}
-      {:error, {:invalid_cache_defaults, _value} = reason} -> {:error, reason}
-      {:error, {:invalid_skills_extension, _reason} = reason} -> {:error, reason}
-      {:error, {:invalid_skills_callback_timeout, _value} = reason} -> {:error, reason}
-      {:error, {:handler_init_failed, _detail} = reason} -> {:error, reason}
-      {:error, reason} -> {:error, {:handler_init_failed, reason}}
+      {:error, {:invalid_extension_identifier, _key} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_extension_settings, _key} = reason} ->
+        {:error, reason}
+
+      {:error, :extensions_must_be_an_object = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_callback_family, _family, _missing} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_cache_defaults, _value} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_skills_extension, _reason} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_skills_callback_timeout, _value} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_handler_callback_timeout, _value} = reason} ->
+        {:error, reason}
+
+      {:error, {:invalid_max_concurrent_handler_callbacks, _value} = reason} ->
+        {:error, reason}
+
+      {:error, :unsupported_handler_callback_supervisor = reason} ->
+        {:error, reason}
+
+      {:error, {:handler_init_failed, _detail} = reason} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:handler_init_failed, reason}}
     end
   end
+
+  defp validate_callback_supervisor(nil), do: :ok
+  defp validate_callback_supervisor(MCP.Server.CallbackTaskSupervisor), do: :ok
+
+  defp validate_callback_supervisor(_supervisor),
+    do: {:error, :unsupported_handler_callback_supervisor}
 
   @doc "Detects server capabilities without claiming optional change notifications."
   @spec detect_capabilities(module()) :: ServerCapabilities.t()
@@ -171,6 +243,59 @@ defmodule MCP.Server.Config do
 
   defp enabled(true), do: true
   defp enabled(false), do: nil
+
+  defp validate_callback_families(handler_module, extensions) do
+    callbacks = handler_module.__info__(:functions)
+    skills_enabled? = is_map(extensions) and Map.has_key?(extensions, @skills_extension)
+
+    with :ok <-
+           validate_callback_family(
+             callbacks,
+             :tools,
+             {:handle_list_tools, 3},
+             {:handle_call_tool, 4}
+           ),
+         :ok <- validate_resource_callback_family(callbacks, skills_enabled?) do
+      validate_callback_family(
+        callbacks,
+        :prompts,
+        {:handle_list_prompts, 3},
+        {:handle_get_prompt, 4}
+      )
+    end
+  end
+
+  defp validate_resource_callback_family(callbacks, true) do
+    if {:handle_list_resources, 3} in callbacks do
+      require_family_callback(callbacks, :resources, {:handle_read_resource, 3})
+    else
+      :ok
+    end
+  end
+
+  defp validate_resource_callback_family(callbacks, false) do
+    validate_callback_family(
+      callbacks,
+      :resources,
+      {:handle_list_resources, 3},
+      {:handle_read_resource, 3}
+    )
+  end
+
+  defp validate_callback_family(callbacks, family, first, second) do
+    case {first in callbacks, second in callbacks} do
+      {false, false} -> :ok
+      {true, true} -> :ok
+      {true, false} -> {:error, {:invalid_callback_family, family, second}}
+      {false, true} -> {:error, {:invalid_callback_family, family, first}}
+    end
+  end
+
+  defp require_family_callback(callbacks, family, callback) do
+    if callback in callbacks,
+      do: :ok,
+      else: {:error, {:invalid_callback_family, family, callback}}
+  end
 
   defp subscriptions_enabled?(handler_module, opts) do
     function_exported?(handler_module, :handle_listen_subscriptions, 3) and
@@ -252,6 +377,19 @@ defmodule MCP.Server.Config do
 
   defp validate_skills_callback_timeout(value),
     do: {:error, {:invalid_skills_callback_timeout, value}}
+
+  defp validate_handler_callback_timeout(value) when is_integer(value) and value > 0,
+    do: {:ok, value}
+
+  defp validate_handler_callback_timeout(value),
+    do: {:error, {:invalid_handler_callback_timeout, value}}
+
+  defp validate_max_concurrent_handler_callbacks(value)
+       when is_integer(value) and value > 0,
+       do: {:ok, value}
+
+  defp validate_max_concurrent_handler_callbacks(value),
+    do: {:error, {:invalid_max_concurrent_handler_callbacks, value}}
 
   # Keep handler bugs at the configuration boundary instead of crashing the
   # process constructing a connection. The tagged shapes are intentionally

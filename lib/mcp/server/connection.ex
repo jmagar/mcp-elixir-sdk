@@ -22,6 +22,10 @@ defmodule MCP.Server.Connection do
     * `:server_info` / `:instructions` / `:cache_defaults` — forwarded to
       `MCP.Server.Config.build/2`
     * `:identity` — launch-static caller identity for every request (optional)
+    * `:subscription_queue_limit` — maximum queued events per subscription (default: 256)
+    * `:subscription_queue_byte_limit` — encoded queued bytes per subscription (default: 1,000,000)
+    * `:subscription_endpoint_limit` — active subscriptions per registry and endpoint (default: 1,024)
+    * `:max_pending_client_requests` — in-flight legacy server-to-client requests (default: 1,024)
   """
 
   use GenServer
@@ -37,6 +41,7 @@ defmodule MCP.Server.Connection do
   alias MCP.Protocol.Types.SubscriptionFilter
 
   alias MCP.Server.{
+    CallbackExecutor,
     Config,
     Dispatch,
     LegacyDispatch,
@@ -69,6 +74,10 @@ defmodule MCP.Server.Connection do
     :max_concurrent_handlers,
     :handler_timeout,
     subscription_queue_limit: 256,
+    subscription_queue_byte_limit: 1_000_000,
+    subscription_endpoint_limit: 1_024,
+    max_pending_client_requests: 1_024,
+    pending_client_request_refs: %{},
     handler_tasks: %{},
     subscriptions: %{}
   ]
@@ -181,6 +190,11 @@ defmodule MCP.Server.Connection do
          subscription_registry: Keyword.get(opts, :subscription_registry),
          subscription_endpoint: Keyword.get(opts, :subscription_endpoint, self()),
          subscription_queue_limit: Keyword.get(opts, :subscription_queue_limit, 256),
+         subscription_queue_byte_limit:
+           Keyword.get(opts, :subscription_queue_byte_limit, 1_000_000),
+         subscription_endpoint_limit: Keyword.get(opts, :subscription_endpoint_limit, 1_024),
+         max_pending_client_requests: Keyword.get(opts, :max_pending_client_requests, 1_024),
+         pending_client_request_refs: %{},
          protocol_mode: :undetermined,
          legacy_status: :waiting,
          legacy_log_level: "info",
@@ -196,6 +210,12 @@ defmodule MCP.Server.Connection do
     else
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  @impl GenServer
+  def terminate(_reason, %{config: config}) do
+    CallbackExecutor.retire_limiter(config.handler_callback_limiter)
+    :ok
   end
 
   @impl GenServer
@@ -261,6 +281,9 @@ defmodule MCP.Server.Connection do
         %{protocol_mode: :legacy, legacy_status: :ready} = state
       ) do
     case require_client_capability(method, params, state.legacy_client_capabilities) do
+      :ok when map_size(state.pending_client_requests) >= state.max_pending_client_requests ->
+        {:reply, {:error, :too_many_pending_requests}, state}
+
       :ok ->
         id = state.next_id
         message = Request.new(id, method, params) |> Jason.encode!() |> Jason.decode!()
@@ -270,7 +293,15 @@ defmodule MCP.Server.Connection do
             timeout_ref = Process.send_after(self(), {:client_request_timeout, id}, timeout)
             monitor_ref = Process.monitor(elem(from, 0))
             pending = Map.put(state.pending_client_requests, id, {from, timeout_ref, monitor_ref})
-            {:noreply, %{state | next_id: id + 1, pending_client_requests: pending}}
+            refs = Map.put(state.pending_client_request_refs, monitor_ref, id)
+
+            {:noreply,
+             %{
+               state
+               | next_id: id + 1,
+                 pending_client_requests: pending,
+                 pending_client_request_refs: refs
+             }}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}
@@ -323,7 +354,14 @@ defmodule MCP.Server.Connection do
       {{from, _timeout_ref, monitor_ref}, pending} ->
         Process.demonitor(monitor_ref, [:flush])
         GenServer.reply(from, {:error, :timeout})
-        {:noreply, %{state | pending_client_requests: pending}}
+
+        {:noreply,
+         %{
+           state
+           | pending_client_requests: pending,
+             pending_client_request_refs:
+               Map.delete(state.pending_client_request_refs, monitor_ref)
+         }}
 
       {nil, _pending} ->
         {:noreply, state}
@@ -477,7 +515,14 @@ defmodule MCP.Server.Connection do
         Process.demonitor(monitor_ref, [:flush])
         reply = if response.error, do: {:error, response.error}, else: {:ok, response.result}
         GenServer.reply(from, reply)
-        {:noreply, %{state | pending_client_requests: pending}}
+
+        {:noreply,
+         %{
+           state
+           | pending_client_requests: pending,
+             pending_client_request_refs:
+               Map.delete(state.pending_client_request_refs, monitor_ref)
+         }}
 
       {nil, _pending} ->
         Logger.warning("MCP.Server.Connection: response for unknown request id=#{inspect(id)}")
@@ -693,18 +738,22 @@ defmodule MCP.Server.Connection do
       GenServer.reply(from, {:error, reason})
     end)
 
-    %{state | pending_client_requests: %{}}
+    %{state | pending_client_requests: %{}, pending_client_request_refs: %{}}
   end
 
   defp remove_pending_client_request(state, monitor_ref) do
-    case Enum.find(state.pending_client_requests, fn {_id, {_from, _timer, ref}} ->
-           ref == monitor_ref
-         end) do
-      {id, {_from, timeout_ref, ^monitor_ref}} ->
+    case Map.pop(state.pending_client_request_refs, monitor_ref) do
+      {id, refs} when not is_nil(id) ->
+        {_from, timeout_ref, ^monitor_ref} = Map.fetch!(state.pending_client_requests, id)
         Process.cancel_timer(timeout_ref)
-        %{state | pending_client_requests: Map.delete(state.pending_client_requests, id)}
 
-      nil ->
+        %{
+          state
+          | pending_client_requests: Map.delete(state.pending_client_requests, id),
+            pending_client_request_refs: refs
+        }
+
+      {nil, _refs} ->
         state
     end
   end
@@ -743,11 +792,14 @@ defmodule MCP.Server.Connection do
 
   defp validate_handler_limits(opts) do
     max_concurrent = Keyword.get(opts, :max_concurrent_handlers, 32)
+    max_pending_client_requests = Keyword.get(opts, :max_pending_client_requests, 1_024)
     timeout = Keyword.get(opts, :handler_timeout, 30_000)
 
-    if is_integer(max_concurrent) and max_concurrent > 0 and is_integer(timeout) and timeout > 0,
-      do: :ok,
-      else: {:error, :invalid_handler_limits}
+    if is_integer(max_concurrent) and max_concurrent > 0 and
+         is_integer(max_pending_client_requests) and max_pending_client_requests > 0 and
+         is_integer(timeout) and timeout > 0,
+       do: :ok,
+       else: {:error, :invalid_handler_limits}
   end
 
   defp require_client_capability(
@@ -906,17 +958,16 @@ defmodule MCP.Server.Connection do
   defp subscription_configuration(%{
          subscription_supervisor: supervisor,
          subscription_registry: registry,
-         subscription_queue_limit: queue_limit
+         subscription_queue_limit: queue_limit,
+         subscription_queue_byte_limit: byte_limit,
+         subscription_endpoint_limit: endpoint_limit
        }) do
-    cond do
-      is_nil(supervisor) or is_nil(registry) ->
-        {:error, Error.method_not_found("subscriptions/listen")}
-
-      not (is_integer(queue_limit) and queue_limit > 0) ->
-        {:error, {:invalid_subscription_queue_limit, queue_limit}}
-
-      true ->
-        :ok
+    if is_nil(supervisor) or is_nil(registry) do
+      {:error, Error.method_not_found("subscriptions/listen")}
+    else
+      with :ok <- positive_limit(queue_limit, :invalid_subscription_queue_limit),
+           :ok <- positive_limit(byte_limit, :invalid_subscription_queue_byte_limit),
+           do: positive_limit(endpoint_limit, :invalid_subscription_endpoint_limit)
     end
   end
 
@@ -924,23 +975,30 @@ defmodule MCP.Server.Connection do
     supervisor = Keyword.get(opts, :subscription_supervisor)
     registry = Keyword.get(opts, :subscription_registry)
     queue_limit = Keyword.get(opts, :subscription_queue_limit, 256)
+    byte_limit = Keyword.get(opts, :subscription_queue_byte_limit, 1_000_000)
+    endpoint_limit = Keyword.get(opts, :subscription_endpoint_limit, 1_024)
 
-    cond do
-      not (is_integer(queue_limit) and queue_limit > 0) ->
-        {:error, {:invalid_subscription_queue_limit, queue_limit}}
-
-      is_nil(supervisor) and is_nil(registry) ->
-        :ok
-
-      is_nil(supervisor) or is_nil(registry) ->
-        {:error, :incomplete_subscription_configuration}
-
-      true ->
-        with {:ok, _registry_name} <- SubscriptionRegistry.name(registry) do
-          validate_subscription_supervisor(supervisor)
-        end
+    with :ok <- positive_limit(queue_limit, :invalid_subscription_queue_limit),
+         :ok <- positive_limit(byte_limit, :invalid_subscription_queue_byte_limit),
+         :ok <- positive_limit(endpoint_limit, :invalid_subscription_endpoint_limit) do
+      validate_subscription_topology(supervisor, registry)
     end
   end
+
+  defp validate_subscription_topology(nil, nil), do: :ok
+
+  defp validate_subscription_topology(supervisor, registry)
+       when is_nil(supervisor) or is_nil(registry),
+       do: {:error, :incomplete_subscription_configuration}
+
+  defp validate_subscription_topology(supervisor, registry) do
+    with {:ok, _registry_name} <- SubscriptionRegistry.name(registry) do
+      validate_subscription_supervisor(supervisor)
+    end
+  end
+
+  defp positive_limit(value, _error) when is_integer(value) and value > 0, do: :ok
+  defp positive_limit(value, error), do: {:error, {error, value}}
 
   defp validate_subscription_supervisor(supervisor) do
     case GenServer.whereis(supervisor) do
@@ -966,17 +1024,38 @@ defmodule MCP.Server.Connection do
         reply_sink: reply_sink(state, id)
       }
 
-      case module.handle_listen_subscriptions(requested, context, state.config.handler_state) do
-        {:ok, %SubscriptionFilter{} = honored} -> {:ok, honored}
-        {:error, code, message} -> {:error, %Error{code: code, message: message}}
-        other -> {:error, {:invalid_subscription_callback_result, other}}
-      end
+      state.config
+      |> CallbackExecutor.run(fn ->
+        module.handle_listen_subscriptions(requested, context, state.config.handler_state)
+      end)
+      |> normalize_subscription_callback()
     else
       {:error, Error.method_not_found("subscriptions/listen")}
     end
   rescue
     exception -> {:error, {:subscription_callback_raised, exception, __STACKTRACE__}}
   end
+
+  defp normalize_subscription_callback({:ok, {:ok, %SubscriptionFilter{} = honored}}),
+    do: {:ok, honored}
+
+  defp normalize_subscription_callback({:ok, {:error, code, message}}),
+    do: {:error, %Error{code: code, message: message}}
+
+  defp normalize_subscription_callback({:ok, other}),
+    do: {:error, {:invalid_subscription_callback_result, other}}
+
+  defp normalize_subscription_callback(:timeout),
+    do: {:error, Error.internal_error("handler callback timed out")}
+
+  defp normalize_subscription_callback(:overloaded),
+    do: {:error, Error.internal_error("handler capacity reached")}
+
+  defp normalize_subscription_callback({:unavailable, _reason}),
+    do: {:error, Error.internal_error("handler unavailable")}
+
+  defp normalize_subscription_callback({:failure, _kind, _reason, _stacktrace}),
+    do: {:error, Error.internal_error("handler callback failed")}
 
   defp start_subscription_worker(id, requested, honored, state) do
     SubscriptionWorker.start(
@@ -988,6 +1067,8 @@ defmodule MCP.Server.Connection do
       requested,
       honored,
       queue_limit: state.subscription_queue_limit,
+      queue_byte_limit: state.subscription_queue_byte_limit,
+      endpoint_limit: state.subscription_endpoint_limit,
       notify_owner: true
     )
   end

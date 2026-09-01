@@ -18,8 +18,9 @@ defmodule MCP.Server.Dispatch do
     already populated by the transport pipeline (HTTP: per request from `conn`;
     stdio: once at launch — PO Comment B). **The dispatch never derives identity
     from the message body** — see MC-2/MC-4.
-  * `config` — `%{handler_module, handler_state, server_info, capabilities,
-    instructions, protocol_version}`.
+  * `config` — `MCP.Server.Config.t()`, built with `MCP.Server.Config.build/2`.
+    The constructor installs the required callback limiter, supervisor, and
+    deadlines; hand-built partial maps are unsupported and fail closed.
 
   The context is passed to **every identity-capable handler callback** (MC-1).
   MC-1 is **strict** (PO Ruling 4): the context-bearing callback arity is
@@ -44,6 +45,7 @@ defmodule MCP.Server.Dispatch do
   alias MCP.Protocol.Meta
   alias MCP.Protocol.Revision
   alias MCP.Protocol.Types.{Resource, Skill}
+  alias MCP.Server.CallbackExecutor
   alias MCP.Server.ToolContext
 
   require Logger
@@ -59,7 +61,7 @@ defmodule MCP.Server.Dispatch do
   @doc "The protocol version this stateless core targets."
   def protocol_version, do: @stateless_protocol_version
 
-  @type config :: %{optional(atom()) => term()}
+  @type config :: MCP.Server.Config.t()
   @type result :: {:reply, map()} | :noreply
 
   @spec dispatch(Request.t() | Notification.t(), ToolContext.t(), config()) :: result()
@@ -416,13 +418,9 @@ defmodule MCP.Server.Dispatch do
     ctx_args = leading_args ++ [ctx, state]
 
     if function_exported?(mod, name, length(ctx_args)) do
-      try do
-        apply(mod, name, ctx_args) |> finish(shape, id, config)
-      rescue
-        exception -> handler_failure(name, id, config, :error, exception, __STACKTRACE__)
-      catch
-        kind, reason -> handler_failure(name, id, config, kind, reason, __STACKTRACE__)
-      end
+      config
+      |> CallbackExecutor.run(fn -> apply(mod, name, ctx_args) end)
+      |> finish_callback(name, shape, id, config)
     else
       reply(id, Error.method_not_found(Atom.to_string(name)), config)
     end
@@ -435,20 +433,10 @@ defmodule MCP.Server.Dispatch do
     if function_exported?(mod, name, length(args)) do
       timeout = Map.get(config, :skills_callback_timeout, @default_skills_callback_timeout)
 
-      case bounded_callback(mod, name, args, timeout) do
-        {:ok, callback_return} ->
-          finish(callback_return, shape, id, config)
+      callback_config = Map.put(config, :handler_callback_timeout, timeout)
 
-        {:failure, kind, reason, stacktrace} ->
-          handler_failure(name, id, config, kind, reason, stacktrace)
-
-        :timeout ->
-          Logger.error(
-            "MCP server handler callback timed out callback=#{name} timeout_ms=#{timeout}"
-          )
-
-          reply(id, Error.internal_error("handler callback timed out"), config)
-      end
+      result = CallbackExecutor.run(callback_config, fn -> apply(mod, name, args) end)
+      finish_skills_callback(result, name, shape, id, config, timeout)
     else
       reply(id, Error.method_not_found(Atom.to_string(name)), config)
     end
@@ -458,58 +446,49 @@ defmodule MCP.Server.Dispatch do
     kind, reason -> handler_failure(name, id, config, kind, reason, __STACKTRACE__)
   end
 
-  defp bounded_callback(module, callback, args, timeout) do
-    owner = self()
-    result_ref = make_ref()
+  defp finish_skills_callback({:ok, value}, _name, shape, id, config, _timeout),
+    do: finish(value, shape, id, config)
 
-    {pid, monitor_ref} =
-      :erlang.spawn_opt(
-        fn ->
-          outcome =
-            try do
-              {:ok, apply(module, callback, args)}
-            rescue
-              exception -> {:failure, :error, exception, __STACKTRACE__}
-            catch
-              kind, reason -> {:failure, kind, reason, __STACKTRACE__}
-            end
-
-          send(owner, {result_ref, outcome})
-        end,
-        [:link, :monitor]
-      )
-
-    receive do
-      {^result_ref, outcome} ->
-        Process.demonitor(monitor_ref, [:flush])
-        outcome
-
-      {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
-        {:failure, :exit, reason, []}
-    after
-      timeout ->
-        Process.unlink(pid)
-        Process.exit(pid, :kill)
-
-        drain_callback(result_ref, monitor_ref, pid)
-
-        :timeout
-    end
+  defp finish_skills_callback({:failure, kind, reason, stacktrace}, name, _shape, id, config, _) do
+    handler_failure(name, id, config, kind, reason, stacktrace)
   end
 
-  defp drain_callback(result_ref, monitor_ref, pid) do
-    receive do
-      {^result_ref, _outcome} -> drain_callback(result_ref, monitor_ref, pid)
-      {:DOWN, ^monitor_ref, :process, ^pid, _reason} -> drain_callback_result(result_ref)
-    end
+  defp finish_skills_callback(:timeout, name, _shape, id, config, timeout) do
+    Logger.error("MCP server handler callback timed out callback=#{name} timeout_ms=#{timeout}")
+    reply(id, Error.internal_error("handler callback timed out"), config)
   end
 
-  defp drain_callback_result(result_ref) do
-    receive do
-      {^result_ref, _outcome} -> :ok
-    after
-      0 -> :ok
-    end
+  defp finish_skills_callback(:overloaded, _name, _shape, id, config, _timeout),
+    do: reply(id, Error.internal_error("handler capacity reached"), config)
+
+  defp finish_skills_callback({:unavailable, reason}, name, _shape, id, config, _timeout) do
+    Logger.error("MCP handler callback unavailable callback=#{name}: #{inspect(reason)}")
+    reply(id, Error.internal_error("handler unavailable"), config)
+  end
+
+  defp finish_callback({:ok, callback_return}, name, shape, id, config) do
+    finish(callback_return, shape, id, config)
+  rescue
+    exception -> handler_failure(name, id, config, :error, exception, __STACKTRACE__)
+  catch
+    kind, reason -> handler_failure(name, id, config, kind, reason, __STACKTRACE__)
+  end
+
+  defp finish_callback({:failure, kind, reason, stacktrace}, name, _shape, id, config),
+    do: handler_failure(name, id, config, kind, reason, stacktrace)
+
+  defp finish_callback(:timeout, name, _shape, id, config) do
+    timeout = Map.fetch!(config, :handler_callback_timeout)
+    Logger.error("MCP server handler callback timed out callback=#{name} timeout_ms=#{timeout}")
+    reply(id, Error.internal_error("handler callback timed out"), config)
+  end
+
+  defp finish_callback(:overloaded, _name, _shape, id, config),
+    do: reply(id, Error.internal_error("handler capacity reached"), config)
+
+  defp finish_callback({:unavailable, reason}, name, _shape, id, config) do
+    Logger.error("MCP handler callback unavailable callback=#{name}: #{inspect(reason)}")
+    reply(id, Error.internal_error("handler unavailable"), config)
   end
 
   defp normalize_skills_list(skills, next_cursor, config) when is_list(skills) do

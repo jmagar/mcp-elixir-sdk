@@ -14,7 +14,7 @@
     "profile": "requirements:2025-11-25",
     "command": "npx --no-install conformance client --command 'env MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 ERL_LIBS=_build/dev/lib elixir conformance/client_adapter.exs' --requirements 2025-11-25",
     "requiredNonAuthorizationScenarios": [
-      {"name": "initialize", "status": "passed", "checks": {"passed": 1, "failed": 0, "warnings": 0}},
+      {"name": "initialize", "status": "excluded", "checks": {"passed": 1, "failed": 0, "warnings": 0}, "limitation": "Harness 0.2.0-alpha.11 validates initialize successfully, then replies to notifications/initialized with a JSON-RPC response lacking an id instead of HTTP 202; the SDK correctly rejects that invalid response."},
       {"name": "tools_call", "status": "passed", "checks": {"passed": 2, "failed": 0, "warnings": 0}},
       {"name": "elicitation-sep1034-client-defaults", "status": "passed", "checks": {"passed": 5, "failed": 0, "warnings": 0}},
       {"name": "sse-retry", "status": "partial", "checks": {"passed": 0, "failed": 1, "warnings": 0}, "limitation": "The frozen scenario negotiates MCP 2025-03-26, which is outside this SDK's declared support set; the adapter exits after rejecting that initialize version."}
@@ -25,6 +25,6 @@
       "reason": "OAuth authorization is owned by the embedding transport pipeline and is not implemented by this SDK."
     },
     "status": "incomplete",
-    "releaseBlocker": "The required non-authorization client denominator is not fully passing because sse-retry requires an undeclared older wire revision."
+    "releaseBlocker": "The required non-authorization client denominator is not fully passing because initialize has an incompatible harness transport response and sse-retry requires an undeclared older wire revision."
   }
 }

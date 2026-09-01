@@ -8,6 +8,14 @@ defmodule MCP.Test.LegacyMRTRHandler do
   def init(opts), do: {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)}}
 
   @impl true
+  def handle_list_tools(_cursor, %ToolContext{}, _config) do
+    {:ok,
+     Enum.map(["many_inputs", "parallel_inputs", "deadline_inputs"], fn name ->
+       %{"name" => name}
+     end), nil}
+  end
+
+  @impl true
   def handle_call_tool("many_inputs", _arguments, %ToolContext{input: nil}, _config) do
     requests =
       for index <- 1..33, into: %{} do

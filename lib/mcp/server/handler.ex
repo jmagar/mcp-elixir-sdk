@@ -8,8 +8,12 @@ defmodule MCP.Server.Handler do
   process reference in the launch configuration.
 
   Every request callback receives `MCP.Server.ToolContext` immediately before
-  the launch configuration. All request callbacks are optional; capabilities
-  are advertised only for implemented callback families.
+  the launch configuration. Callback families are optional, but an enabled
+  family must be complete: tools require `handle_list_tools/3` and
+  `handle_call_tool/4`, resources require `handle_list_resources/3` and
+  `handle_read_resource/3`, and prompts require `handle_list_prompts/3` and
+  `handle_get_prompt/4`. `MCP.Server.Config.build/2` rejects an incomplete
+  family as `{:error, {:invalid_callback_family, family, missing_callback}}`.
 
   When configuration is built, any `init/1` failure is returned as
   `{:error, MCP.Server.Config.handler_init_error()}`. This includes ordinary

@@ -10,7 +10,7 @@ outstanding release work.
 
 **Architecture:** A protocol revision registry selects modern or revision-specific legacy adapters without scattering version conditionals. HTTP and stdio each receive a validated policy struct with secure defaults; the transport implementations consume only validated policies and return structured failures. Conformance ledgers and Phoenix integration prove the public claims before version metadata changes.
 
-**Tech Stack:** Elixir 1.17+, OTP, Req 0.5 through 0.7, erlexec 2.3, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
+**Tech Stack:** Elixir 1.17+, OTP, Req 0.6.1 through 0.7, erlexec 2.3, Plug/Bandit, Jason, ExUnit, official `@modelcontextprotocol/conformance@0.2.0-alpha.11`, Mix/Hex.
 
 ## Global Constraints
 

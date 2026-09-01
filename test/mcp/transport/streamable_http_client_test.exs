@@ -1,5 +1,7 @@
 defmodule MCP.Transport.StreamableHTTPClientTest do
-  use ExUnit.Case, async: true
+  # This file defines its concurrent-initialize Plug after the test module.
+  # Keep the integration cases serialized so Bandit never races module loading.
+  use ExUnit.Case, async: false
 
   alias MCP.Test.{DelayedResponsePlug, HTTPResponsePlug, LegacySessionCapturePlug}
   alias MCP.Test.RequestCapturePlug
@@ -24,6 +26,26 @@ defmodule MCP.Transport.StreamableHTTPClientTest do
 
     assert header(headers, "mcp-method") == "tools/list"
     assert header(headers, "mcp-name") == nil
+  end
+
+  test "rejects oversized outbound requests before network I/O", %{url: url} do
+    child_spec =
+      Supervisor.child_spec(
+        {Client, owner: self(), url: url, security_policy: [max_request_bytes: 32]},
+        id: make_ref()
+      )
+
+    client = start_supervised!(child_spec)
+
+    assert {:error, {:message_too_large, 32}} =
+             Client.send_message(client, %{
+               "jsonrpc" => "2.0",
+               "id" => 1,
+               "method" => "tools/list",
+               "params" => %{}
+             })
+
+    refute_receive {:captured_request, _request}, 100
   end
 
   test "takes MCP-Protocol-Version from the authoritative request body", %{client: client} do

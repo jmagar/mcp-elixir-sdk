@@ -161,7 +161,7 @@ defmodule MCPElixirSDK.MixProject do
       {:erlexec, "~> 2.3"},
 
       # Optional: Streamable HTTP transport
-      {:req, ">= 0.5.0 and < 0.8.0", optional: true},
+      {:req, ">= 0.6.1 and < 0.8.0", optional: true},
       {:plug, "~> 1.16", optional: true},
       {:bandit, "~> 1.12.5", optional: true},
 

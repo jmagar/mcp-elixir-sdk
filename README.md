@@ -31,7 +31,10 @@ stateless `2026-07-28` over stdio/in-process and Streamable HTTP transports.
 - Bounded request deadlines, isolated resolver/notification callbacks, and no
   client-side result cache.
 - Configurable HTTP and stdio security policies with gateway-hardened presets,
-  bounded bodies/frames, redirects disabled, and process-tree cleanup.
+  direction-specific body/frame limits, redirects disabled, and process-tree
+  cleanup.
+- Server handler callbacks have a shared 30-second default deadline and a
+  32-callback admission limit across owner-based and Streamable HTTP transports.
 
 The authoritative design package is in [`docs/sdk-2.0`](docs/sdk-2.0). The
 implementation tracks the pinned official schema revision documented in
@@ -58,7 +61,8 @@ end
 No published production coordinate is currently advertised.
 
 Streamable HTTP uses the optional `Req`, `Plug`, and `Bandit` dependencies. `Req`
-is supported across `>= 0.5.0 and < 0.8.0`.
+is supported across `>= 0.6.1 and < 0.8.0`. Req 0.6.1 is the security floor;
+earlier releases are affected by CVE-2026-49755.
 
 **Platform support: Unix only.** `erlexec`, which supervises stdio subprocesses in
 process groups, is a required dependency whose NIF does not build on Windows, so
@@ -126,6 +130,13 @@ and model/app visibility enforcement. `MCP.Apps.Bridge` provides bounded codecs
 and a pure lifecycle transition validator for that host. A remote MCP server
 cannot infer iframe origin from `_meta`, arguments, or custom headers.
 
+`ui/open-link` accepts only absolute HTTPS URLs by default, with a non-empty
+host and no userinfo. An embedding host may explicitly add trusted schemes with
+`open_link_schemes:`, but decoding success validates only that wire policy; it
+does not grant consent or authorize navigation. Executable, inline-content,
+local-file, relative, and unconfigured custom-scheme URLs are rejected as
+`:invalid_bridge_params`.
+
 For stdio diagnostics, set transport
 `security_policy: [stderr: :capture]` and provide the client an explicit
 `stderr_handler:` pid or one-argument function. Captured data is bounded by the
@@ -150,11 +161,18 @@ Subscriptions are explicit processes, not lazy enumerables:
 filter = %MCP.Protocol.Types.SubscriptionFilter{tools_list_changed: true}
 {:ok, handle} = MCP.Client.listen_subscriptions(client, filter)
 {:ok, acknowledgment} = MCP.Client.SubscriptionHandle.next(handle, 5_000)
-:ok = MCP.Client.SubscriptionHandle.close(handle)
+case MCP.Client.SubscriptionHandle.close(handle) do
+  :ok -> :closed
+  {:error, {:close_failed, reason}} -> {:cleanup_unconfirmed, reason}
+end
 ```
 
 Each worker has a bounded FIFO queue (256 by default). Overflow, owner death,
 or transport loss closes only that subscription.
+Closing an already-closed handle is idempotently successful. A timeout or
+abnormal worker exit returns `{:error, {:close_failed, reason}}`; that error does
+not prove the remote subscription was cancelled. Pass a second timeout argument
+to `close/2` when the five-second default is unsuitable.
 
 ## Server handler
 
@@ -215,6 +233,20 @@ the client resolves the requests and retries with a new JSON-RPC id.
 The complete [quick-start handler](examples/quickstart_server.exs) is compiled
 and exercised by the test suite.
 
+Callback families are atomic. Tools require both list and call callbacks,
+resources require both list and read callbacks, and prompts require both list
+and get callbacks. `MCP.Server.Config.build/2` rejects a partial family with
+`{:error, {:invalid_callback_family, family, missing_callback}}` instead of
+advertising a capability that cannot be served.
+
+All ordinary handler callbacks run beneath the SDK callback supervisor with a
+finite deadline and shared admission limit. Configure these through
+`server_opts` as `handler_callback_timeout:` (30,000 ms by default) and
+`max_concurrent_handler_callbacks:` (32 by default). A deadline produces the
+stable internal-error message `handler callback timed out`; exhausted admission
+produces `handler capacity reached`. Timed-out tasks are terminated before their
+capacity is released, and subsequent requests remain serviceable.
+
 ### Skills extension security boundary
 
 Skills support transports catalogs and resource bytes; it does not execute
@@ -262,6 +294,7 @@ plug =
       extensions: %{"com.example/audit" => %{"version" => 1}}
     ],
     enable_json_response: false,
+    max_response_length: 8_000_000,
     allowed_hosts: ["mcp.example.com"],
     allowed_origins: ["https://app.example.com"],
     legacy_endpoint_owner: MyAppWeb.Endpoint,
@@ -290,6 +323,24 @@ requests require it, server-to-client requests flow over GET SSE, and DELETE
 terminates the session. A connection selects one era and cannot mix them.
 Legacy session processes are owned by the SDK application supervisor, bounded
 globally and per principal, and reclaimed by idle and absolute expiry.
+Initialization runs under a manager-owned task supervisor after an atomic
+capacity reservation. Indexed endpoint, process, owner, and expiry state keeps
+slow initialization and full-table teardown scans out of the shared manager
+mailbox.
+Legacy client session DELETE cleanup runs under the transport's task supervisor;
+failure to start the cleanup task or failure of the DELETE is logged rather
+than silently discarded.
+
+HTTP client requests are bounded by `security_policy: [max_request_bytes:
+1_000_000]`; response and SSE limits are separate fields. The server Plug
+accepts at most `max_body_length` bytes inbound and emits at most
+`max_response_length` encoded JSON or SSE bytes (both default to 8,000,000).
+An oversized server result fails closed with HTTP 500 and JSON-RPC `-32603`,
+with `data.reason` set to `"response_too_large"` and `data.limit` reporting the
+configured limit. Stdio independently bounds inbound frames with
+`max_frame_bytes` and outbound frames with `max_outbound_frame_bytes` (both
+default to 1,000,000); an oversized outbound request returns
+`{:error, {:message_too_large, limit}}` before writing.
 
 HTTP server subscriptions additionally require a duplicate `Registry` and a
 `DynamicSupervisor`. Pass both as `subscription_registry:` and

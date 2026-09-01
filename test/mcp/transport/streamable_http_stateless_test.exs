@@ -221,6 +221,18 @@ defmodule MCP.Transport.StreamableHTTPStatelessTest do
     assert_raise ArgumentError, ~r/max_body_length/, fn -> opts(max_body_length: 0) end
   end
 
+  test "rejects an invalid maximum response length at mount" do
+    assert_raise ArgumentError, ~r/max_response_length/, fn -> opts(max_response_length: 0) end
+  end
+
+  test "oversized handler responses fail closed with a bounded error" do
+    conn = post(opts(max_response_length: 64), rpc("tools/list", with_meta(%{})))
+
+    assert conn.status == 500
+    assert byte_size(conn.resp_body) <= 64
+    assert conn.resp_body == ""
+  end
+
   test "scalar tool arguments return a controlled error" do
     schema = %{
       "type" => "object",

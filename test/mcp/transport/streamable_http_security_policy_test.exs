@@ -10,6 +10,7 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
     assert policy.connect_timeout == 5_000
     assert policy.receive_timeout == 30_000
     assert policy.request_timeout == 60_000
+    assert policy.max_request_bytes == 1_000_000
     assert policy.max_response_bytes == 1_000_000
     assert policy.max_sse_event_bytes == 1_000_000
   end
@@ -59,6 +60,9 @@ defmodule MCP.Transport.StreamableHTTPSecurityPolicyTest do
   end
 
   test "policy construction rejects non-positive bounds and unknown options" do
+    assert {:error, {:invalid_security_policy, {:max_request_bytes, 0}}} =
+             SecurityPolicy.new(max_request_bytes: 0)
+
     assert {:error, {:invalid_security_policy, {:max_response_bytes, 0}}} =
              SecurityPolicy.new(max_response_bytes: 0)
 

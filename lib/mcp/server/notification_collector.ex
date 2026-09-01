@@ -80,16 +80,16 @@ defmodule MCP.Server.NotificationCollector do
   """
   @spec push(pid(), String.t(), map()) :: :ok | {:error, :notification_limit_reached}
   def push(collector, method, params) do
-    encoded_json = Jason.encode_to_iodata!(Notification.new(method, params))
+    notification = Notification.new(method, params)
+    encoded_json = Jason.encode_to_iodata!(notification)
     encoded_bytes = IO.iodata_length(encoded_json)
+    encoded = notification_map(notification)
 
     Agent.get_and_update(collector, fn state ->
       if state.overflowed? or state.count + 1 > state.max_notifications or
            state.bytes + encoded_bytes > state.max_bytes do
         {{:error, :notification_limit_reached}, %{state | overflowed?: true}}
       else
-        encoded = encoded_json |> IO.iodata_to_binary() |> Jason.decode!()
-
         {:ok,
          %{
            state
@@ -100,6 +100,12 @@ defmodule MCP.Server.NotificationCollector do
       end
     end)
   end
+
+  defp notification_map(%Notification{jsonrpc: jsonrpc, method: method, params: nil}),
+    do: %{"jsonrpc" => jsonrpc, "method" => method}
+
+  defp notification_map(%Notification{jsonrpc: jsonrpc, method: method, params: params}),
+    do: %{"jsonrpc" => jsonrpc, "method" => method, "params" => params}
 
   @doc """
   Returns all collected notifications in emission order.

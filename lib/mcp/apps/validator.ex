@@ -249,10 +249,20 @@ defmodule MCP.Apps.Validator do
   end
 
   defp json_budget(value, limits) do
-    case count_nodes(value, 0, 0, limits) do
-      {:ok, _nodes} -> :ok
-      error -> error
+    with :ok <- encoded_json_budget(value, limits),
+         {:ok, _nodes} <- count_nodes(value, 0, 0, limits) do
+      :ok
     end
+  end
+
+  defp encoded_json_budget(value, limits) do
+    if value |> Jason.encode_to_iodata!() |> IO.iodata_length() <= limits.max_message_bytes,
+      do: :ok,
+      else: {:error, :metadata_too_large}
+  rescue
+    Protocol.UndefinedError -> {:error, :invalid_json_value}
+    Jason.EncodeError -> {:error, :invalid_json_value}
+    ArgumentError -> {:error, :invalid_json_value}
   end
 
   defp count_nodes(_value, depth, _nodes, limits) when depth > limits.max_depth,

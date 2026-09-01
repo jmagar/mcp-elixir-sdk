@@ -37,14 +37,25 @@ defmodule MCP.Client.SubscriptionHandle do
 
   def next(%__MODULE__{}, timeout), do: {:error, {:invalid_timeout, timeout}}
 
-  @doc "Closes the subscription. Calling this function more than once is safe."
-  @spec close(t()) :: :ok
-  def close(%__MODULE__{} = handle) do
+  @doc """
+  Closes the subscription. Calling this function more than once is safe.
+
+  An already-closed worker returns `:ok`. A timeout or abnormal worker exit
+  returns `{:error, {:close_failed, reason}}`; that error does not prove the
+  remote subscription was cancelled.
+  """
+  @spec close(t(), timeout()) :: :ok | {:error, {:close_failed, term()}}
+  def close(handle, timeout \\ 5_000)
+
+  def close(%__MODULE__{} = handle, timeout)
+      when timeout == :infinity or (is_integer(timeout) and timeout >= 0) do
     case take_down(handle) do
       {:down, _reason} -> :ok
-      :none -> call_close(handle)
+      :none -> call_close(handle, timeout)
     end
   end
+
+  def close(%__MODULE__{}, timeout), do: {:error, {:close_failed, {:invalid_timeout, timeout}}}
 
   defp call_next(handle, timeout) do
     case SubscriptionWorker.next(handle.worker, timeout) do
@@ -60,10 +71,17 @@ defmodule MCP.Client.SubscriptionHandle do
     end
   end
 
-  defp call_close(handle) do
-    GenServer.call(handle.worker, :close)
+  defp call_close(handle, timeout) do
+    GenServer.call(handle.worker, :close, timeout)
   catch
-    :exit, _reason -> :ok
+    :exit, reason -> normalize_close_exit(reason)
+  end
+
+  defp normalize_close_exit(reason) do
+    case normalize_reason(reason) do
+      :closed -> :ok
+      normalized -> {:error, {:close_failed, normalized}}
+    end
   end
 
   defp down_or_call_reason(handle, call_reason) do

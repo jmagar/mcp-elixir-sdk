@@ -69,10 +69,8 @@ defmodule MCP.Server.LegacyProtocolHardeningTest do
     assert get_in(complete_result, ["capabilities", "resources", "subscribe"]) == true
     assert complete_result["capabilities"]["logging"] == %{}
 
-    {_server, incomplete_transport} = start_connection(LegacySubscribeOnlyHandler)
-    send_message(incomplete_transport, initialize(2))
-    assert_receive {:mcp_message, %{"result" => incomplete_result}}, 1_000
-    refute get_in(incomplete_result, ["capabilities", "resources", "subscribe"])
+    assert {:error, {:invalid_callback_family, :resources, {:handle_read_resource, 3}}} =
+             Config.build(LegacySubscribeOnlyHandler, [])
   end
 
   test "legacy methods reject malformed params without invoking handlers or killing the session" do

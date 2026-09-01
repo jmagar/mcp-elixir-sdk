@@ -218,13 +218,14 @@ configuration. Phoenix does not reach into private transport state.
 
 ## 7. Req compatibility
 
-The SDK supports Req `>= 0.5.0 and < 0.8.0`, allowing Phoenix's Req 0.5 lock to resolve.
+The SDK supports Req `>= 0.6.1 and < 0.8.0`. Req 0.6.1 is the minimum release that
+fixes CVE-2026-49755; affected Req 0.5 and 0.6.0 locks must be upgraded.
 Integration compiles against Phoenix's real lock and exercises the lowest and highest
 supported Req releases.
 
 This repository's CI resolves a single Req version — whatever `mix.lock` pins — so the
 declared floor is proven by the Phoenix integration worktree rather than by an SDK CI
-lane. Anything that would narrow the range (a Req API this SDK relies on that 0.5 lacks)
+lane. Anything that would narrow the range (a Req API this SDK relies on that 0.6.1 lacks)
 must therefore be caught there; a green SDK build alone is not evidence that the floor
 still resolves.
 
@@ -299,7 +300,7 @@ no release coordinate is created before production evidence exists.
   <https://modelcontextprotocol.io/specification/2025-11-25/basic/transports>
 - MCP 2026-07-28 release and stateless lifecycle:
   <https://blog.modelcontextprotocol.io/posts/2026-07-28/>
-- Req request, streaming, redirect, and retry options (0.5 through 0.7):
+- Req request, streaming, redirect, and retry options (0.6.1 through 0.7):
   <https://hexdocs.pm/req/Req.html>
 - Phoenix gateway contract (external integration document):
   <https://github.com/dinglebear-ai/phoenix/blob/0c2d4c7c6968c34b4f1f49580eec10d6804433ca/docs/mcp-gateway/SPEC.md>

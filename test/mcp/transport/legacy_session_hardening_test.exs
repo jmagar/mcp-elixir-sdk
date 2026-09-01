@@ -9,6 +9,20 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
 
   @legacy_version "2025-11-25"
 
+  defmodule BlockingInitHandler do
+    @behaviour MCP.Server.Handler
+
+    @impl true
+    def init(opts) do
+      test_pid = Keyword.fetch!(opts, :test_pid)
+      send(test_pid, {:legacy_init_blocked, self()})
+
+      receive do
+        :release_legacy_init -> {:ok, %{}}
+      end
+    end
+  end
+
   test "Plug options can be escaped into a compiled Plug.Builder pipeline" do
     module = Module.concat(__MODULE__, "Compiled#{System.unique_integer([:positive])}")
 
@@ -208,6 +222,201 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
     assert_receive {:DOWN, ^monitor_ref, :process, ^server, :shutdown}, 1_000
   end
 
+  test "slow initialization for one endpoint does not block another endpoint" do
+    name = Module.concat(__MODULE__, "ConcurrentManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    test_pid = self()
+
+    slow =
+      Task.async(fn ->
+        LegacySessionManager.create(
+          manager,
+          :slow_endpoint,
+          :alice,
+          BlockingInitHandler,
+          [test_pid: test_pid],
+          [],
+          manager_limits(test_pid)
+        )
+      end)
+
+    assert_receive {:legacy_init_blocked, initializer}, 1_000
+
+    assert {:ok, _session_id, fast_session} =
+             LegacySessionManager.create(
+               manager,
+               :fast_endpoint,
+               :bob,
+               StatelessHandler,
+               [],
+               [],
+               manager_limits(test_pid)
+             )
+
+    assert Process.alive?(fast_session.server)
+    send(initializer, :release_legacy_init)
+    assert {:ok, _session_id, _slow_session} = Task.await(slow, 1_000)
+  end
+
+  test "parallel creates reserve capacity before session startup completes" do
+    name = Module.concat(__MODULE__, "CapacityManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    limits = manager_limits(self(), session_limit: 1, per_identity_limit: 1)
+
+    tasks =
+      for _ <- 1..16 do
+        Task.async(fn ->
+          LegacySessionManager.create(
+            manager,
+            :capacity_endpoint,
+            :alice,
+            StatelessHandler,
+            [],
+            [],
+            limits
+          )
+        end)
+      end
+
+    results = Task.await_many(tasks, 2_000)
+    assert 1 == Enum.count(results, &match?({:ok, _id, _session}, &1))
+    assert 15 == Enum.count(results, &(&1 == {:error, :session_limit}))
+    assert [_session] = LegacySessionManager.list(manager, :capacity_endpoint)
+  end
+
+  test "initialization deadlines release reserved capacity" do
+    name = Module.concat(__MODULE__, "DeadlineManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    limits = manager_limits(self(), initialization_timeout: 25, session_limit: 1)
+
+    assert {:error, :initialization_timeout} =
+             LegacySessionManager.create(
+               manager,
+               :deadline_endpoint,
+               :alice,
+               BlockingInitHandler,
+               [test_pid: self()],
+               [],
+               limits
+             )
+
+    assert_receive {:legacy_init_blocked, _initializer}, 1_000
+
+    assert {:ok, _id, _session} =
+             LegacySessionManager.create(
+               manager,
+               :deadline_endpoint,
+               :alice,
+               StatelessHandler,
+               [],
+               [],
+               limits
+             )
+  end
+
+  test "requester death cancels pending initialization and releases capacity" do
+    name = Module.concat(__MODULE__, "CallerManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    limits = manager_limits(self(), initialization_timeout: 5_000, session_limit: 1)
+    test_pid = self()
+
+    requester =
+      spawn(fn ->
+        LegacySessionManager.create(
+          manager,
+          :caller_endpoint,
+          :alice,
+          BlockingInitHandler,
+          [test_pid: test_pid],
+          [],
+          limits
+        )
+      end)
+
+    assert_receive {:legacy_init_blocked, _initializer}, 1_000
+    Process.exit(requester, :kill)
+
+    assert eventually(fn -> :sys.get_state(manager).pending == %{} end)
+
+    assert {:ok, _id, _session} =
+             LegacySessionManager.create(
+               manager,
+               :caller_endpoint,
+               :alice,
+               StatelessHandler,
+               [],
+               [],
+               limits
+             )
+  end
+
+  test "lookup refresh replaces rather than accumulates expiration entries" do
+    name = Module.concat(__MODULE__, "ExpiryManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    limits = manager_limits(self())
+
+    assert {:ok, id, _session} =
+             LegacySessionManager.create(
+               manager,
+               :expiry_endpoint,
+               :alice,
+               StatelessHandler,
+               [],
+               [],
+               limits
+             )
+
+    for _ <- 1..1_000 do
+      assert {:ok, _session} =
+               LegacySessionManager.lookup(manager, :expiry_endpoint, id, :alice)
+    end
+
+    state = :sys.get_state(manager)
+    assert :gb_sets.size(state.expirations) == map_size(state.sessions)
+    assert :gb_sets.size(state.expirations) == 1
+  end
+
+  test "failed initialization cleanup returns monitor count to baseline" do
+    name = Module.concat(__MODULE__, "MonitorManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name})
+    baseline = manager |> Process.info(:monitors) |> elem(1) |> length()
+    limits = manager_limits(self(), initialization_timeout: 10)
+
+    for _ <- 1..10 do
+      assert {:error, :initialization_timeout} =
+               LegacySessionManager.create(
+                 manager,
+                 :monitor_endpoint,
+                 :alice,
+                 BlockingInitHandler,
+                 [test_pid: self()],
+                 [],
+                 limits
+               )
+
+      assert_receive {:legacy_init_blocked, _initializer}, 1_000
+    end
+
+    assert eventually(fn ->
+             manager |> Process.info(:monitors) |> elem(1) |> length() == baseline
+           end)
+  end
+
+  test "atomic manager admission rejects calls beyond the configured ceiling" do
+    name = Module.concat(__MODULE__, "AdmissionManager#{System.unique_integer([:positive])}")
+    manager = start_supervised!({LegacySessionManager, name: name, max_pending_calls: 1})
+    :ok = :sys.suspend(manager)
+    admitted = Task.async(fn -> LegacySessionManager.list(manager, :endpoint) end)
+
+    assert eventually(fn ->
+             Process.info(manager, :message_queue_len) == {:message_queue_len, 1}
+           end)
+
+    assert {:error, :manager_overloaded} = LegacySessionManager.list(manager, :endpoint)
+    :ok = :sys.resume(manager)
+    assert [] = Task.await(admitted)
+  end
+
   test "manager shutdown terminates all owned session processes" do
     name = Module.concat(__MODULE__, "Manager#{System.unique_integer([:positive])}")
     _manager = start_supervised!({LegacySessionManager, name: name})
@@ -340,6 +549,32 @@ defmodule MCP.Transport.LegacySessionHardeningTest do
         "clientInfo" => %{"name" => "hardening-test", "version" => "1.0.0"}
       }
     }
+  end
+
+  defp manager_limits(owner, overrides \\ []) do
+    Keyword.merge(
+      [
+        endpoint_owner: owner,
+        protocol_version: @legacy_version,
+        session_limit: 100,
+        per_identity_limit: 100,
+        idle_timeout: 60_000,
+        absolute_timeout: 60_000
+      ],
+      overrides
+    )
+  end
+
+  defp eventually(fun, attempts \\ 50)
+  defp eventually(fun, 0), do: fun.()
+
+  defp eventually(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(10)
+      eventually(fun, attempts - 1)
+    end
   end
 
   defp legacy_post(config, message, session_id, principal) do

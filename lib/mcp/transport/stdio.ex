@@ -34,6 +34,7 @@ defmodule MCP.Transport.Stdio do
   @behaviour MCP.Transport
 
   alias MCP.Protocol
+  alias MCP.Protocol.JSONBudget
   alias MCP.Transport.Stdio.Process, as: StdioProcess
   alias MCP.Transport.Stdio.SecurityPolicy
 
@@ -221,19 +222,39 @@ defmodule MCP.Transport.Stdio do
     end
   end
 
-  defp do_send(%{mode: :client, process: process}, message) when is_pid(process) do
-    json = Jason.encode!(message)
-    StdioProcess.write(process, [json, "\n"])
+  defp do_send(%{mode: :client, process: process, security_policy: policy}, message)
+       when is_pid(process) do
+    json = Jason.encode_to_iodata!(message)
+
+    with :ok <- enforce_outbound_frame_size(json, policy) do
+      StdioProcess.write(process, [json, "\n"])
+    end
   rescue
     e -> {:error, e}
   end
 
-  defp do_send(%{mode: :server}, message) do
-    json = Jason.encode!(message)
-    IO.write(:stdio, [json, "\n"])
-    :ok
+  defp do_send(%{mode: :server, security_policy: policy}, message) do
+    with :ok <- preflight_outbound_frame(message, policy),
+         json = Jason.encode_to_iodata!(message),
+         :ok <- enforce_outbound_frame_size(json, policy) do
+      IO.write(:stdio, [json, "\n"])
+      :ok
+    end
   rescue
     e -> {:error, e}
+  end
+
+  defp preflight_outbound_frame(message, policy) do
+    case JSONBudget.check(message, policy.max_outbound_frame_bytes) do
+      :ok -> :ok
+      {:error, _reason} -> {:error, {:message_too_large, policy.max_outbound_frame_bytes}}
+    end
+  end
+
+  defp enforce_outbound_frame_size(json, policy) do
+    if IO.iodata_length(json) <= policy.max_outbound_frame_bytes,
+      do: :ok,
+      else: {:error, {:message_too_large, policy.max_outbound_frame_bytes}}
   end
 
   defp do_close(%{mode: :client, process: process, security_policy: policy})

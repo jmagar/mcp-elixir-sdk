@@ -4,7 +4,7 @@ defmodule MCP.Server.DispatchTest do
   alias MCP.Protocol.Capabilities.ServerCapabilities
   alias MCP.Protocol.Messages.{Notification, Request}
   alias MCP.Protocol.Types.Implementation
-  alias MCP.Server.Dispatch
+  alias MCP.Server.{CallbackExecutor, Dispatch}
   alias MCP.Server.ToolContext
   alias MCP.Test.StatelessHandler
 
@@ -18,7 +18,10 @@ defmodule MCP.Server.DispatchTest do
       handler_state: state,
       server_info: %Implementation{name: "mcp_elixir_sdk", version: "2.0.0"},
       capabilities: %ServerCapabilities{},
-      instructions: nil
+      instructions: nil,
+      handler_callback_timeout: 30_000,
+      handler_callback_supervisor: MCP.Server.CallbackTaskSupervisor,
+      handler_callback_limiter: CallbackExecutor.new_limiter(32)
     }
   end
 

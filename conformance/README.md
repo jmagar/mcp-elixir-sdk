@@ -19,10 +19,22 @@ deliberately not a dependency of package CI.
   harness-only diagnostic tools.
 - `client_adapter.exs` drives the SDK client from the scenario and context
   environment variables supplied by the harness.
-- `scenarios.json` is the 2026 machine-readable release ledger.
+- `scenarios.json` is the historical 2026 qualification ledger. Current CI
+  release evidence is generated from the executing commit and archived with
+  checksums as `release-evidence.json` plus `SHA256SUMS`.
 - `compatibility-2025-11-25.json` records the November server denominator and
-  the exact client scenarios, exclusions, warnings, and remaining blocker.
+  the exact client scenarios, exclusions, and warnings. The `initialize`
+  scenario is excluded because this pinned harness returns an invalid JSON-RPC
+  response to the client's required initialized notification. The `sse-retry` client
+  scenario is recorded as partial and remains a release blocker because harness
+  `0.2.0-alpha.11` negotiates unsupported revision `2025-03-26`; it is not
+  represented as a passing check.
 - `apps_browser_adapter.exs` and `apps_browser_interop.mjs` are fixtures for the
   separate real-host workflow, not Hex package runtime code.
 Use the exact commands in `docs/dev-tooling.md`. Harness-only diagnostic tools
 are test fixtures, not public SDK behavior.
+
+CI validates both ledgers with `scripts/validate_conformance_ledgers.exs`, runs
+every conformance command under a finite timeout, and uploads the server log and
+per-scenario output as the `mcp-core-conformance` artifact even after failure.
+The artifact is retained for 14 days.

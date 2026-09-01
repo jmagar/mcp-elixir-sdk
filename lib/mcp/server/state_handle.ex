@@ -14,6 +14,7 @@ defmodule MCP.Server.StateHandle do
 
   @default_max_entries 10_000
   @default_ttl_ms 300_000
+  @expiration_sweep_batch 128
 
   @type principal :: term()
   @type state :: %{
@@ -170,17 +171,25 @@ defmodule MCP.Server.StateHandle do
     }
   end
 
-  defp discard_expired(state, now) do
-    if :gb_sets.is_empty(state.expirations) do
-      state
-    else
-      {expires_at, _sequence, handle} = :gb_sets.smallest(state.expirations)
+  defp discard_expired(state, now), do: discard_expired(state, now, @expiration_sweep_batch)
 
-      if expires_at <= now do
-        state |> remove_entry(handle) |> discard_expired(now)
-      else
+  defp discard_expired(state, _now, 0), do: state
+
+  defp discard_expired(state, now, remaining) do
+    case :gb_sets.is_empty(state.expirations) do
+      true ->
         state
-      end
+
+      false ->
+        {expires_at, _sequence, handle} = :gb_sets.smallest(state.expirations)
+
+        if expires_at <= now do
+          state
+          |> remove_entry(handle)
+          |> discard_expired(now, remaining - 1)
+        else
+          state
+        end
     end
   end
 

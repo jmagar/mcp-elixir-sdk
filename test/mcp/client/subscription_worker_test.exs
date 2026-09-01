@@ -55,6 +55,21 @@ defmodule MCP.Client.SubscriptionWorkerTest do
     assert SubscriptionHandle.next(handle, 0) == {:error, :closed}
   end
 
+  test "close reports a timeout instead of claiming an unresponsive worker closed", %{
+    supervisor: supervisor
+  } do
+    {:ok, worker} = SubscriptionWorker.start(supervisor, "suspended", self())
+    handle = SubscriptionHandle.new("suspended", worker)
+    :ok = :sys.suspend(worker)
+    on_exit(fn -> if Process.alive?(worker), do: :sys.resume(worker) end)
+
+    assert SubscriptionHandle.close(handle, 10) == {:error, {:close_failed, :timeout}}
+    assert Process.alive?(worker)
+
+    :ok = :sys.resume(worker)
+    assert SubscriptionHandle.close(handle) == :ok
+  end
+
   @tag capture_log: true
   test "queue overflow is observable and does not terminate a sibling", %{supervisor: supervisor} do
     {:ok, overflowing} =

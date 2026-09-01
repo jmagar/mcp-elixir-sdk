@@ -34,6 +34,7 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   require Logger
 
   alias MCP.Protocol
+  alias MCP.Protocol.JSONBudget
   alias MCP.Protocol.Messages.Initialize
   alias MCP.Protocol.Messages.Response
   alias MCP.Protocol.Revision
@@ -492,12 +493,18 @@ defmodule MCP.Transport.StreamableHTTP.Client do
   end
 
   defp post(transport, state, message, headers) do
-    body = Jason.encode!(message)
+    with {:ok, body} <- encode_request(message, state.security_policy),
+         result <-
+           ResponseReader.request(
+             [method: :post, url: state.endpoint, body: body, headers: headers],
+             state.security_policy
+           ) do
+      handle_post_result(result, transport, state, message)
+    end
+  end
 
-    case ResponseReader.request(
-           [method: :post, url: state.endpoint, body: body, headers: headers],
-           state.security_policy
-         ) do
+  defp handle_post_result(result, transport, state, message) do
+    case result do
       {:ok, %Req.Response{status: status, headers: resp_headers}, resp_body}
       when status in [200, 201] ->
         content_type = get_content_type(resp_headers)
@@ -527,6 +534,20 @@ defmodule MCP.Transport.StreamableHTTP.Client do
         Logger.warning("MCP StreamableHTTP Client: POST failed: #{failure_tag(reason)}")
 
         {:error, reason}
+    end
+  end
+
+  defp encode_request(message, security_policy) do
+    case JSONBudget.check(message, security_policy.max_request_bytes) do
+      :ok ->
+        body = Jason.encode_to_iodata!(message)
+
+        if IO.iodata_length(body) <= security_policy.max_request_bytes,
+          do: {:ok, body},
+          else: {:error, {:message_too_large, security_policy.max_request_bytes}}
+
+      {:error, _reason} ->
+        {:error, {:message_too_large, security_policy.max_request_bytes}}
     end
   end
 
@@ -948,15 +969,22 @@ defmodule MCP.Transport.StreamableHTTP.Client do
       security_policy: state.security_policy
     }
 
-    {:ok, _pid} =
-      Task.start(fn ->
-        case terminate_legacy_session(cleanup) do
-          :ok -> :ok
-          {:error, reason} -> Logger.warning("MCP session DELETE failed: #{inspect(reason)}")
-        end
-      end)
+    case Task.Supervisor.start_child(state.task_supervisor, fn -> run_session_cleanup(cleanup) end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("MCP session DELETE task failed to start: #{inspect(reason)}")
+    end
 
     :ok
+  end
+
+  defp run_session_cleanup(cleanup) do
+    case terminate_legacy_session(cleanup) do
+      :ok -> :ok
+      {:error, reason} -> Logger.warning("MCP session DELETE failed: #{inspect(reason)}")
+    end
   end
 
   defp clear_legacy_session(state) do
@@ -1221,16 +1249,21 @@ defmodule MCP.Transport.StreamableHTTP.Client do
 
   defp run_subscription_stream(transport, id, url, message, headers, security_policy) do
     result =
-      case ResponseReader.request(
-             [
-               method: :post,
-               url: url,
-               body: Jason.encode!(message),
-               headers: headers,
-               stream: true
-             ],
-             security_policy
-           ) do
+      with {:ok, body} <- encode_request(message, security_policy) do
+        ResponseReader.request(
+          [
+            method: :post,
+            url: url,
+            body: body,
+            headers: headers,
+            stream: true
+          ],
+          security_policy
+        )
+      end
+
+    result =
+      case result do
         {:stream, %Req.Response{status: 200} = response} ->
           if String.contains?(get_content_type(response.headers), "text/event-stream") do
             consume_subscription_stream(

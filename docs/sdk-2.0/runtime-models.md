@@ -25,6 +25,7 @@ flowchart LR
     LegacySession["2025 HTTP session runtime"]
     LegacyManager["Supervised legacy session manager"]
     CallbackTasks["Supervised host callbacks"]
+    HandlerTasks["Supervised bounded handler callbacks"]
 
     Host --> Client
     Client --> Transport
@@ -32,7 +33,8 @@ flowchart LR
     Host --> Plug
     Plug --> Config
     Plug --> Dispatch
-    Dispatch --> Handler
+    Dispatch --> HandlerTasks
+    HandlerTasks --> Handler
     Host --> ClientSubs
     Host --> ServerSubs
     Client --> CallbackTasks
@@ -44,6 +46,8 @@ flowchart LR
 ```
 
 The library application supervises the default legacy HTTP session manager.
+It also supervises the handler callback task supervisor used by all server
+transport topologies.
 Consumers own their client/server and subscription processes through their own
 supervision trees. Tests start custom runtime owners with `start_supervised!/1`
 so ownership and cleanup are deterministic.
@@ -160,6 +164,10 @@ a bounded synchronous DELETE. Session expiry or exhausted listener retries are s
 to the owner; a terminal listener exit is never treated as continued healthy
 delivery.
 
+Asynchronous DELETE cleanup is started beneath the transport's existing task
+supervisor. Both task-start failure and request failure are logged; there is no
+unlinked fire-and-forget cleanup process.
+
 ## M2a — Legacy HTTP session runtime
 
 Each `Mcp-Session-Id` maps to one `MCP.Server.Connection` and one
@@ -168,6 +176,13 @@ an authenticated-identity fingerprint, enforces endpoint and per-principal
 capacity, refreshes idle activity after an authenticated lookup, and reclaims
 sessions at idle or absolute expiry. The transport bounds pending POST callers,
 request-scoped notifications, its SSE event queue, and the single SSE waiter.
+
+Session initialization runs under a manager-owned task supervisor after an
+atomic capacity reservation, keeping slow handler initialization outside the
+manager mailbox without allowing parallel starts to exceed endpoint or identity
+limits. Reverse indexes map endpoints, process monitors, and owner monitors to
+session IDs, while an ordered expiration index drives sweeps. Normal lookup and
+single-process teardown therefore avoid whole-table scans.
 Caller death, timeout, manager shutdown, process failure, or DELETE removes
 waiters and closes both processes. Initialize failure never publishes a session
 ID and closes the partially created runtime. Manager unavailability is exposed
@@ -235,8 +250,11 @@ Ownership rules:
 
 `MCP.Server.Dispatch` is a synchronous, per-message router. It validates
 protocol metadata, selects a context-bearing callback, shapes success/error
-results, and returns a response without replacement state. It is not a GenServer and owns no
-mailbox, timers, sockets, or supervision children.
+results, and returns a response without replacement state. Consumer code runs
+in an application-supervised task rather than the request process. A shared
+limiter admits 32 callbacks by default, and a 30-second deadline terminates
+non-returning work before releasing capacity. It is not a GenServer and owns no
+mailbox, timers, sockets, or supervision children itself.
 
 This separation is load-bearing: transport processes own I/O; dispatch owns
 protocol decisions; consumer handlers own domain behavior.

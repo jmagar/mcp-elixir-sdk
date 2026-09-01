@@ -36,6 +36,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Server callback families are now atomic at configuration time: partial tools,
+  resources, or prompts implementations return
+  `{:invalid_callback_family, family, missing_callback}` instead of advertising
+  a capability that fails at dispatch.
+- All handler callbacks now share a supervised, transport-independent 30-second
+  deadline and 32-callback admission limit by default. The limits are
+  configurable with `:handler_callback_timeout` and
+  `:max_concurrent_handler_callbacks`.
+- `MCP.Client.SubscriptionHandle.close/1` now reports timeout and abnormal worker
+  exits as `{:error, {:close_failed, reason}}`; repeated close of an already-dead
+  worker remains `:ok`. Consumers that previously relied on an unconditional
+  `:ok` should handle the new error result or use `close/2` with an explicit
+  timeout.
+- Streamable HTTP client requests now enforce `max_request_bytes` (1,000,000 by
+  default), stdio separately enforces `max_outbound_frame_bytes` (1,000,000 by
+  default), and the server Plug enforces `max_response_length` (8,000,000 by
+  default) for encoded JSON and SSE results. Oversized outbound transport
+  messages return `{:message_too_large, limit}`; oversized server results fail
+  closed with HTTP 500 / JSON-RPC `-32603` and `response_too_large` metadata.
+- Legacy HTTP client session cleanup now runs under the transport task
+  supervisor and logs both task-start and DELETE failures.
+- The legacy HTTP session manager now initializes sessions in supervised tasks
+  after atomic capacity reservation and uses endpoint, process, owner, and
+  expiration indexes instead of full-table lifecycle scans.
+- CI now validates conformance ledger semantics, applies finite job and harness
+  timeouts, preserves per-scenario conformance logs as a 14-day artifact, and
+  tests the optional Req dependency at exact `0.6.1` and `0.7.2` boundaries.
+- The legacy `sse-retry` scenario remains a partial, release-blocking client
+  result because the pinned harness negotiates the unsupported `2025-03-26`
+  revision for that scenario.
 - Streamable HTTP selects a protocol mode per request/session: stateless 2026
   traffic remains sessionless while 2025 traffic is isolated in an OTP-owned
   session connection.
@@ -75,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- MCP Apps `ui/open-link` validation now accepts only absolute HTTPS URLs with a
+  host and no userinfo by default. Embedding hosts may opt into additional
+  trusted schemes explicitly; codec success remains separate from consent and
+  effect authorization.
 - Identity is resolved per authenticated HTTP request or once at stdio launch
   and is carried only in `ToolContext`; model-controlled arguments and metadata
   cannot override it.

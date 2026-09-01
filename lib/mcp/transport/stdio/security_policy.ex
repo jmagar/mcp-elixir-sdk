@@ -8,6 +8,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   """
 
   defstruct max_frame_bytes: 1_000_000,
+            max_outbound_frame_bytes: 1_000_000,
             max_pending_stdout_bytes: 4_000_000,
             max_frames_per_turn: 100,
             stderr: :disable,
@@ -17,6 +18,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @type t :: %__MODULE__{
           max_frame_bytes: pos_integer(),
+          max_outbound_frame_bytes: pos_integer(),
           max_pending_stdout_bytes: pos_integer(),
           max_frames_per_turn: pos_integer(),
           stderr: :capture | :console | :disable,
@@ -27,6 +29,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
 
   @keys [
     :max_frame_bytes,
+    :max_outbound_frame_bytes,
     :max_pending_stdout_bytes,
     :max_frames_per_turn,
     :stderr,
@@ -36,6 +39,7 @@ defmodule MCP.Transport.Stdio.SecurityPolicy do
   ]
   @positive_keys [
     :max_frame_bytes,
+    :max_outbound_frame_bytes,
     :max_pending_stdout_bytes,
     :max_frames_per_turn,
     :max_stderr_bytes,

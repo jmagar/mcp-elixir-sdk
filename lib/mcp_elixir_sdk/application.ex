@@ -6,6 +6,10 @@ defmodule MCPElixirSDK.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      {Registry, keys: :unique, name: MCP.Server.SubscriptionAdmission.Registry},
+      {DynamicSupervisor,
+       strategy: :one_for_one, name: MCP.Server.SubscriptionAdmission.Supervisor},
+      MCP.Server.CallbackRuntime,
       {MCP.Transport.StreamableHTTP.LegacySessionManager,
        name: MCP.Transport.StreamableHTTP.LegacySessionManager}
     ]

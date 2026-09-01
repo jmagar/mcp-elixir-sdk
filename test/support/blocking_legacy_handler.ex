@@ -9,6 +9,11 @@ defmodule MCP.Test.BlockingLegacyHandler do
   def init(opts), do: {:ok, %{test_pid: Keyword.fetch!(opts, :test_pid)}}
 
   @impl true
+  def handle_list_tools(_cursor, %ToolContext{}, _state) do
+    {:ok, [%{"name" => "block", "description" => "Blocks until released"}], nil}
+  end
+
+  @impl true
   def handle_call_tool("block", _arguments, %ToolContext{}, %{test_pid: test_pid}) do
     send(test_pid, {:legacy_handler_blocked, self()})
 

@@ -11,6 +11,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +41,7 @@ jobs:
 
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -57,9 +59,11 @@ jobs:
       - run: jq empty conformance/scenarios.json
       - run: jq empty conformance/compatibility-2025-11-25.json
       - run: jq empty conformance/mcp-apps-2026-01-26.json
+      - run: elixir scripts/validate_conformance_ledgers.exs
 
   constrained-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -76,6 +80,7 @@ jobs:
 
   conformance:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
@@ -92,7 +97,9 @@ jobs:
       - name: Server and client conformance
         run: |
           set -euo pipefail
-          server_log="${RUNNER_TEMP}/mcp-conformance-server.log"
+          evidence_dir="${RUNNER_TEMP}/mcp-conformance"
+          mkdir -p "${evidence_dir}"
+          server_log="${evidence_dir}/server.log"
           mix run --no-halt conformance/server_adapter.exs 43001 >"${server_log}" 2>&1 &
           server_pid=$!
           cleanup() {
@@ -118,13 +125,13 @@ jobs:
             exit 1
           fi
 
-          npx --no-install conformance server \
+          timeout 10m npx --no-install conformance server \
             --url http://127.0.0.1:43001/mcp \
-            --requirements 2026-07-28
+            --requirements 2026-07-28 2>&1 | tee "${evidence_dir}/server-2026-07-28.log"
 
-          npx --no-install conformance server \
+          timeout 10m npx --no-install conformance server \
             --url http://127.0.0.1:43001/mcp \
-            --requirements 2025-11-25
+            --requirements 2025-11-25 2>&1 | tee "${evidence_dir}/server-2025-11-25.log"
 
           for scenario in \
             tools_call \
@@ -136,8 +143,72 @@ jobs:
             json-schema-ref-no-deref \
             json-schema-2020-12-preservation
           do
-            npx --no-install conformance client \
+            timeout 5m npx --no-install conformance client \
               --command 'mix run conformance/client_adapter.exs' \
               --scenario "$scenario" \
-              --spec-version 2026-07-28
+              --spec-version 2026-07-28 2>&1 | tee "${evidence_dir}/client-2026-${scenario}.log"
           done
+
+          # `initialize` is explicitly excluded in the checked ledger: the
+          # harness scenario replies to notifications/initialized with a JSON-RPC
+          # response lacking an id instead of the transport-required HTTP 202.
+          for scenario in tools_call elicitation-sep1034-client-defaults
+          do
+            timeout 5m npx --no-install conformance client \
+              --command 'env MCP_CONFORMANCE_PROTOCOL_VERSION=2025-11-25 ERL_LIBS=_build/dev/lib elixir conformance/client_adapter.exs' \
+              --scenario "$scenario" \
+              --spec-version 2025-11-25 2>&1 | tee "${evidence_dir}/client-2025-${scenario}.log"
+          done
+
+          find "${evidence_dir}" -type f -name '*.log' -print0 \
+            | sort -z \
+            | xargs -0 shasum -a 256 >"${evidence_dir}/SHA256SUMS"
+          jq -n \
+            --arg commit "${GITHUB_SHA}" \
+            --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --rawfile checksums "${evidence_dir}/SHA256SUMS" \
+            --slurpfile legacy_ledger conformance/compatibility-2025-11-25.json \
+            '{schemaVersion: 1, commit: $commit, generatedAt: $generated_at,
+              executedScenariosStatus: "passed",
+              legacyClientStatus: $legacy_ledger[0].client.status,
+              releaseBlocker: $legacy_ledger[0].client.releaseBlocker,
+              checksums: ($checksums | split("\n") | map(select(length > 0)))}' \
+            >"${evidence_dir}/release-evidence.json"
+      - name: Upload conformance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mcp-core-conformance
+          path: ${{ runner.temp }}/mcp-conformance
+          if-no-files-found: error
+          retention-days: 14
+
+  req-compatibility:
+    name: Req compatibility ${{ matrix.req }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        req: ["0.6.1", "0.7.2"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18.4"
+      - name: Resolve exact Req boundary
+        env:
+          REQ_COMPAT_VERSION: ${{ matrix.req }}
+        run: |
+          elixir scripts/select_req_compat.exs "${REQ_COMPAT_VERSION}"
+          rm mix.lock
+          mix deps.get
+          mix deps | grep '^\* req '
+      - run: mix compile --warnings-as-errors
+      - name: Run HTTP compatibility suite
+        run: >-
+          mix test
+          test/mcp/transport/streamable_http_client_test.exs
+          test/mcp/transport/streamable_http_response_bounds_test.exs
+          test/mcp/subscriptions_http_integration_test.exs

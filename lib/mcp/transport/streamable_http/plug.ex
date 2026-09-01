@@ -80,6 +80,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     * `:max_body_length` — maximum accepted POST body size in bytes (default:
       `8_000_000`). Larger or multi-chunk bodies are rejected with HTTP 413
       before JSON decoding.
+    * `:max_response_length` — maximum encoded JSON or SSE response size in
+      bytes (default: `8_000_000`). Oversized handler results fail closed with
+      a bounded JSON-RPC internal error.
     * `:allowed_hosts` — exact canonical host names accepted by the endpoint.
       Defaults to localhost names only. Configure the Phoenix endpoint host
       explicitly for a deployed gateway, for example `["tower.example"]`.
@@ -90,7 +93,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       Host.
     * `:legacy_session_limit` and `:legacy_sessions_per_identity` — endpoint
       and authenticated-principal session caps (defaults: 1,024 and 16).
-    * `:legacy_session_idle_timeout` and `:legacy_session_absolute_timeout` —
+    * `:legacy_session_idle_timeout`, `:legacy_session_absolute_timeout`, and
+      `:legacy_session_initialization_timeout` —
       stateful-session expiry in milliseconds (defaults: 15 minutes and 24
       hours). Expiry terminates both owned session processes.
     * `:legacy_session_manager` — registered runtime manager name. The SDK
@@ -143,6 +147,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   alias MCP.Protocol
   alias MCP.Protocol.Error
+  alias MCP.Protocol.JSONBudget
   alias MCP.Protocol.Messages.{Request, Response}
   alias MCP.Protocol.Messages.Subscriptions.ListenParams
   alias MCP.Protocol.Meta
@@ -150,6 +155,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   alias MCP.Protocol.Types.SubscriptionFilter
 
   alias MCP.Server.{
+    CallbackExecutor,
     Config,
     Dispatch,
     LegacyDispatch,
@@ -179,8 +185,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     :subscription_registry,
     :subscription_endpoint,
     :subscription_queue_limit,
+    :subscription_queue_byte_limit,
+    :subscription_endpoint_limit,
     :subscription_keepalive_interval,
     :max_body_length,
+    :max_response_length,
     :legacy_session_manager,
     :legacy_endpoint_id,
     :legacy_endpoint_owner,
@@ -188,6 +197,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     :legacy_sessions_per_identity,
     :legacy_session_idle_timeout,
     :legacy_session_absolute_timeout,
+    :legacy_session_initialization_timeout,
     :legacy_sse_timeout,
     :allowed_hosts,
     :allowed_origins,
@@ -208,6 +218,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   @impl Plug
   def init(%__MODULE__{} = config), do: config
 
+  # Configuration assembly is intentionally centralized so invalid combinations
+  # fail during Plug initialization instead of at request time.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def init(opts) do
     server_mod = Keyword.fetch!(opts, :server_mod)
     server_opts = Keyword.get(opts, :server_opts, [])
@@ -219,8 +232,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     subscription_registry = Keyword.get(opts, :subscription_registry)
     subscription_endpoint = Keyword.get(opts, :subscription_endpoint, server_mod)
     subscription_queue_limit = Keyword.get(opts, :subscription_queue_limit, 256)
+    subscription_queue_byte_limit = Keyword.get(opts, :subscription_queue_byte_limit, 1_000_000)
+    subscription_endpoint_limit = Keyword.get(opts, :subscription_endpoint_limit, 1_024)
     subscription_keepalive_interval = Keyword.get(opts, :subscription_keepalive_interval, 15_000)
     max_body_length = Keyword.get(opts, :max_body_length, 8_000_000)
+    max_response_length = Keyword.get(opts, :max_response_length, 8_000_000)
     max_notifications_per_request = Keyword.get(opts, :max_notifications_per_request, 256)
     max_notification_bytes = Keyword.get(opts, :max_notification_bytes, 1_000_000)
     legacy_sse_timeout = Keyword.get(opts, :legacy_sse_timeout, 25_000)
@@ -233,6 +249,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
     legacy_session_absolute_timeout =
       Keyword.get(opts, :legacy_session_absolute_timeout, 24 * 60 * 60_000)
+
+    legacy_session_initialization_timeout =
+      Keyword.get(opts, :legacy_session_initialization_timeout, 30_000)
 
     allowed_hosts = Keyword.get(opts, :allowed_hosts, @localhost_patterns)
 
@@ -250,6 +269,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       raise ArgumentError, ":max_body_length must be a positive integer"
     end
 
+    unless is_integer(max_response_length) and max_response_length > 0 do
+      raise ArgumentError, ":max_response_length must be a positive integer"
+    end
+
     validate_positive_integer!(max_notifications_per_request, :max_notifications_per_request)
     validate_positive_integer!(max_notification_bytes, :max_notification_bytes)
 
@@ -261,6 +284,12 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     validate_positive_integer!(legacy_sessions_per_identity, :legacy_sessions_per_identity)
     validate_positive_integer!(legacy_session_idle_timeout, :legacy_session_idle_timeout)
     validate_positive_integer!(legacy_session_absolute_timeout, :legacy_session_absolute_timeout)
+
+    validate_positive_integer!(
+      legacy_session_initialization_timeout,
+      :legacy_session_initialization_timeout
+    )
+
     validate_string_list!(allowed_hosts, :allowed_hosts)
     validate_origin_list!(allowed_origins)
 
@@ -268,6 +297,8 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       subscription_supervisor,
       subscription_registry,
       subscription_queue_limit,
+      subscription_queue_byte_limit,
+      subscription_endpoint_limit,
       subscription_keepalive_interval
     )
 
@@ -297,7 +328,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
           :instructions,
           :cache_defaults,
           :extensions,
-          :skills_callback_timeout
+          :skills_callback_timeout,
+          :handler_callback_timeout,
+          :max_concurrent_handler_callbacks,
+          :handler_callback_supervisor
         ])
 
     dispatch_config =
@@ -317,8 +351,11 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       subscription_registry: subscription_registry,
       subscription_endpoint: subscription_endpoint,
       subscription_queue_limit: subscription_queue_limit,
+      subscription_queue_byte_limit: subscription_queue_byte_limit,
+      subscription_endpoint_limit: subscription_endpoint_limit,
       subscription_keepalive_interval: subscription_keepalive_interval,
       max_body_length: max_body_length,
+      max_response_length: max_response_length,
       legacy_session_manager: legacy_session_manager,
       legacy_endpoint_id: legacy_endpoint_id,
       legacy_endpoint_owner: legacy_endpoint_owner,
@@ -326,6 +363,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       legacy_sessions_per_identity: legacy_sessions_per_identity,
       legacy_session_idle_timeout: legacy_session_idle_timeout,
       legacy_session_absolute_timeout: legacy_session_absolute_timeout,
+      legacy_session_initialization_timeout: legacy_session_initialization_timeout,
       legacy_sse_timeout: legacy_sse_timeout,
       allowed_hosts: allowed_hosts,
       allowed_origins: allowed_origins,
@@ -352,7 +390,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   @spec legacy_sessions(%__MODULE__{}) ::
           [{String.t(), pid()}] | {:error, {:session_manager_unavailable, term()}}
   def legacy_sessions(%__MODULE__{} = config) do
-    LegacySessionManager.list(config.legacy_session_manager, config.legacy_endpoint_id)
+    case LegacySessionManager.list(config.legacy_session_manager, config.legacy_endpoint_id) do
+      sessions when is_list(sessions) -> sessions
+      {:error, reason} -> {:error, {:session_manager_unavailable, reason}}
+    end
   catch
     :exit, reason -> {:error, {:session_manager_unavailable, reason}}
   end
@@ -454,7 +495,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         )
 
       {:error, {:factory_failed, reason}} ->
-        Logger.error("MCP Plug: handler_opts factory failed: #{inspect(reason)}")
+        Logger.error(
+          "MCP Plug: handler_opts factory failed category=#{factory_failure_tag(reason)}"
+        )
 
         send_json_error(
           conn,
@@ -507,7 +550,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       end
     else
       {:error, {:factory_failed, reason}} ->
-        Logger.error("MCP Plug: legacy handler_opts factory failed: #{inspect(reason)}")
+        Logger.error(
+          "MCP Plug: legacy handler_opts factory failed category=#{factory_failure_tag(reason)}"
+        )
 
         send_json_error(
           conn,
@@ -644,7 +689,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp legacy_identity_resolution_error(conn, reason) do
-    Logger.error("MCP Plug: legacy identity resolution failed: #{inspect(reason)}")
+    Logger.error(
+      "MCP Plug: legacy identity resolution failed category=#{factory_failure_tag(reason)}"
+    )
+
     send_json_error(conn, 500, Error.internal_error_code(), "Internal error", nil)
   end
 
@@ -665,6 +713,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
          ) do
       {:ok, session} -> {:ok, session}
       {:error, :identity_mismatch} -> {:identity_error, :identity_mismatch}
+      {:error, reason} -> {:manager_error, reason}
       :error -> :error
     end
   catch
@@ -672,11 +721,14 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
   end
 
   defp delete_legacy_session(config, session_id) do
-    LegacySessionManager.delete(
-      config.legacy_session_manager,
-      config.legacy_endpoint_id,
-      session_id
-    )
+    case LegacySessionManager.delete(
+           config.legacy_session_manager,
+           config.legacy_endpoint_id,
+           session_id
+         ) do
+      :ok -> :ok
+      {:error, reason} -> {:manager_error, reason}
+    end
   catch
     :exit, reason -> {:manager_error, reason}
   end
@@ -692,9 +744,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         {:error, {:factory_failed, :not_keyword}}
     end
   rescue
-    exception -> {:error, {:factory_failed, {:raised, exception, __STACKTRACE__}}}
+    _exception -> {:error, {:factory_failed, :raised}}
   catch
-    kind, reason -> {:error, {:factory_failed, {kind, reason}}}
+    kind, _reason -> {:error, {:factory_failed, kind}}
   end
 
   defp resolve_handler_options(handler_opts, _conn) when is_list(handler_opts),
@@ -709,20 +761,27 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       per_identity_limit: config.legacy_sessions_per_identity,
       idle_timeout: config.legacy_session_idle_timeout,
       absolute_timeout: config.legacy_session_absolute_timeout,
+      initialization_timeout: config.legacy_session_initialization_timeout,
       endpoint_owner: config.legacy_endpoint_owner,
       protocol_version: protocol_version,
       authorization_context: authorization_context(handler_opts, identity)
     ]
 
-    LegacySessionManager.create(
-      config.legacy_session_manager,
-      config.legacy_endpoint_id,
-      identity,
-      config.server_mod,
-      handler_opts,
-      server_opts,
-      limits
-    )
+    case LegacySessionManager.create(
+           config.legacy_session_manager,
+           config.legacy_endpoint_id,
+           identity,
+           config.server_mod,
+           handler_opts,
+           server_opts,
+           limits
+         ) do
+      {:error, reason} when reason in [:manager_unavailable, :manager_overloaded] ->
+        {:manager_error, reason}
+
+      result ->
+        result
+    end
   catch
     :exit, reason -> {:manager_error, reason}
   end
@@ -896,10 +955,10 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
          :ok <- validate_session_protocol(session, presented_version) do
       case LegacySession.next_event(session, config.legacy_sse_timeout) do
         {:ok, message} ->
-          send_legacy_sse(conn, SSE.encode_message(message))
+          send_legacy_sse(conn, SSE.encode_message(message), config.max_response_length)
 
         {:error, :timeout} ->
-          send_legacy_sse(conn, "")
+          send_legacy_sse(conn, "", config.max_response_length)
 
         {:error, :closed} ->
           send_json_error(conn, 404, -32_000, "Session closed", session_id)
@@ -916,11 +975,15 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     end
   end
 
-  defp send_legacy_sse(conn, body) do
-    conn
-    |> Plug.Conn.put_resp_content_type("text/event-stream")
-    |> Plug.Conn.put_resp_header("cache-control", "no-cache")
-    |> Plug.Conn.send_resp(200, body)
+  defp send_legacy_sse(conn, body, limit) do
+    if byte_size(body) <= limit do
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+      |> Plug.Conn.send_resp(200, body)
+    else
+      send_oversized_response_error(conn, limit)
+    end
   end
 
   defp send_empty_sse(conn) do
@@ -1096,7 +1159,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       schema -> ToolRouting.descriptors(schema)
     end
   rescue
-    exception -> {:error, {:factory_failed, {:raised, exception, __STACKTRACE__}}}
+    _exception -> {:error, {:factory_failed, :raised}}
   end
 
   defp routing_mismatch(detail), do: {:error, {:routing_mismatch, detail}}
@@ -1138,7 +1201,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
              self(),
              requested,
              honored,
-             queue_limit: config.subscription_queue_limit
+             queue_limit: config.subscription_queue_limit,
+             queue_byte_limit: config.subscription_queue_byte_limit,
+             endpoint_limit: config.subscription_endpoint_limit
            ) do
       conn =
         conn
@@ -1147,7 +1212,12 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
         |> Plug.Conn.send_chunked(200)
 
-      stream_subscription(conn, worker, config.subscription_keepalive_interval)
+      stream_subscription(
+        conn,
+        worker,
+        config.subscription_keepalive_interval,
+        config.max_response_length
+      )
     else
       {:error, :resumption_unsupported} ->
         send_json_error(
@@ -1160,7 +1230,7 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         )
 
       {:error, %Error{} = error} ->
-        send_json_error(conn, 400, error.code, error.message, inspect(error.data), id)
+        send_protocol_error(conn, 400, error, id)
 
       {:error, reason} ->
         Logger.error("MCP subscription authorization failed: #{inspect(reason)}")
@@ -1209,11 +1279,15 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
         }
 
         try do
-          case module.handle_listen_subscriptions(requested, context, config.config.handler_state) do
-            {:ok, %SubscriptionFilter{} = honored} -> {:ok, honored}
-            {:error, code, message} -> {:error, %Error{code: code, message: message}}
-            other -> {:error, {:invalid_subscription_callback_result, other}}
-          end
+          config.config
+          |> CallbackExecutor.run(fn ->
+            module.handle_listen_subscriptions(
+              requested,
+              context,
+              config.config.handler_state
+            )
+          end)
+          |> normalize_subscription_callback()
         after
           NotificationCollector.stop(collector)
         end
@@ -1225,22 +1299,58 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     exception -> {:error, {:subscription_callback_raised, exception, __STACKTRACE__}}
   end
 
-  defp stream_subscription(conn, worker, keepalive_interval) do
+  defp normalize_subscription_callback({:ok, {:ok, %SubscriptionFilter{} = honored}}),
+    do: {:ok, honored}
+
+  defp normalize_subscription_callback({:ok, {:error, code, message}}),
+    do: {:error, %Error{code: code, message: message}}
+
+  defp normalize_subscription_callback({:ok, other}),
+    do: {:error, {:invalid_subscription_callback_result, other}}
+
+  defp normalize_subscription_callback(:timeout),
+    do: {:error, Error.internal_error("handler callback timed out")}
+
+  defp normalize_subscription_callback(:overloaded),
+    do: {:error, Error.internal_error("handler capacity reached")}
+
+  defp normalize_subscription_callback({:unavailable, _reason}),
+    do: {:error, Error.internal_error("handler unavailable")}
+
+  defp normalize_subscription_callback({:failure, _kind, _reason, _stacktrace}),
+    do: {:error, Error.internal_error("handler callback failed")}
+
+  defp stream_subscription(conn, worker, keepalive_interval, max_event_length) do
     case SubscriptionWorker.next(worker, keepalive_interval) do
       {:ok, message} ->
-        case Plug.Conn.chunk(conn, SSE.encode_message(message)) do
-          {:ok, conn} -> stream_subscription(conn, worker, keepalive_interval)
-          {:error, _reason} -> close_disconnected_subscription(conn, worker)
-        end
+        event = SSE.encode_message(message)
+        stream_event(conn, worker, keepalive_interval, max_event_length, event)
 
       {:error, :timeout} ->
         case Plug.Conn.chunk(conn, ": keepalive\n\n") do
-          {:ok, conn} -> stream_subscription(conn, worker, keepalive_interval)
-          {:error, _reason} -> close_disconnected_subscription(conn, worker)
+          {:ok, conn} ->
+            stream_subscription(conn, worker, keepalive_interval, max_event_length)
+
+          {:error, _reason} ->
+            close_disconnected_subscription(conn, worker)
         end
 
       {:error, _reason} ->
         conn
+    end
+  end
+
+  defp stream_event(conn, worker, keepalive_interval, max_event_length, event) do
+    if byte_size(event) <= max_event_length do
+      case Plug.Conn.chunk(conn, event) do
+        {:ok, conn} ->
+          stream_subscription(conn, worker, keepalive_interval, max_event_length)
+
+        {:error, _reason} ->
+          close_disconnected_subscription(conn, worker)
+      end
+    else
+      close_disconnected_subscription(conn, worker)
     end
   end
 
@@ -1249,21 +1359,33 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     conn
   end
 
-  defp validate_subscription_options!(nil, nil, _queue_limit, _keepalive), do: :ok
+  defp validate_subscription_options!(
+         nil,
+         nil,
+         _queue_limit,
+         _byte_limit,
+         _endpoint_limit,
+         _keepalive
+       ),
+       do: :ok
 
-  defp validate_subscription_options!(supervisor, registry, queue_limit, keepalive) do
+  defp validate_subscription_options!(
+         supervisor,
+         registry,
+         queue_limit,
+         byte_limit,
+         endpoint_limit,
+         keepalive
+       ) do
     if is_nil(supervisor) or is_nil(registry) do
       raise ArgumentError,
             "subscription_supervisor and subscription_registry must be configured together"
     end
 
-    unless is_integer(queue_limit) and queue_limit > 0 do
-      raise ArgumentError, "subscription_queue_limit must be a positive integer"
-    end
-
-    unless is_integer(keepalive) and keepalive > 0 do
-      raise ArgumentError, "subscription_keepalive_interval must be a positive integer"
-    end
+    validate_positive_integer!(queue_limit, :subscription_queue_limit)
+    validate_positive_integer!(byte_limit, :subscription_queue_byte_limit)
+    validate_positive_integer!(endpoint_limit, :subscription_endpoint_limit)
+    validate_positive_integer!(keepalive, :subscription_keepalive_interval)
 
     :ok
   end
@@ -1275,16 +1397,21 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
       result when is_list(result) ->
         if Keyword.keyword?(result),
           do: {:ok, Keyword.get(result, :identity)},
-          else: {:error, {:factory_failed, {:non_keyword_result, result}}}
+          else: {:error, {:factory_failed, :not_keyword}}
 
-      other ->
-        {:error, {:factory_failed, {:non_keyword_result, other}}}
+      _other ->
+        {:error, {:factory_failed, :not_keyword}}
     end
   rescue
-    exception -> {:error, {:factory_failed, {:raised, exception, __STACKTRACE__}}}
+    _exception -> {:error, {:factory_failed, :raised}}
   end
 
   defp resolve_identity(list, _conn) when is_list(list), do: {:ok, Keyword.get(list, :identity)}
+
+  defp factory_failure_tag(reason) when reason in [:raised, :throw, :exit, :not_keyword],
+    do: reason
+
+  defp factory_failure_tag(_reason), do: :invalid_result
 
   # --- handler_opts validation (fail-fast at mount) ---
 
@@ -1345,9 +1472,9 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     status = response_status(response)
 
     if config.enable_json_response do
-      send_json_response(conn, response, status)
+      send_json_response(conn, response, status, config.max_response_length)
     else
-      send_sse_response(conn, response, notifications, status)
+      send_sse_response(conn, response, notifications, status, config.max_response_length)
     end
   end
 
@@ -1359,21 +1486,70 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
 
   defp response_status(_response), do: 200
 
-  defp send_json_response(conn, response, status) do
-    conn
-    |> Plug.Conn.put_resp_content_type("application/json")
-    |> Plug.Conn.send_resp(status, Jason.encode!(response))
+  defp send_json_response(conn, response, status, limit) do
+    case JSONBudget.check(response, limit) do
+      :ok ->
+        send_bounded_response(
+          conn,
+          "application/json",
+          status,
+          Jason.encode_to_iodata!(response),
+          limit
+        )
+
+      {:error, _reason} ->
+        send_oversized_response_error(conn, limit)
+    end
   end
 
-  defp send_sse_response(conn, response, notifications, status) do
-    body =
-      (notifications ++ [response])
-      |> Enum.map_join(&SSE.encode_message/1)
+  defp send_sse_response(conn, response, notifications, status, limit) do
+    messages = notifications ++ [response]
+
+    case JSONBudget.check(messages, limit) do
+      :ok -> send_bounded_sse(conn, messages, status, limit)
+      {:error, _reason} -> send_oversized_response_error(conn, limit)
+    end
+  end
+
+  defp send_bounded_sse(conn, messages, status, limit) do
+    body = Enum.map(messages, &SSE.encode_message/1)
+
+    if IO.iodata_length(body) <= limit do
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.put_resp_header("cache-control", "no-cache")
+      |> Plug.Conn.send_resp(status, body)
+    else
+      send_oversized_response_error(conn, limit)
+    end
+  end
+
+  defp send_bounded_response(conn, content_type, status, body, limit) do
+    if IO.iodata_length(body) <= limit do
+      conn
+      |> Plug.Conn.put_resp_content_type(content_type)
+      |> Plug.Conn.send_resp(status, body)
+    else
+      send_oversized_response_error(conn, limit)
+    end
+  end
+
+  defp send_oversized_response_error(conn, limit) do
+    error = %{
+      "jsonrpc" => "2.0",
+      "id" => nil,
+      "error" => %{
+        "code" => -32_603,
+        "message" => "Internal error",
+        "data" => %{"reason" => "response_too_large", "limit" => limit}
+      }
+    }
+
+    body = Jason.encode_to_iodata!(error)
 
     conn
-    |> Plug.Conn.put_resp_content_type("text/event-stream")
-    |> Plug.Conn.put_resp_header("cache-control", "no-cache")
-    |> Plug.Conn.send_resp(status, body)
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(500, if(IO.iodata_length(body) <= limit, do: body, else: ""))
   end
 
   defp send_json_error(conn, http_status, code, message, data, id \\ nil) do
@@ -1386,6 +1562,14 @@ defmodule MCP.Transport.StreamableHTTP.Plug do
     conn
     |> Plug.Conn.put_resp_content_type("application/json")
     |> Plug.Conn.send_resp(http_status, Jason.encode!(error))
+  end
+
+  defp send_protocol_error(conn, http_status, %Error{} = error, id) do
+    body = %{"jsonrpc" => "2.0", "id" => id, "error" => Error.to_map(error)}
+
+    conn
+    |> Plug.Conn.put_resp_content_type("application/json")
+    |> Plug.Conn.send_resp(http_status, Jason.encode!(body))
   end
 
   defp method_not_allowed(conn) do

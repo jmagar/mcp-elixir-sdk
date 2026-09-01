@@ -3,6 +3,11 @@ defmodule MCP.Apps.Bridge do
   Pure codecs and lifecycle validation for the stable View/host bridge.
 
   The module does not execute effects or deliver browser messages.
+
+  `ui/open-link` accepts absolute HTTPS URLs by default. Embedding hosts may
+  explicitly add schemes with `:open_link_schemes`, but successful decoding
+  validates only the wire policy; it does not grant user consent or authorize
+  the navigation effect.
   """
 
   alias MCP.Apps.{Limits, Validator}
@@ -166,13 +171,13 @@ defmodule MCP.Apps.Bridge do
 
   defp validate_initialize(_message, _request?), do: {:error, :invalid_initialize_request}
 
-  defp validate_params("ui/open-link", %{"url" => url}, _opts) when is_binary(url) do
+  defp validate_params("ui/open-link", %{"url" => url}, opts) when is_binary(url) do
     parsed = URI.parse(url)
+    allowed_schemes = Keyword.get(opts, :open_link_schemes, ["https"])
 
-    if is_binary(parsed.scheme) and parsed.scheme != "" and
-         not String.match?(url, ~r/[\x00-\x1F\x7F]/),
-       do: :ok,
-       else: {:error, :invalid_bridge_params}
+    if valid_open_link?(parsed, url, allowed_schemes),
+      do: :ok,
+      else: {:error, :invalid_bridge_params}
   end
 
   defp validate_params("ui/message", %{"role" => "user", "content" => content}, _opts)
@@ -255,6 +260,17 @@ defmodule MCP.Apps.Bridge do
        do: :ok
 
   defp validate_params(_method, _params, _opts), do: {:error, :invalid_bridge_params}
+
+  defp valid_open_link?(parsed, url, allowed_schemes)
+       when is_list(allowed_schemes) do
+    is_binary(parsed.scheme) and
+      String.downcase(parsed.scheme) in allowed_schemes and
+      is_binary(parsed.host) and parsed.host != "" and
+      is_nil(parsed.userinfo) and
+      not String.match?(url, ~r/[\x00-\x1F\x7F]/)
+  end
+
+  defp valid_open_link?(_parsed, _url, _allowed_schemes), do: false
 
   defp optional_binary?(params, key),
     do: not Map.has_key?(params, key) or is_binary(params[key])

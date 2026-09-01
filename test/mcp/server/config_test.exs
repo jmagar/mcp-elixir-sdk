@@ -28,6 +28,21 @@ defmodule MCP.Server.ConfigTest do
     def init(_opts), do: {:error, {:invalid_cache_defaults, :backend}}
   end
 
+  defmodule PartialToolsHandler do
+    def init(_opts), do: {:ok, %{}}
+    def handle_list_tools(_cursor, _ctx, _state), do: {:ok, [], nil}
+  end
+
+  defmodule PartialResourcesHandler do
+    def init(_opts), do: {:ok, %{}}
+    def handle_list_resources(_cursor, _ctx, _state), do: {:ok, [], nil}
+  end
+
+  defmodule PartialPromptsHandler do
+    def init(_opts), do: {:ok, %{}}
+    def handle_list_prompts(_cursor, _ctx, _state), do: {:ok, [], nil}
+  end
+
   test "accepts only nonnegative cache TTLs and protocol cache scopes" do
     assert {:ok, %{cache_defaults: {0, "public"}}} = Config.build(EchoHandler, [])
 
@@ -52,6 +67,17 @@ defmodule MCP.Server.ConfigTest do
     assert subscribed.tools.list_changed == true
     assert subscribed.resources.list_changed == true
     assert subscribed.prompts.list_changed == true
+  end
+
+  test "rejects incomplete callback families before advertising them" do
+    assert Config.build(PartialToolsHandler, []) ==
+             {:error, {:invalid_callback_family, :tools, {:handle_call_tool, 4}}}
+
+    assert Config.build(PartialResourcesHandler, []) ==
+             {:error, {:invalid_callback_family, :resources, {:handle_read_resource, 3}}}
+
+    assert Config.build(PartialPromptsHandler, []) ==
+             {:error, {:invalid_callback_family, :prompts, {:handle_get_prompt, 4}}}
   end
 
   test "normalizes all handler init failures" do

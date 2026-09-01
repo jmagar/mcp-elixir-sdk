@@ -11,6 +11,9 @@ defmodule MCP.Test.LegacyFeatureHandler do
   def handle_list_resources(_cursor, %ToolContext{}, _config), do: {:ok, [], nil}
 
   @impl true
+  def handle_read_resource(_uri, %ToolContext{}, _config), do: {:error, -32_602, "not found"}
+
+  @impl true
   def handle_subscribe(uri, %ToolContext{} = context, config) do
     send(config.test_pid, {:subscribed, uri, context.identity})
     :ok

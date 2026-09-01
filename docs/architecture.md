@@ -39,6 +39,8 @@ The durable boundaries are:
 - the transport owns bytes, HTTP/SSE framing, and transport cancellation;
 - `MCP.Protocol` owns lossless message decoding and encoding;
 - `MCP.Server.Dispatch` owns request metadata/version gates and method routing;
+- the SDK callback supervisor and limiter own handler deadlines, fault
+  isolation, and cross-transport admission;
 - the consumer handler owns domain behavior;
 - consumer supervisors own long-lived subscription worker lifetimes.
 
@@ -54,7 +56,7 @@ JSON-RPC request
 → schema-directed custom-header validation (HTTP tools/call)
 → protocol decode
 → ToolContext construction
-→ immutable handler callback
+→ bounded, admitted immutable handler callback
 → result/error envelope
 ```
 
@@ -87,6 +89,16 @@ immutable launch configuration and is passed to each callback. Callback results
 cannot replace it. Consumers needing mutable state store a supervised pid,
 registered name, or other stable reference in the config.
 
+Handler families are optional but atomic: tools are list plus call, resources
+are list plus read, and prompts are list plus get. Configuration rejects a
+partial family as `{:invalid_callback_family, family, missing_callback}`.
+
+Every handler callback, including stateless HTTP dispatch, runs under the
+application-supervised callback task supervisor. The default 30-second
+`handler_callback_timeout` and 32-slot `max_concurrent_handler_callbacks`
+limiter apply across transports. Timeout and admission failures are returned as
+stable internal errors, and timed-out work is killed before its slot is reused.
+
 `MCP.Server.ToolContext` is constructed for one request and carries the request
 id, raw metadata, transport-authenticated identity, MRTR continuation input,
 and a notification sink. Dispatch never derives identity from arguments or
@@ -112,6 +124,11 @@ on explicit close, protocol failure, or natural root exit when descendants
 retain inherited cleanup identity. This is not an OS sandbox, so hostile commands need
 a cgroup or equivalent external containment boundary.
 
+Inbound and outbound frame budgets are independent. `max_frame_bytes` bounds a
+received newline frame, while `max_outbound_frame_bytes` rejects an encoded
+message before writing it. Both default to 1,000,000 bytes; outbound overflow is
+`{:error, {:message_too_large, limit}}`.
+
 ### Streamable HTTP
 
 `MCP.Transport.StreamableHTTP.Plug` builds immutable server config at mount.
@@ -123,6 +140,12 @@ binding. A supervised runtime manager owns the session process pair, endpoint
 and per-principal capacity, idle/absolute expiry, and endpoint cleanup. HTTP
 subscriptions retain only their individual response stream.
 
+The default manager reserves capacity before starting a session beneath its
+private task supervisor, so handler initialization does not run in the manager
+mailbox and concurrent starts cannot oversubscribe limits. Endpoint, identity,
+process-monitor, owner-monitor, and expiration indexes avoid full session-table
+scans during lookup, teardown, owner loss, and expiry.
+
 `MCP.Transport.StreamableHTTP.Client` emits `MCP-Protocol-Version`,
 `Mcp-Method`, method-appropriate `Mcp-Name`, and validated `Mcp-Param-*`
 headers. SSE response parsing supports interleaved notifications, final
@@ -132,7 +155,27 @@ receive, request, body, SSE, concurrent-request, and subscription limits.
 Redirects, retries, and response compression are fixed-disabled transport
 invariants rather than configurable policy fields.
 
+Byte policies are directional. The HTTP client encodes at most
+`max_request_bytes` (1,000,000 by default), independently of its response and
+SSE limits. The Plug's `max_body_length` and `max_response_length` each default
+to 8,000,000 bytes. An oversized handler result cannot be emitted as JSON or
+SSE; the Plug instead returns HTTP 500 / JSON-RPC `-32603` with
+`data.reason = "response_too_large"` and the configured `data.limit`.
+
+When a legacy client closes asynchronously, its session DELETE runs beneath the
+transport-owned task supervisor. Task-start and DELETE failures are logged so
+cleanup loss is observable, and transport shutdown still reclaims owned work.
+
 ## Subscriptions
+
+Subscription admission is scoped by registry and endpoint. Each worker has a
+bounded event count and exact encoded-byte budget, including its subscription
+identifier. The public Connection and Streamable HTTP configurations expose
+`subscription_queue_limit` (256), `subscription_queue_byte_limit` (1,000,000
+bytes), and `subscription_endpoint_limit` (1,024). Admission lifecycle changes
+are serialized, while publish/read reservations use ETS directly. If the
+admission owner restarts, dependent consumer-owned workers terminate cleanly
+and unregister instead of remaining alive but unusable.
 
 The client and server use distinct temporary worker types under
 consumer-supplied `DynamicSupervisor`s. Server workers register in a duplicate

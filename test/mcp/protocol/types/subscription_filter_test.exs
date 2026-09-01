@@ -36,6 +36,22 @@ defmodule MCP.Protocol.Types.SubscriptionFilterTest do
         SubscriptionFilter.from_map(%{"resourceSubscriptions" => ["file:///a", 7]})
       end
     end
+
+    test "bounds untrusted resource subscription cardinality" do
+      resources = for id <- 1..16_385, do: "file:///resource/#{id}"
+
+      assert_raise ArgumentError, ~r/resourceSubscriptions exceeds 16384 entries/, fn ->
+        SubscriptionFilter.from_map(%{"resourceSubscriptions" => resources})
+      end
+    end
+
+    test "bounds untrusted resource subscription byte size" do
+      resources = [String.duplicate("x", 262_145)]
+
+      assert_raise ArgumentError, ~r/resourceSubscriptions exceeds 262144 bytes/, fn ->
+        SubscriptionFilter.from_map(%{"resourceSubscriptions" => resources})
+      end
+    end
   end
 
   describe "to_map/1" do

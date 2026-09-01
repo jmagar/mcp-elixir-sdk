@@ -44,9 +44,15 @@ defmodule MCP.Client do
     * `:request_timeout` — default request timeout in ms (default: 30_000)
     * `:max_pending_requests` — maximum in-flight RPC requests (default: 1,024)
     * `:tool_schema_limit` — maximum cached tool schemas (default: 1,024)
+    * `:server_response_delivery_concurrency` — maximum concurrent transports
+      delivering legacy server-request responses (default: 32)
+    * `:server_response_delivery_timeout` — absolute delivery deadline in ms
+      (default: 30,000)
   """
 
   use GenServer
+
+  alias MCP.Client.ServerRequestCoordinator
 
   require Logger
 
@@ -79,6 +85,8 @@ defmodule MCP.Client do
   @default_notification_concurrency 32
   @default_server_request_concurrency 32
   @default_server_request_timeout 30_000
+  @default_server_response_delivery_concurrency 32
+  @default_server_response_delivery_timeout 30_000
   @default_stderr_handler_concurrency 1
   @protocol_version Revision.preferred()
   @subscription_ack_method "notifications/subscriptions/acknowledged"
@@ -116,11 +124,13 @@ defmodule MCP.Client do
     :diagnostic_supervisor,
     :server_request_supervisor,
     :server_request_timeout,
+    :server_response_delivery_supervisor,
+    :server_response_delivery_timeout,
     :subscription_supervisor,
     :subscription_queue_limit,
     transport_tasks: %{},
     callback_tasks: %{},
-    server_request_tasks: %{},
+    server_requests: ServerRequestCoordinator.new(),
     subscription_open_tasks: %{},
     subscriptions: %{}
   ]
@@ -427,6 +437,16 @@ defmodule MCP.Client do
     {:ok, server_request_supervisor} =
       Task.Supervisor.start_link(max_children: server_request_concurrency)
 
+    server_response_delivery_concurrency =
+      Keyword.get(
+        opts,
+        :server_response_delivery_concurrency,
+        @default_server_response_delivery_concurrency
+      )
+
+    {:ok, server_response_delivery_supervisor} =
+      Task.Supervisor.start_link(max_children: server_response_delivery_concurrency)
+
     {automatic_capabilities, automatic_handlers} = legacy_callback_config(opts)
 
     client_capabilities =
@@ -464,6 +484,13 @@ defmodule MCP.Client do
       server_request_supervisor: server_request_supervisor,
       server_request_timeout:
         Keyword.get(opts, :server_request_timeout, @default_server_request_timeout),
+      server_response_delivery_supervisor: server_response_delivery_supervisor,
+      server_response_delivery_timeout:
+        Keyword.get(
+          opts,
+          :server_response_delivery_timeout,
+          @default_server_response_delivery_timeout
+        ),
       subscription_supervisor: Keyword.get(opts, :subscription_supervisor),
       subscription_queue_limit:
         Keyword.get(opts, :subscription_queue_limit, @default_subscription_queue_limit),
@@ -838,21 +865,37 @@ defmodule MCP.Client do
       when not is_map_key(state.transport_tasks, ref) and
              not is_map_key(state.callback_tasks, ref) and
              not is_map_key(state.subscription_open_tasks, ref) do
-    case server_request_by_monitor(state.server_request_tasks, ref) do
-      {callback_ref, callback} ->
-        cancel_timeout(callback.timeout_ref)
-        tasks = Map.delete(state.server_request_tasks, callback_ref)
+    case ServerRequestCoordinator.delivery_by_monitor(state.server_requests, ref) do
+      {delivery_ref, delivery} ->
+        cancel_timeout(delivery.timeout_ref)
 
-        send_server_request_response(
-          state,
-          callback.id,
-          {:error, Error.internal_error("client request handler exited")}
-        )
+        {_delivery, server_requests} =
+          ServerRequestCoordinator.pop_delivery(state.server_requests, delivery_ref)
 
-        {:noreply, %{state | server_request_tasks: tasks}}
+        ServerRequestCoordinator.log_delivery(delivery.id, {:error, {:task_exit, reason}})
+        {:noreply, %{state | server_requests: server_requests}}
 
       nil ->
-        handle_subscription_down(state, ref, worker, reason)
+        case ServerRequestCoordinator.callback_by_monitor(state.server_requests, ref) do
+          {callback_ref, callback} ->
+            cancel_timeout(callback.timeout_ref)
+
+            {_callback, server_requests} =
+              ServerRequestCoordinator.pop_callback(state.server_requests, callback_ref)
+
+            state =
+              state
+              |> Map.put(:server_requests, server_requests)
+              |> send_server_request_response(
+                callback.id,
+                {:error, Error.internal_error("client request handler exited")}
+              )
+
+            {:noreply, state}
+
+          nil ->
+            handle_subscription_down(state, ref, worker, reason)
+        end
     end
   end
 
@@ -898,35 +941,43 @@ defmodule MCP.Client do
   end
 
   def handle_info({:server_request_callback_result, ref, response}, state) do
-    case Map.pop(state.server_request_tasks, ref) do
-      {nil, _tasks} ->
-        {:noreply, state}
+    {_status, state} =
+      ServerRequestCoordinator.callback_result(
+        state,
+        ref,
+        response,
+        &send_server_request_response/3
+      )
 
-      {callback, tasks} ->
-        cancel_timeout(callback.timeout_ref)
-        Process.demonitor(callback.monitor_ref, [:flush])
-        send_server_request_response(state, callback.id, response)
-        {:noreply, %{state | server_request_tasks: tasks}}
-    end
+    {:noreply, state}
   end
 
   def handle_info({:server_request_callback_timeout, ref}, state) do
-    case Map.pop(state.server_request_tasks, ref) do
-      {nil, _tasks} ->
-        {:noreply, state}
+    {_status, state} =
+      ServerRequestCoordinator.callback_timeout(
+        state,
+        ref,
+        state.server_request_supervisor,
+        &send_server_request_response/3
+      )
 
-      {callback, tasks} ->
-        Process.demonitor(callback.monitor_ref, [:flush])
-        _ = Task.Supervisor.terminate_child(state.server_request_supervisor, callback.pid)
+    {:noreply, state}
+  end
 
-        send_server_request_response(
-          state,
-          callback.id,
-          {:error, Error.internal_error("client request handler timed out")}
-        )
+  def handle_info({:server_response_delivery_result, ref, result}, state) do
+    {_status, state} = ServerRequestCoordinator.delivery_result(state, ref, result)
+    {:noreply, state}
+  end
 
-        {:noreply, %{state | server_request_tasks: tasks}}
-    end
+  def handle_info({:server_response_delivery_timeout, ref}, state) do
+    {_status, state} =
+      ServerRequestCoordinator.delivery_timeout(
+        state,
+        ref,
+        state.server_response_delivery_supervisor
+      )
+
+    {:noreply, state}
   end
 
   def handle_info({:subscription_open_timeout, ref}, state) do
@@ -1587,8 +1638,8 @@ defmodule MCP.Client do
     valid?
   end
 
-  defp valid_header_annotation_locations?(tool) do
-    Logger.warning("MCP Client: excluding malformed tool catalog entry: #{inspect(tool)}")
+  defp valid_header_annotation_locations?(_tool) do
+    Logger.warning("MCP Client: excluding malformed tool catalog entry")
     false
   end
 
@@ -1749,13 +1800,12 @@ defmodule MCP.Client do
         start_server_request_callback(request, state)
 
       legacy_protocol?(state) ->
-        send_server_request_response(
-          state,
-          request.id,
-          {:error, Error.internal_error("client is not initialized")}
-        )
-
-        {:noreply, state}
+        {:noreply,
+         send_server_request_response(
+           state,
+           request.id,
+           {:error, Error.internal_error("client is not initialized")}
+         )}
 
       true ->
         {:noreply, state}
@@ -1763,102 +1813,67 @@ defmodule MCP.Client do
   end
 
   defp start_server_request_callback(%Request{id: id, method: method, params: params}, state) do
-    handler = Map.get(state.request_handlers, method)
-    client = self()
-    ref = make_ref()
+    request = %Request{id: id, method: method, params: params}
 
-    case Task.Supervisor.start_child(state.server_request_supervisor, fn ->
-           response = invoke_server_request_handler(handler, method, params)
-           send(client, {:server_request_callback_result, ref, response})
-         end) do
-      {:ok, pid} ->
-        callback = %{
-          id: id,
-          pid: pid,
-          monitor_ref: Process.monitor(pid),
-          timeout_ref:
-            Process.send_after(
-              self(),
-              {:server_request_callback_timeout, ref},
-              state.server_request_timeout
-            )
-        }
-
+    case ServerRequestCoordinator.start_callback(
+           state.server_request_supervisor,
+           self(),
+           state.request_handlers,
+           request,
+           state.server_request_timeout
+         ) do
+      {:ok, ref, callback} ->
         {:noreply,
-         %{state | server_request_tasks: Map.put(state.server_request_tasks, ref, callback)}}
+         %{
+           state
+           | server_requests:
+               ServerRequestCoordinator.put_callback(state.server_requests, ref, callback)
+         }}
 
       {:error, :max_children} ->
-        send_server_request_response(
-          state,
-          id,
-          {:error, Error.internal_error("client request handler overloaded")}
-        )
+        {:noreply,
+         send_server_request_response(
+           state,
+           id,
+           {:error, Error.internal_error("client request handler overloaded")}
+         )}
 
-        {:noreply, state}
+      {:error, _reason} ->
+        Logger.error("MCP client request handler unavailable")
 
-      {:error, reason} ->
-        send_server_request_response(
-          state,
-          id,
-          {:error, Error.internal_error("client request handler unavailable: #{inspect(reason)}")}
-        )
-
-        {:noreply, state}
+        {:noreply,
+         send_server_request_response(
+           state,
+           id,
+           {:error, Error.internal_error("client request handler unavailable")}
+         )}
     end
   end
 
   defp send_server_request_response(state, id, response) do
-    message = server_request_response(id, response)
+    case ServerRequestCoordinator.start_delivery(
+           state.server_response_delivery_supervisor,
+           state.transport_module,
+           state.transport_pid,
+           id,
+           response,
+           state.server_response_delivery_timeout
+         ) do
+      {:ok, ref, delivery} ->
+        %{
+          state
+          | server_requests:
+              ServerRequestCoordinator.put_delivery(state.server_requests, ref, delivery)
+        }
 
-    _ =
-      Task.Supervisor.start_child(state.task_supervisor, fn ->
-        state.transport_module.send_message(state.transport_pid, message)
-      end)
+      {:error, reason} ->
+        Logger.error(
+          "MCP client failed to start server-request response delivery id=#{inspect(id)}: #{inspect(reason)}"
+        )
 
-    :ok
+        state
+    end
   end
-
-  defp invoke_server_request_handler(nil, method, _params),
-    do: {:error, Error.method_not_found(method)}
-
-  defp invoke_server_request_handler(handler, method, params) when is_function(handler, 2),
-    do: safely_invoke(fn -> handler.(method, params) end)
-
-  defp invoke_server_request_handler(handler, _method, params) when is_function(handler, 1),
-    do: safely_invoke(fn -> handler.(params) end)
-
-  defp safely_invoke(callback) do
-    callback.()
-  rescue
-    exception ->
-      Logger.error(
-        "MCP client request handler failed " <>
-          Exception.format(:error, exception, __STACKTRACE__)
-      )
-
-      {:error, Error.internal_error("client request handler failed")}
-  catch
-    kind, reason ->
-      Logger.error(
-        "MCP client request handler failed " <>
-          Exception.format(kind, reason, __STACKTRACE__)
-      )
-
-      {:error, Error.internal_error("client request handler failed")}
-  end
-
-  defp server_request_response(id, {:ok, result}),
-    do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}
-
-  defp server_request_response(id, {:error, %Error{} = error}) do
-    body = %{"code" => error.code, "message" => error.message}
-    body = if is_nil(error.data), do: body, else: Map.put(body, "data", error.data)
-    %{"jsonrpc" => "2.0", "id" => id, "error" => body}
-  end
-
-  defp server_request_response(id, _invalid),
-    do:
-      server_request_response(id, {:error, Error.internal_error("invalid client handler result")})
 
   defp handle_notification(%Notification{method: method, params: params}, state) do
     case subscription_id(params) do
@@ -2177,10 +2192,6 @@ defmodule MCP.Client do
     Enum.find(subscriptions, fn {_id, subscription} ->
       subscription.monitor_ref == ref and subscription.worker == worker
     end)
-  end
-
-  defp server_request_by_monitor(tasks, monitor_ref) do
-    Enum.find(tasks, fn {_ref, callback} -> callback.monitor_ref == monitor_ref end)
   end
 
   defp subscription_id(%{"io.modelcontextprotocol/subscriptionId" => id}), do: id
@@ -2661,6 +2672,18 @@ defmodule MCP.Client do
          :ok <-
            validate_positive_option(
              opts,
+             :server_response_delivery_concurrency,
+             @default_server_response_delivery_concurrency
+           ),
+         :ok <-
+           validate_positive_option(
+             opts,
+             :server_response_delivery_timeout,
+             @default_server_response_delivery_timeout
+           ),
+         :ok <-
+           validate_positive_option(
+             opts,
              :stderr_handler_concurrency,
              @default_stderr_handler_concurrency
            ),
@@ -2694,6 +2717,12 @@ defmodule MCP.Client do
     do: :invalid_server_request_concurrency
 
   defp invalid_option_error(:server_request_timeout), do: :invalid_server_request_timeout
+
+  defp invalid_option_error(:server_response_delivery_concurrency),
+    do: :invalid_server_response_delivery_concurrency
+
+  defp invalid_option_error(:server_response_delivery_timeout),
+    do: :invalid_server_response_delivery_timeout
 
   defp invalid_option_error(:stderr_handler_concurrency),
     do: :invalid_stderr_handler_concurrency
@@ -2947,10 +2976,21 @@ defmodule MCP.Client do
       GenServer.reply(callback.operation.from, {:error, reason})
     end)
 
-    Enum.each(state.server_request_tasks, fn {_ref, callback} ->
+    ServerRequestCoordinator.each_callback(state.server_requests, fn {_ref, callback} ->
       cancel_timeout(callback.timeout_ref)
       Process.demonitor(callback.monitor_ref, [:flush])
       _ = Task.Supervisor.terminate_child(state.server_request_supervisor, callback.pid)
+    end)
+
+    ServerRequestCoordinator.each_delivery(state.server_requests, fn {_ref, delivery} ->
+      cancel_timeout(delivery.timeout_ref)
+      Process.demonitor(delivery.monitor_ref, [:flush])
+
+      _ =
+        Task.Supervisor.terminate_child(
+          state.server_response_delivery_supervisor,
+          delivery.task_pid
+        )
     end)
 
     reply_connect_waiters(state.connect_waiters, {:error, reason})
@@ -2967,7 +3007,7 @@ defmodule MCP.Client do
       | pending_requests: %{},
         transport_tasks: %{},
         callback_tasks: %{},
-        server_request_tasks: %{},
+        server_requests: ServerRequestCoordinator.new(),
         connect_waiters: nil,
         subscription_open_tasks: %{}
     }

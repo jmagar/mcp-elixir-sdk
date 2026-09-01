@@ -101,6 +101,28 @@ npx --no-install conformance client \
 limitations. Authorization-profile scenarios remain outside the SDK transport
 scope. Do not replace the pin with `latest` in release evidence.
 
+The legacy `sse-retry` scenario remains a partial, release-blocking client
+result: pinned harness `0.2.0-alpha.11` negotiates `2025-03-26`, which is
+outside the SDK's supported revision set. `elixir
+scripts/validate_conformance_ledgers.exs` enforces the exact scenario status
+and release-blocker reason. CI wraps server denominators in ten-
+minute limits and client scenarios in five-minute limits, then uploads all
+per-scenario output plus the adapter log as the 14-day
+`mcp-core-conformance` artifact, including on failure.
+
+## Optional Req compatibility boundaries
+
+The declared optional Req range is tested at both supported boundaries in CI:
+`0.6.1` and `0.7.2`. Each matrix job rewrites the dependency to an exact version
+with `scripts/select_req_compat.exs`, resolves a fresh lock, compiles with
+warnings as errors, and runs the Streamable HTTP client, response-bound, and
+subscription integration suites. The script is CI evidence tooling and changes
+`mix.exs`; use it only in a disposable checkout or restore that file afterward.
+
+All primary CI jobs have finite job-level timeouts (30 minutes; Req boundary
+jobs use 20 minutes), so an adapter, test, or network hang cannot consume an
+unbounded runner allocation.
+
 ## Package inspection
 
 `elixir scripts/package_smoke.exs` builds and unpacks the Hex archive into a

@@ -116,7 +116,7 @@ defmodule MCP.Server.SubscriptionWorkerTest do
   end
 
   @tag capture_log: true
-  test "overflow removes only that registration and leaves siblings usable", context do
+  test "mailbox admission rejects overflow without killing that registration", context do
     filter = %SubscriptionFilter{tools_list_changed: true}
 
     {:ok, overflowing} =
@@ -126,21 +126,40 @@ defmodule MCP.Server.SubscriptionWorkerTest do
     _ = :sys.get_state(overflowing)
     _ = :sys.get_state(sibling)
 
-    ref = Process.monitor(overflowing)
     :ok = :sys.suspend(overflowing)
 
-    for sequence <- 1..3 do
-      SubscriptionWorker.publish(
-        overflowing,
-        Methods.tools_list_changed(),
-        %{"sequence" => sequence}
-      )
-    end
+    assert :ok =
+             SubscriptionWorker.publish(
+               overflowing,
+               Methods.tools_list_changed(),
+               %{"sequence" => 1}
+             )
+
+    assert :ok =
+             SubscriptionWorker.publish(
+               overflowing,
+               Methods.tools_list_changed(),
+               %{"sequence" => 2}
+             )
+
+    assert {:error, :queue_overflow} =
+             SubscriptionWorker.publish(
+               overflowing,
+               Methods.tools_list_changed(),
+               %{"sequence" => 3}
+             )
+
+    assert {:message_queue_len, 2} = Process.info(overflowing, :message_queue_len)
 
     :ok = :sys.resume(overflowing)
 
-    assert_receive {:DOWN, ^ref, :process, ^overflowing, :queue_overflow}, 5_000
-    assert Registry.lookup(context.registry, {:mcp_subscriptions, :endpoint}) |> length() == 1
+    assert {:ok, _acknowledgment} = SubscriptionWorker.next(overflowing, 1_000)
+    assert {:ok, first} = SubscriptionWorker.next(overflowing, 1_000)
+    assert {:ok, second} = SubscriptionWorker.next(overflowing, 1_000)
+    assert first["params"]["sequence"] == 1
+    assert second["params"]["sequence"] == 2
+    assert Process.alive?(overflowing)
+    assert Registry.lookup(context.registry, {:mcp_subscriptions, :endpoint}) |> length() == 2
     assert {:ok, acknowledgment} = SubscriptionWorker.next(sibling, 1_000)
     assert acknowledgment["params"]["_meta"][@subscription_id_key] == "sibling"
   end
@@ -226,6 +245,179 @@ defmodule MCP.Server.SubscriptionWorkerTest do
     assert {:ok, _notification} = SubscriptionWorker.next(worker, 1_000)
   end
 
+  test "saturated subscribers do not suppress healthy fanout", context do
+    filter = %SubscriptionFilter{tools_list_changed: true}
+    {:ok, saturated} = start_worker(context, "saturated", filter, filter, queue_limit: 1)
+    {:ok, healthy} = start_worker(context, "healthy", filter, filter, queue_limit: 2)
+    assert {:ok, _} = SubscriptionWorker.next(saturated, 1_000)
+    assert {:ok, _} = SubscriptionWorker.next(healthy, 1_000)
+
+    assert :ok = SubscriptionWorker.publish(saturated, Methods.tools_list_changed(), %{})
+
+    assert {:error, :queue_overflow} =
+             SubscriptionPublisher.publish(
+               context.registry,
+               :endpoint,
+               Methods.tools_list_changed(),
+               %{"sequence" => 2}
+             )
+
+    assert {:ok, notification} = SubscriptionWorker.next(healthy, 1_000)
+    assert notification["params"]["sequence"] == 2
+  end
+
+  test "completion and encoded bytes share the admission boundary", context do
+    filter = %SubscriptionFilter{tools_list_changed: true}
+
+    {:ok, worker} =
+      start_worker(context, "bounded", filter, filter,
+        queue_limit: 1,
+        queue_byte_limit: 128
+      )
+
+    assert {:ok, _} = SubscriptionWorker.next(worker, 1_000)
+    :ok = :sys.suspend(worker)
+
+    assert :ok = SubscriptionWorker.complete(worker)
+    assert {:error, :queue_overflow} = SubscriptionWorker.complete(worker)
+
+    assert {:error, :queue_overflow} =
+             SubscriptionWorker.publish(
+               worker,
+               Methods.tools_list_changed(),
+               %{"payload" => String.duplicate("x", 256)}
+             )
+
+    assert {:message_queue_len, 1} = Process.info(worker, :message_queue_len)
+    :ok = :sys.resume(worker)
+  end
+
+  test "encoded byte admission rejects an oversized event before enqueue", context do
+    filter = %SubscriptionFilter{tools_list_changed: true}
+
+    {:ok, worker} =
+      start_worker(context, "byte-bounded", filter, filter,
+        queue_limit: 2,
+        queue_byte_limit: 256
+      )
+
+    assert {:ok, _} = SubscriptionWorker.next(worker, 1_000)
+
+    assert {:error, :queue_overflow} =
+             SubscriptionWorker.publish(
+               worker,
+               Methods.tools_list_changed(),
+               %{"payload" => String.duplicate("x", 512)}
+             )
+
+    assert {:message_queue_len, 0} = Process.info(worker, :message_queue_len)
+  end
+
+  test "byte admission charges the exact retained subscription identifier", context do
+    filter = %SubscriptionFilter{tools_list_changed: true}
+    long_id = String.duplicate("identifier", 80)
+
+    {:ok, worker} =
+      start_worker(context, long_id, filter, filter,
+        queue_limit: 2,
+        queue_byte_limit: 256
+      )
+
+    assert {:ok, _} = SubscriptionWorker.next(worker, 1_000)
+
+    assert {:error, :queue_overflow} =
+             SubscriptionWorker.publish(worker, Methods.tools_list_changed(), %{})
+
+    assert {:message_queue_len, 0} = Process.info(worker, :message_queue_len)
+  end
+
+  test "read admission bounds concurrent next calls before the worker mailbox", context do
+    filter = %SubscriptionFilter{tools_list_changed: true}
+    {:ok, worker} = start_worker(context, "read-bounded", filter, filter)
+    :ok = :sys.suspend(worker)
+
+    pending = Task.async(fn -> SubscriptionWorker.next(worker, 1_000) end)
+
+    assert_eventually(fn ->
+      Process.info(worker, :message_queue_len) == {:message_queue_len, 1}
+    end)
+
+    assert {:error, :concurrent_next} = SubscriptionWorker.next(worker, 1_000)
+    assert {:message_queue_len, 1} = Process.info(worker, :message_queue_len)
+
+    :ok = :sys.resume(worker)
+    assert {:ok, _acknowledgment} = Task.await(pending, 1_000)
+  end
+
+  test "endpoint admission caps active subscriptions", context do
+    endpoint = {:endpoint, System.unique_integer([:positive])}
+    filter = %SubscriptionFilter{tools_list_changed: true}
+
+    assert {:ok, first} =
+             SubscriptionWorker.start(
+               context.supervisor,
+               context.registry,
+               endpoint,
+               "first-capped",
+               self(),
+               filter,
+               filter,
+               endpoint_limit: 1
+             )
+
+    _ = :sys.get_state(first)
+
+    assert {:error, :endpoint_subscription_limit} =
+             SubscriptionWorker.start(
+               context.supervisor,
+               context.registry,
+               endpoint,
+               "second-capped",
+               self(),
+               filter,
+               filter,
+               endpoint_limit: 1
+             )
+  end
+
+  test "endpoint admission is isolated by registry and removes empty counters", context do
+    second_registry = start_registry()
+    endpoint = {:isolated, System.unique_integer([:positive])}
+    filter = %SubscriptionFilter{tools_list_changed: true}
+
+    {:ok, first} =
+      SubscriptionWorker.start(
+        context.supervisor,
+        context.registry,
+        endpoint,
+        "first-registry",
+        self(),
+        filter,
+        filter,
+        endpoint_limit: 1
+      )
+
+    {:ok, second} =
+      SubscriptionWorker.start(
+        context.supervisor,
+        second_registry,
+        endpoint,
+        "second-registry",
+        self(),
+        filter,
+        filter,
+        endpoint_limit: 1
+      )
+
+    GenServer.stop(first)
+    GenServer.stop(second)
+
+    assert_eventually(fn ->
+      Registry.lookup(context.registry, {:mcp_subscriptions, endpoint}) == [] and
+        Registry.lookup(second_registry, {:mcp_subscriptions, endpoint}) == []
+    end)
+  end
+
   @tag capture_log: true
   test "registry conflicts are returned by start instead of crashing after success", context do
     unique_registry =
@@ -263,6 +455,18 @@ defmodule MCP.Server.SubscriptionWorkerTest do
     registry = Module.concat(__MODULE__, "Registry#{System.unique_integer([:positive])}")
     start_supervised!({Registry, keys: :duplicate, name: registry})
     registry
+  end
+
+  defp assert_eventually(assertion, attempts \\ 50)
+  defp assert_eventually(assertion, 0), do: assert(assertion.())
+
+  defp assert_eventually(assertion, attempts) do
+    if assertion.() do
+      :ok
+    else
+      Process.sleep(10)
+      assert_eventually(assertion, attempts - 1)
+    end
   end
 
   defp start_worker(context, id, requested, honored, opts \\ []) do

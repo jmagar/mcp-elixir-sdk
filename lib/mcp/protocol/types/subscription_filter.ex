@@ -66,6 +66,7 @@ defmodule MCP.Protocol.Types.SubscriptionFilter do
     case Map.get(map, "resourceSubscriptions", []) do
       values when is_list(values) ->
         if Enum.all?(values, &is_binary/1) do
+          validate_resource_subscription_bounds!(values)
           values
         else
           raise ArgumentError, "resourceSubscriptions must contain only strings"
@@ -73,6 +74,28 @@ defmodule MCP.Protocol.Types.SubscriptionFilter do
 
       value ->
         raise ArgumentError, "resourceSubscriptions must be a list, got: #{inspect(value)}"
+    end
+  end
+
+  # This is deliberately above the SDK's documented large-filter use case
+  # (10,000 URIs), while still bounding untrusted wire input and fan-out work.
+  @max_resource_subscriptions 16_384
+  @max_resource_subscription_bytes 262_144
+
+  defp validate_resource_subscription_bounds!(values) do
+    bytes = Enum.reduce(values, 0, &(byte_size(&1) + &2))
+
+    cond do
+      length(values) > @max_resource_subscriptions ->
+        raise ArgumentError,
+              "resourceSubscriptions exceeds #{@max_resource_subscriptions} entries"
+
+      bytes > @max_resource_subscription_bytes ->
+        raise ArgumentError,
+              "resourceSubscriptions exceeds #{@max_resource_subscription_bytes} bytes"
+
+      true ->
+        :ok
     end
   end
 
@@ -94,6 +117,8 @@ defmodule MCP.Protocol.Types.SubscriptionFilter do
              Enum.all?(filter.resource_subscriptions, &is_binary/1) do
       raise ArgumentError, "resource_subscriptions must contain only strings"
     end
+
+    validate_resource_subscription_bounds!(filter.resource_subscriptions)
   end
 
   defp put_enabled(map, key, true), do: Map.put(map, key, true)

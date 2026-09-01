@@ -305,7 +305,7 @@ mix dialyzer
 ### Tasks
 
 - [x] **5.1** Add optional HTTP dependencies
-  - `{:req, "~> 0.5", optional: true}` — HTTP client (for Streamable HTTP client)
+  - `{:req, ">= 0.6.1 and < 0.8.0", optional: true}` — HTTP client (for Streamable HTTP client; 0.6.1 is the CVE-2026-49755 security floor)
   - `{:plug, "~> 1.16", optional: true}` — HTTP framework (for Streamable HTTP server)
   - `{:bandit, "~> 1.5", optional: true}` — HTTP server (for Streamable HTTP server)
   - Existing stdio transport works with zero HTTP deps
