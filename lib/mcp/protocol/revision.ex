@@ -6,11 +6,15 @@ defmodule MCP.Protocol.Revision do
   adapters are selected from this fixed registry without atom conversion.
   """
 
-  alias MCP.Protocol.Legacy.V2025_11_25
+  alias MCP.Protocol.Legacy.{V2025_03_26, V2025_06_18, V2025_11_25}
 
   @modern "2026-07-28"
-  @supported [@modern, "2025-11-25"]
-  @adapters %{"2025-11-25" => V2025_11_25}
+  @supported [@modern, "2025-11-25", "2025-06-18", "2025-03-26"]
+  @adapters %{
+    "2025-11-25" => V2025_11_25,
+    "2025-06-18" => V2025_06_18,
+    "2025-03-26" => V2025_03_26
+  }
 
   @spec preferred() :: String.t()
   def preferred, do: @modern

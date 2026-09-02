@@ -22,7 +22,12 @@ defmodule MCP.DualProtocolCompatibilityTest do
   @stateless_version "2026-07-28"
 
   test "the SDK advertises both supported protocol eras in preference order" do
-    assert Protocol.supported_versions() == [@stateless_version, @legacy_version]
+    assert Protocol.supported_versions() == [
+             @stateless_version,
+             @legacy_version,
+             "2025-06-18",
+             "2025-03-26"
+           ]
 
     assert Protocol.protocol_version() == @stateless_version
   end

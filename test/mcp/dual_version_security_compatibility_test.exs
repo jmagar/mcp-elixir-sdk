@@ -8,17 +8,19 @@ defmodule MCP.DualVersionSecurityCompatibilityTest do
   @modern "2026-07-28"
   @november "2025-11-25"
 
-  test "advertises only the stateless and November revisions newest first" do
-    assert Protocol.supported_versions() == [@modern, @november]
+  test "advertises supported revisions newest first" do
+    assert Protocol.supported_versions() == [@modern, @november, "2025-06-18", "2025-03-26"]
   end
 
-  test "an explicitly configured June revision is rejected at startup" do
-    assert {:error, {:unsupported_protocol_version, "2025-06-18"}} =
+  test "an explicitly configured June revision starts with its adapter" do
+    assert {:ok, client} =
              GenServer.start(Client,
                transport: {MockTransport, []},
                protocol_version: "2025-06-18",
-               client_info: %{name: "unsupported-client", version: "1.0.0"}
+               client_info: %{name: "supported-client", version: "1.0.0"}
              )
+
+    GenServer.stop(client)
   end
 
   test "a non-version error during fallback initialize reaches the caller unchanged" do

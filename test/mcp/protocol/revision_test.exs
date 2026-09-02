@@ -8,14 +8,14 @@ defmodule MCP.Protocol.RevisionTest do
   @client_info %{name: "client", version: "1.0.0"}
 
   test "lists supported revisions in preference order" do
-    assert Revision.supported() == ["2026-07-28", "2025-11-25"]
+    assert Revision.supported() == ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]
   end
 
   test "fetches version-isolated legacy adapters without creating atoms" do
     assert {:ok, V2025_11_25} = Revision.fetch("2025-11-25")
 
-    assert {:error, {:unsupported_protocol_version, "2025-06-18"}} =
-             Revision.fetch("2025-06-18")
+    assert {:ok, MCP.Protocol.Legacy.V2025_06_18} = Revision.fetch("2025-06-18")
+    assert {:ok, MCP.Protocol.Legacy.V2025_03_26} = Revision.fetch("2025-03-26")
 
     assert {:error, {:unsupported_protocol_version, "bogus"}} =
              Revision.fetch("bogus")
