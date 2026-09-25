@@ -1,0 +1,16 @@
+Workspace cleanup archive for jmagar/mcp-elixir-sdk
+Date: 2026-09-25
+Default: main
+
+STALE_BRANCHES 4
+STALE	codex/drive-compat	3e66695ef6b010405d5dfbd139d715fd5029a2d6
+STALE	codex/full-sdk-review-remediation	2c5a41037707b9c5f415d0d4026a14341d70cf2b
+STALE	codex/sdk-streamable-http-hardening	2d0e31618d06e505296881fa046c41647b2ff88d
+STALE	fix/error-absent-data-20260916	1021beeadef17056ded957678afc82f15a947f77
+
+LOCAL_ONLY_BRANCHES 1
+LOCAL_ONLY	codex/drive-compat	3e66695ef6b010405d5dfbd139d715fd5029a2d6
+
+STALE_WORKTREES 0
+
+WIP_SNAPSHOTS 0
